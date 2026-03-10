@@ -7,9 +7,11 @@ pub struct AppConfig {
     pub backend_base_url: String,
     pub ws_url: String,
     pub app_version: String,
+    pub min_backend_host_version: Option<String>,
     pub heartbeat_interval_secs: u64,
     pub stats_interval_secs: u64,
     pub session_limit: usize,
+    pub stale_session_secs: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -18,15 +20,17 @@ pub struct AppPaths {
     pub state_file: PathBuf,
     pub pid_file: PathBuf,
     pub log_file: PathBuf,
+    pub audit_file: PathBuf,
 }
 
 impl AppConfig {
     pub fn from_env() -> Self {
         let backend_base_url =
-            env::var("POCKETSHELL_BACKEND_URL").unwrap_or_else(|_| "http://127.0.0.1:8080".to_string());
+            env::var("POCKETSHELL_BACKEND_URL").unwrap_or_else(|_| "http://127.0.0.1:8000".to_string());
         let ws_url = env::var("POCKETSHELL_WS_URL")
-            .unwrap_or_else(|_| "ws://127.0.0.1:8080/v1/host/ws".to_string());
+            .unwrap_or_else(|_| "ws://127.0.0.1:8000/ws/host".to_string());
         let app_version = env::var("POCKETSHELL_APP_VERSION").unwrap_or_else(|_| "0.1.0".to_string());
+        let min_backend_host_version = env::var("POCKETSHELL_MIN_HOST_VERSION").ok();
 
         let heartbeat_interval_secs = env::var("POCKETSHELL_HEARTBEAT_SECS")
             .ok()
@@ -43,13 +47,20 @@ impl AppConfig {
             .and_then(|v| v.parse::<usize>().ok())
             .unwrap_or(8);
 
+        let stale_session_secs = env::var("POCKETSHELL_STALE_SESSION_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(300);
+
         Self {
             backend_base_url,
             ws_url,
             app_version,
+            min_backend_host_version,
             heartbeat_interval_secs,
             stats_interval_secs,
             session_limit,
+            stale_session_secs,
         }
     }
 
@@ -61,12 +72,14 @@ impl AppConfig {
         let state_file = state_dir.join("state.json");
         let pid_file = state_dir.join("daemon.pid");
         let log_file = state_dir.join("daemon.log");
+        let audit_file = state_dir.join("audit.log");
 
         Ok(AppPaths {
             state_dir,
             state_file,
             pid_file,
             log_file,
+            audit_file,
         })
     }
 

@@ -1,10 +1,14 @@
 pub mod api;
+pub mod audit;
 pub mod config;
 pub mod daemon;
 pub mod error;
 pub mod models;
 pub mod pty;
+pub mod secure;
 pub mod session;
 pub mod stats;
 pub mod store;
 pub mod transport;
+#[cfg(feature = "webrtc")]
+pub mod webrtc_peer;

@@ -1,6 +1,7 @@
 use crate::config::AppConfig;
 use crate::error::{HostError, Result};
-use crate::models::{AgentState, DeviceRecord, HostIdentity};
+use crate::models::{AgentState, SessionRecord, TrustedDeviceRecord};
+use crate::secure::{load_tokens, persist_tokens};
 use chrono::Utc;
 use std::fs;
 use std::io::Write;
@@ -22,12 +23,19 @@ impl StateStore {
 
         if !paths.state_file.exists() {
             let mut file = fs::File::create(&paths.state_file)?;
-            file.write_all(b"{\n  \"pending_devices\": [],\n  \"trusted_devices\": []\n}\n")?;
+            file.write_all(
+                b"{\n  \"pending_devices\": [],\n  \"trusted_devices\": [],\n  \"sessions\": []\n}\n",
+            )?;
             set_file_permissions(&paths.state_file)?;
         }
 
         let raw = fs::read_to_string(&paths.state_file)?;
-        let state = serde_json::from_str::<AgentState>(&raw).unwrap_or_default();
+        let mut state = serde_json::from_str::<AgentState>(&raw).unwrap_or_default();
+
+        if let (Some(auth), Some((access, refresh))) = (state.auth.as_mut(), load_tokens()) {
+            auth.access_token = access;
+            auth.refresh_token = refresh;
+        }
 
         Ok(Self {
             path: paths.state_file,
@@ -36,7 +44,15 @@ impl StateStore {
     }
 
     pub fn save(&self) -> Result<()> {
-        let raw = serde_json::to_string_pretty(&self.state)?;
+        let mut sanitized = self.state.clone();
+        if let Some(auth) = sanitized.auth.as_mut() {
+            if persist_tokens(auth) {
+                auth.access_token.clear();
+                auth.refresh_token.clear();
+            }
+        }
+
+        let raw = serde_json::to_string_pretty(&sanitized)?;
         fs::write(&self.path, raw)?;
         set_file_permissions(&self.path)?;
         Ok(())
@@ -49,59 +65,82 @@ impl StateStore {
         Ok(())
     }
 
-    pub fn upsert_pending_device(&mut self, device: DeviceRecord) {
+    pub fn upsert_pending_device(&mut self, device: TrustedDeviceRecord) {
         self.state
             .pending_devices
-            .retain(|d| d.device_id != device.device_id);
+            .retain(|d| d.mobile_device_id != device.mobile_device_id);
         self.state.pending_devices.push(device);
     }
 
-    pub fn approve_device(&mut self, device_id: &str) -> Result<DeviceRecord> {
-        let Some(idx) = self
-            .state
-            .pending_devices
+    pub fn set_trusted_devices(&mut self, devices: Vec<TrustedDeviceRecord>) {
+        self.state.pending_devices = devices
             .iter()
-            .position(|d| d.device_id == device_id)
-        else {
-            return Err(HostError::Config(format!("device not pending: {device_id}")));
-        };
-
-        let mut device = self.state.pending_devices.remove(idx);
-        device.pending_since = None;
-        device.approved_at = Some(Utc::now());
-        device.revoked_at = None;
-
-        self.state
-            .trusted_devices
-            .retain(|d| d.device_id != device.device_id);
-        self.state.trusted_devices.push(device.clone());
-        Ok(device)
+            .filter(|d| d.approved_at.is_none() && d.revoked_at.is_none())
+            .cloned()
+            .collect();
+        self.state.trusted_devices = devices
+            .into_iter()
+            .filter(|d| d.approved_at.is_some() && d.revoked_at.is_none())
+            .collect();
     }
 
-    pub fn revoke_device(&mut self, device_id: &str) -> Result<DeviceRecord> {
-        let Some(idx) = self
-            .state
+    pub fn remove_trusted_device(&mut self, mobile_device_id: &str) {
+        self.state
             .trusted_devices
-            .iter()
-            .position(|d| d.device_id == device_id)
-        else {
-            return Err(HostError::Config(format!("device not trusted: {device_id}")));
-        };
-
-        let mut device = self.state.trusted_devices.remove(idx);
-        device.revoked_at = Some(Utc::now());
-        Ok(device)
+            .retain(|d| d.mobile_device_id != mobile_device_id);
     }
 
     pub fn is_trusted(&self, device_id: &str) -> bool {
         self.state
             .trusted_devices
             .iter()
-            .any(|d| d.device_id == device_id && d.revoked_at.is_none())
+            .any(|d| d.mobile_device_id == device_id && d.revoked_at.is_none() && d.approved_at.is_some())
     }
 
-    pub fn host(&self) -> Result<&HostIdentity> {
-        self.state.host.as_ref().ok_or(HostError::NotLoggedIn)
+    pub fn upsert_session(&mut self, session: SessionRecord) {
+        self.state
+            .sessions
+            .retain(|s| s.session_id != session.session_id);
+        self.state.sessions.push(session);
+    }
+
+    pub fn touch_session_state(&mut self, session_id: &str, state: crate::models::SessionState) {
+        let now = Utc::now();
+        if let Some(session) = self
+            .state
+            .sessions
+            .iter_mut()
+            .find(|s| s.session_id == session_id)
+        {
+            session.state = state;
+            session.updated_at = now;
+            return;
+        }
+
+        self.state.sessions.push(SessionRecord {
+            session_id: session_id.to_string(),
+            mobile_device_id: "unknown".to_string(),
+            state,
+            updated_at: now,
+        });
+    }
+
+    pub fn clear_ended_sessions(&mut self, stale_after_secs: i64) {
+        let now = Utc::now();
+        self.state.sessions.retain(|s| {
+            let age = (now - s.updated_at).num_seconds();
+            !(age > stale_after_secs && matches!(s.state, crate::models::SessionState::Ended | crate::models::SessionState::Failed))
+        });
+    }
+
+    pub fn host_id(&self) -> Result<String> {
+        Ok(self
+            .state
+            .host
+            .as_ref()
+            .ok_or(HostError::NotLoggedIn)?
+            .host_id
+            .clone())
     }
 
     pub fn access_token(&self) -> Result<&str> {

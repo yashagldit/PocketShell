@@ -1,0 +1,13 @@
+Source: pocketshell-host-agent
+Section: utils
+Priority: optional
+Maintainer: PocketShell Team <support@pocketshell.local>
+Build-Depends: debhelper-compat (= 13), rustc, cargo
+Standards-Version: 4.6.2
+
+Package: pocketshell-host-agent
+Architecture: amd64 arm64
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: PocketShell host agent daemon and CLI
+ Secure host-side daemon to pair with mobile devices and expose terminal sessions
+ over encrypted signaling and data channels.

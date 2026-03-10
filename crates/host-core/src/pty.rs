@@ -17,7 +17,7 @@ struct PtySession {
     resize_tx: mpsc::Sender<(u16, u16)>,
     output_rx: mpsc::Receiver<Vec<u8>>,
     stop: Arc<AtomicBool>,
-    child: Arc<Mutex<Box<dyn portable_pty::Child + Send>>>,
+    child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
 }
 
 pub struct SessionManager {
