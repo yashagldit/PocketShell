@@ -1,0 +1,19 @@
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum HostError {
+    #[error("configuration error: {0}")]
+    Config(String),
+    #[error("not logged in: run `myapp login` first")]
+    NotLoggedIn,
+    #[error("backend request failed: {0}")]
+    Backend(String),
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("serialization error: {0}")]
+    Serde(#[from] serde_json::Error),
+    #[error("pty error: {0}")]
+    Pty(String),
+}
+
+pub type Result<T> = std::result::Result<T, HostError>;

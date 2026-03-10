@@ -1,0 +1,37 @@
+[workspace]
+members = [
+  "crates/host-core",
+  "crates/host-agent",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["PocketShell"]
+
+[workspace.dependencies]
+anyhow = "1.0"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4.5", features = ["derive"] }
+dirs = "6.0"
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sysinfo = "0.37"
+thiserror = "2.0"
+tokio = { version = "1.48", features = ["rt-multi-thread", "macros", "time", "signal", "process"] }
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+url = "2.5"
+uuid = { version = "1.18", features = ["v4", "serde"] }
+futures-util = "0.3"
+portable-pty = "0.9"
+webrtc = "0.14"
+nix = { version = "0.30", features = ["signal"] }
+whoami = "1.6"
