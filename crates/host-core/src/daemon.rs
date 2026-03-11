@@ -343,13 +343,15 @@ async fn handle_signal(
 
             match channel {
                 "terminal" => {
-                    let data_b64 = payload
-                        .get("data_b64")
-                        .and_then(|v| v.as_str())
-                        .ok_or_else(|| HostError::Backend("missing terminal data".to_string()))?;
-                    let bytes = base64::engine::general_purpose::STANDARD
-                        .decode(data_b64)
-                        .map_err(|e| HostError::Backend(format!("invalid terminal payload: {e}")))?;
+                    let bytes = if let Some(data_b64) = payload.get("data_b64").and_then(|v| v.as_str()) {
+                        base64::engine::general_purpose::STANDARD
+                            .decode(data_b64)
+                            .map_err(|e| HostError::Backend(format!("invalid terminal payload: {e}")))?
+                    } else if let Some(text) = payload.get("text").and_then(|v| v.as_str()) {
+                        text.as_bytes().to_vec()
+                    } else {
+                        return Err(HostError::Backend("missing terminal data".to_string()));
+                    };
                     sessions.write_input(&session_id, bytes)?;
 
                     if let Some(record) = store.state.sessions.iter().find(|s| s.session_id == session_id) {

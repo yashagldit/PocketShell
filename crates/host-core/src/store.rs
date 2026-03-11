@@ -33,8 +33,13 @@ impl StateStore {
         let mut state = serde_json::from_str::<AgentState>(&raw).unwrap_or_default();
 
         if let (Some(auth), Some((access, refresh))) = (state.auth.as_mut(), load_tokens()) {
-            auth.access_token = access;
-            auth.refresh_token = refresh;
+            // Prefer keyring values only when state file tokens are empty.
+            if auth.access_token.is_empty() {
+                auth.access_token = access;
+            }
+            if auth.refresh_token.is_empty() {
+                auth.refresh_token = refresh;
+            }
         }
 
         Ok(Self {
@@ -46,7 +51,11 @@ impl StateStore {
     pub fn save(&self) -> Result<()> {
         let mut sanitized = self.state.clone();
         if let Some(auth) = sanitized.auth.as_mut() {
-            if persist_tokens(auth) {
+            let plaintext_tokens = std::env::var("POCKETSHELL_PLAINTEXT_TOKENS")
+                .map(|v| v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false);
+
+            if !plaintext_tokens && persist_tokens(auth) {
                 auth.access_token.clear();
                 auth.refresh_token.clear();
             }
