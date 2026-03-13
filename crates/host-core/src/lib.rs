@@ -1,3 +1,4 @@
+pub mod alerts;
 pub mod api;
 pub mod audit;
 pub mod config;

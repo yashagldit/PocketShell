@@ -69,6 +69,8 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
         stats_bg_tick.tick().await; // skip immediate first tick
         let mut output_tick = interval(Duration::from_millis(40));
         let mut trusted_devices_tick = interval(Duration::from_secs(30));
+        let mut alert_tick = interval(Duration::from_secs(config.alert_check_interval_secs));
+        let mut alert_checker = crate::alerts::AlertChecker::new();
 
         loop {
             tokio::select! {
@@ -194,6 +196,27 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                         if let Err(err) = send_signal(&mut ws, &msg).await {
                             warn!("session output send failed: {}", err);
                             break;
+                        }
+                    }
+                }
+                _ = alert_tick.tick() => {
+                    if !store.state.alert_thresholds.is_empty() {
+                        let snapshot = stats.snapshot();
+                        let triggered = alert_checker.check(&snapshot, &store.state.alert_thresholds);
+                        for alert in triggered {
+                            let msg = SignalEnvelope {
+                                message_type: "alert".to_string(),
+                                session_id: None,
+                                payload: Some(serde_json::to_value(&alert).unwrap_or(serde_json::json!({}))),
+                                state: None,
+                                accepted: None,
+                                reason: None,
+                                extra: std::collections::HashMap::new(),
+                            };
+                            if let Err(err) = send_signal(&mut ws, &msg).await {
+                                warn!("alert send failed: {}", err);
+                                break;
+                            }
                         }
                     }
                 }
@@ -472,6 +495,17 @@ async fn handle_signal(
                 };
                 store.touch_session_state(&session_id, mapped);
                 store.save()?;
+            }
+        }
+        "alert_preferences_sync" => {
+            if let Some(payload) = msg.payload {
+                if let Some(prefs) = payload.get("preferences") {
+                    if let Ok(thresholds) = serde_json::from_value::<Vec<crate::models::AlertThreshold>>(prefs.clone()) {
+                        info!("received {} alert thresholds", thresholds.len());
+                        store.state.alert_thresholds = thresholds;
+                        store.save()?;
+                    }
+                }
             }
         }
         _ => {}

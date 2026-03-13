@@ -12,6 +12,7 @@ pub struct AppConfig {
     pub stats_interval_secs: u64,
     pub session_limit: usize,
     pub stale_session_secs: u64,
+    pub alert_check_interval_secs: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -52,6 +53,11 @@ impl AppConfig {
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(300);
 
+        let alert_check_interval_secs = env::var("POCKETSHELL_ALERT_CHECK_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(60);
+
         Self {
             backend_base_url,
             ws_url,
@@ -61,6 +67,7 @@ impl AppConfig {
             stats_interval_secs,
             session_limit,
             stale_session_secs,
+            alert_check_interval_secs,
         }
     }
 

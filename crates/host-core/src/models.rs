@@ -9,6 +9,8 @@ pub struct AgentState {
     pub pending_devices: Vec<TrustedDeviceRecord>,
     pub trusted_devices: Vec<TrustedDeviceRecord>,
     pub sessions: Vec<SessionRecord>,
+    #[serde(default)]
+    pub alert_thresholds: Vec<AlertThreshold>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -129,6 +131,22 @@ pub struct StatsSnapshot {
     pub load_fifteen: f64,
     pub battery_percent: Option<f32>,
     pub collected_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlertThreshold {
+    pub metric: String,
+    pub threshold_value: f64,
+    pub comparison: String,
+    pub cooldown_minutes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlertPayload {
+    pub metric: String,
+    pub threshold_value: f64,
+    pub actual_value: f64,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
