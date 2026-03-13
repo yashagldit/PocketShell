@@ -31,6 +31,8 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
     let backend = BackendClient::new(config.backend_base_url.clone());
 
     let mut stats = StatsCollector::new();
+    let mut stats_active = false;
+    let mut stats_deadline: Option<Instant> = None;
     let mut sessions = SessionManager::new(config.session_limit);
     let shell = AppConfig::default_shell();
 
@@ -63,6 +65,8 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
 
         let mut heartbeat_tick = interval(Duration::from_secs(config.heartbeat_interval_secs));
         let mut stats_tick = interval(Duration::from_secs(config.stats_interval_secs));
+        let mut stats_bg_tick = interval(Duration::from_secs(30 * 60));
+        stats_bg_tick.tick().await; // skip immediate first tick
         let mut output_tick = interval(Duration::from_millis(40));
         let mut trusted_devices_tick = interval(Duration::from_secs(30));
 
@@ -126,19 +130,51 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                     }
                 }
                 _ = stats_tick.tick() => {
-                    let snapshot = stats.snapshot();
-                    let msg = SignalEnvelope {
-                        message_type: "stats".to_string(),
-                        session_id: None,
-                        payload: Some(serde_json::to_value(snapshot).unwrap_or(serde_json::json!({}))),
-                        state: None,
-                        accepted: None,
-                        reason: None,
-                        extra: std::collections::HashMap::new(),
-                    };
-                    if let Err(err) = send_signal(&mut ws, &msg).await {
-                        warn!("stats send failed: {}", err);
-                        break;
+                    // Auto-expire subscription after deadline
+                    if stats_active {
+                        if let Some(deadline) = stats_deadline {
+                            if Instant::now() > deadline {
+                                stats_active = false;
+                                stats_deadline = None;
+                                info!("stats subscription expired, pausing");
+                            }
+                        }
+                    }
+
+                    if stats_active {
+                        let snapshot = stats.snapshot();
+                        let msg = SignalEnvelope {
+                            message_type: "stats".to_string(),
+                            session_id: None,
+                            payload: Some(serde_json::to_value(snapshot).unwrap_or(serde_json::json!({}))),
+                            state: None,
+                            accepted: None,
+                            reason: None,
+                            extra: std::collections::HashMap::new(),
+                        };
+                        if let Err(err) = send_signal(&mut ws, &msg).await {
+                            warn!("stats send failed: {}", err);
+                            break;
+                        }
+                    }
+                }
+                _ = stats_bg_tick.tick() => {
+                    // Low-frequency background snapshot — persisted to DB
+                    if !stats_active {
+                        let snapshot = stats.snapshot();
+                        let msg = SignalEnvelope {
+                            message_type: "stats_snapshot".to_string(),
+                            session_id: None,
+                            payload: Some(serde_json::to_value(snapshot).unwrap_or(serde_json::json!({}))),
+                            state: None,
+                            accepted: None,
+                            reason: None,
+                            extra: std::collections::HashMap::new(),
+                        };
+                        if let Err(err) = send_signal(&mut ws, &msg).await {
+                            warn!("stats bg send failed: {}", err);
+                            break;
+                        }
                     }
                 }
                 _ = output_tick.tick() => {
@@ -164,7 +200,13 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                 incoming = recv_signal(&mut ws) => {
                     match incoming {
                         Ok(Some(msg)) => {
-                            if let Err(err) = handle_signal(&mut store, &backend, &shell, &mut sessions, msg, &mut ws).await {
+                            if msg.message_type == "stats_subscribe" {
+                                if !stats_active {
+                                    info!("stats subscription activated");
+                                }
+                                stats_active = true;
+                                stats_deadline = Some(Instant::now() + Duration::from_secs(20));
+                            } else if let Err(err) = handle_signal(&mut store, &backend, &shell, &mut sessions, msg, &mut ws).await {
                                 error!("control message handling failed: {}", err);
                             }
                         }
@@ -191,6 +233,10 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                 }
             }
         }
+
+        // Reset stats subscription on disconnect.
+        stats_active = false;
+        stats_deadline = None;
 
         // Reconcile stale local session resources after disconnects.
         sessions.close_all();
