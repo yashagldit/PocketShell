@@ -44,11 +44,21 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
     });
 
     let mut backoff_secs = 1_u64;
-    let mut last_tick = Instant::now();
 
     loop {
-        refresh_auth_if_needed(&backend, &mut store).await?;
+        match refresh_auth_if_needed(&backend, &mut store).await {
+            Ok(()) => {}
+            Err(HostError::AuthRevoked) => {
+                warn!("authentication expired — waiting for re-login via `myapp login`");
+                sleep(Duration::from_secs(30)).await;
+                // Reload state in case user ran `myapp login` in another terminal
+                store = StateStore::load()?;
+                continue;
+            }
+            Err(err) => return Err(err),
+        }
         let token = store.access_token()?.to_string();
+        let mut last_tick;
         let mut ws = match connect_host_ws(&config.ws_url, &host_id, &token).await {
             Ok(socket) => {
                 info!("control-plane connected");
@@ -83,9 +93,16 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                     }
                     last_tick = now;
 
-                    if let Err(err) = refresh_auth_if_needed(&backend, &mut store).await {
-                        warn!("token refresh failed: {}", err);
-                        break;
+                    match refresh_auth_if_needed(&backend, &mut store).await {
+                        Ok(()) => {}
+                        Err(HostError::AuthRevoked) => {
+                            warn!("authentication expired — run `myapp login` to re-authenticate");
+                            break; // reconnect loop will retry after reload
+                        }
+                        Err(err) => {
+                            warn!("token refresh failed: {}", err);
+                            break;
+                        }
                     }
 
                     let payload = HeartbeatRequest {
@@ -497,6 +514,9 @@ async fn handle_signal(
                 store.touch_session_state(&session_id, mapped);
                 store.save()?;
             }
+        }
+        "session_offer" | "ice_candidate" => {
+            // WebRTC signaling — host uses relay, not P2P. Ignore silently.
         }
         "alert_preferences_sync" => {
             if let Some(payload) = msg.payload {
