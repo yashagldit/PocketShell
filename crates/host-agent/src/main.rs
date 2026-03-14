@@ -114,12 +114,17 @@ async fn login(
     let email = email.unwrap_or_else(|| prompt("Email: "));
 
     let backend = BackendClient::new(config.backend_base_url.clone());
-    backend
-        .request_otp(&email)
-        .await
-        .context("requesting OTP")?;
 
-    let otp = otp.unwrap_or_else(|| prompt("OTP code: "));
+    // Skip OTP request when OTP is already provided (non-interactive usage)
+    let otp = if let Some(code) = otp {
+        code
+    } else {
+        backend
+            .request_otp(&email)
+            .await
+            .context("requesting OTP")?;
+        prompt("OTP code: ")
+    };
     let tokens = backend
         .verify_otp(&email, &otp)
         .await
