@@ -4,6 +4,7 @@ use host_core::api::{derive_access_expiry, BackendClient};
 use host_core::audit::{write_audit_event, AuditEvent};
 use host_core::config::AppConfig;
 use host_core::daemon;
+use host_core::discovery::SessionDiscovery;
 use host_core::models::{AuthState, HostIdentity, PairingValidateRequest};
 use host_core::secure::{clear_private_key, clear_tokens, parse_jwt_exp, persist_private_key};
 use host_core::stats::StatsCollector;
@@ -54,6 +55,23 @@ enum Commands {
         #[arg(long)]
         watch: bool,
     },
+    /// Expose a terminal session for mobile access.
+    /// Creates a named tmux session that the daemon auto-discovers.
+    #[command(alias = "rc")]
+    Remote {
+        /// Session name (default: "remote")
+        #[arg(long, short, default_value = "remote")]
+        name: String,
+        /// Don't attach to the session — just create it in the background
+        #[arg(long)]
+        detached: bool,
+        /// List currently discoverable sessions instead of creating one
+        #[arg(long, short)]
+        list: bool,
+        /// Remove an exposed session
+        #[arg(long, short)]
+        remove: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -89,6 +107,7 @@ async fn main() -> Result<()> {
         Commands::Devices { command } => devices(config, command).await,
         Commands::Daemon { command } => daemon_cmd(config, command).await,
         Commands::Stats { watch } => stats_cmd(watch).await,
+        Commands::Remote { name, detached, list, remove } => remote_cmd(name, detached, list, remove),
     }
 }
 
@@ -427,6 +446,49 @@ async fn stats_cmd(watch: bool) -> Result<()> {
     }
 
     #[allow(unreachable_code)]
+    Ok(())
+}
+
+fn remote_cmd(name: String, detached: bool, list: bool, remove: bool) -> Result<()> {
+    if remove {
+        SessionDiscovery::unregister_exposed(&name)?;
+        println!("removed exposed session '{}'", name);
+        return Ok(());
+    }
+
+    if list {
+        let sessions = SessionDiscovery::discover();
+        if sessions.is_empty() {
+            println!("no exposed sessions found");
+        } else {
+            println!("{:<12} {:<20} {:<10} {}", "TYPE", "NAME", "STATUS", "WINDOWS");
+            for s in &sessions {
+                println!(
+                    "{:<12} {:<20} {:<10} {}",
+                    s.session_type,
+                    s.name,
+                    if s.attached { "attached" } else { "available" },
+                    s.windows,
+                );
+            }
+        }
+        return Ok(());
+    }
+
+    // Expose current terminal's PTY for mobile access
+    SessionDiscovery::register_exposed(&name)?;
+    println!("exposed session '{}' for mobile access.", name);
+    println!("mobile can connect via SessionPicker.");
+    println!("press Enter or Ctrl+C to stop sharing.\n");
+
+    // Block — the terminal stays shared while this runs
+    let mut buf = String::new();
+    let _ = std::io::stdin().read_line(&mut buf);
+
+    // Clean up
+    SessionDiscovery::unregister_exposed(&name)?;
+    println!("stopped sharing session '{}'.", name);
+
     Ok(())
 }
 

@@ -1,8 +1,9 @@
 use crate::api::{derive_access_expiry, BackendClient};
 use crate::audit::{write_audit_event, AuditEvent};
 use crate::config::AppConfig;
+use crate::discovery::SessionDiscovery;
 use crate::error::{HostError, Result};
-use crate::models::{HeartbeatRequest, SessionRecord, SessionRequest, SessionState, SignalEnvelope};
+use crate::models::{AttachTarget, HeartbeatRequest, SessionRecord, SessionRequest, SessionState, SignalEnvelope};
 use crate::pty::SessionManager;
 use crate::secure::{require_refresh_token, token_is_expiring};
 use crate::session::accept_session;
@@ -82,6 +83,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
         let mut trusted_devices_tick = interval(Duration::from_secs(30));
         let mut alert_tick = interval(Duration::from_secs(config.alert_check_interval_secs));
         let mut alert_checker = crate::alerts::AlertChecker::new();
+        let mut discovery_tick = interval(Duration::from_secs(15));
 
         loop {
             tokio::select! {
@@ -238,6 +240,25 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                         }
                     }
                 }
+                _ = discovery_tick.tick() => {
+                    let discovered = SessionDiscovery::discover();
+                    info!("discovery tick: found {} sessions", discovered.len());
+                    if !discovered.is_empty() {
+                        let msg = SignalEnvelope {
+                            message_type: "available_sessions".to_string(),
+                            session_id: None,
+                            payload: Some(serde_json::to_value(&discovered).unwrap_or(serde_json::json!([]))),
+                            state: None,
+                            accepted: None,
+                            reason: None,
+                            extra: std::collections::HashMap::new(),
+                        };
+                        if let Err(err) = send_signal(&mut ws, &msg).await {
+                            warn!("discovery send failed: {}", err);
+                            break;
+                        }
+                    }
+                }
                 incoming = recv_signal(&mut ws) => {
                     match incoming {
                         Ok(Some(msg)) => {
@@ -358,11 +379,29 @@ async fn handle_signal(
                 return Ok(());
             }
 
+            let mut attach_target = msg
+                .extra
+                .get("attach_target")
+                .and_then(|v| serde_json::from_value::<AttachTarget>(v.clone()).ok());
+
+            // For "shell" type, resolve the PTY path from discovered sessions
+            if let Some(ref mut target) = attach_target {
+                if target.session_type == "shell" {
+                    let discovered = SessionDiscovery::discover();
+                    if let Some(session) = discovered.iter().find(|s| s.name == target.name && s.session_type == "shell") {
+                        if let Some(ref pty_path) = session.pty_path {
+                            target.name = pty_path.clone();
+                        }
+                    }
+                }
+            }
+
             let req = SessionRequest {
                 session_id: session_id.clone(),
                 mobile_device_id: mobile_device_id.clone(),
                 cols,
                 rows,
+                attach_target,
             };
 
             let accept = accept_session(sessions, &req, shell).is_ok();

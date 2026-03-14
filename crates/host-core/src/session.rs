@@ -7,5 +7,15 @@ pub fn accept_session(
     req: &SessionRequest,
     shell: &str,
 ) -> Result<()> {
-    manager.create_session(req.session_id.clone(), shell, req.cols, req.rows)
+    if let Some(target) = &req.attach_target {
+        manager.create_attached_session(
+            req.session_id.clone(),
+            &target.session_type,
+            &target.name,
+            req.cols,
+            req.rows,
+        )
+    } else {
+        manager.create_session(req.session_id.clone(), shell, req.cols, req.rows)
+    }
 }

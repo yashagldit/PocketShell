@@ -3,6 +3,7 @@ pub mod api;
 pub mod audit;
 pub mod config;
 pub mod daemon;
+pub mod discovery;
 pub mod error;
 pub mod models;
 pub mod pty;

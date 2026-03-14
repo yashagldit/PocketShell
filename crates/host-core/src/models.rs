@@ -116,6 +116,14 @@ pub struct SessionRequest {
     pub mobile_device_id: String,
     pub cols: u16,
     pub rows: u16,
+    /// If set, attach to this tmux/screen session instead of spawning a new shell.
+    pub attach_target: Option<AttachTarget>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttachTarget {
+    pub session_type: String, // "tmux" or "screen"
+    pub name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
