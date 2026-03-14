@@ -53,6 +53,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
             Ok(socket) => {
                 info!("control-plane connected");
                 backoff_secs = 1;
+                last_tick = Instant::now();
                 socket
             }
             Err(err) => {
@@ -223,6 +224,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                 incoming = recv_signal(&mut ws) => {
                     match incoming {
                         Ok(Some(msg)) => {
+                            info!("ws received: type={} session_id={:?}", msg.message_type, msg.session_id);
                             if msg.message_type == "stats_subscribe" {
                                 if !stats_active {
                                     info!("stats subscription activated");
@@ -234,8 +236,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                             }
                         }
                         Ok(None) => {
-                            warn!("control-plane disconnected");
-                            break;
+                            // ping/pong or binary frame — keep going
                         }
                         Err(err) => {
                             warn!("control-plane read failed: {}", err);
@@ -364,7 +365,7 @@ async fn handle_signal(
                     message_type: "session_event".to_string(),
                     session_id: Some(session_id.clone()),
                     payload: None,
-                    state: Some("connecting".to_string()),
+                    state: Some("connected".to_string()),
                     accepted: None,
                     reason: None,
                     extra: std::collections::HashMap::new(),
@@ -375,13 +376,13 @@ async fn handle_signal(
             let token = store.access_token()?.to_string();
             if accept {
                 backend
-                    .transition_session(&token, &session_id, SessionState::Approved, None)
+                    .transition_session(&token, &session_id, SessionState::Connected, None)
                     .await?;
 
                 store.upsert_session(SessionRecord {
                     session_id: session_id.clone(),
                     mobile_device_id: mobile_device_id.clone(),
-                    state: SessionState::Approved,
+                    state: SessionState::Connected,
                     updated_at: Utc::now(),
                 });
                 let _ = write_audit_event(AuditEvent {

@@ -39,6 +39,8 @@ pub async fn send_signal(ws: &mut WsStream, msg: &SignalEnvelope) -> Result<()> 
         .map_err(|e| HostError::Backend(format!("ws send failed: {e}")))
 }
 
+/// Returns `Ok(Some(signal))` for a valid message, `Ok(None)` for keep-alive
+/// frames (ping/pong/binary), and `Err` for real disconnects or errors.
 pub async fn recv_signal(ws: &mut WsStream) -> Result<Option<SignalEnvelope>> {
     match ws.next().await {
         Some(Ok(Message::Text(text))) => {
@@ -46,12 +48,15 @@ pub async fn recv_signal(ws: &mut WsStream) -> Result<Option<SignalEnvelope>> {
                 .map_err(|e| HostError::Backend(format!("invalid control payload: {e}")))?;
             Ok(Some(parsed))
         }
-        Some(Ok(Message::Binary(_))) => Ok(None),
-        Some(Ok(Message::Close(_))) => Ok(None),
-        Some(Ok(Message::Ping(_))) => Ok(None),
+        Some(Ok(Message::Ping(data))) => {
+            ws.send(Message::Pong(data)).await.ok();
+            Ok(None)
+        }
         Some(Ok(Message::Pong(_))) => Ok(None),
+        Some(Ok(Message::Binary(_))) => Ok(None),
         Some(Ok(Message::Frame(_))) => Ok(None),
+        Some(Ok(Message::Close(_))) => Err(HostError::Backend("ws closed by server".into())),
         Some(Err(e)) => Err(HostError::Backend(format!("ws read failed: {e}"))),
-        None => Ok(None),
+        None => Err(HostError::Backend("ws stream ended".into())),
     }
 }
