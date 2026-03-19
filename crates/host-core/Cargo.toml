@@ -28,7 +28,7 @@ uuid.workspace = true
 keyring.workspace = true
 
 [features]
-default = []
+default = ["webrtc"]
 webrtc = ["dep:webrtc"]
 
 [dependencies.webrtc]

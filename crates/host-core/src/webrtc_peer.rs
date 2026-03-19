@@ -1,26 +1,31 @@
 #![cfg(feature = "webrtc")]
 
 use crate::error::{HostError, Result};
+use std::sync::Arc;
+use tokio::sync::mpsc;
 use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::APIBuilder;
-use webrtc::data_channel::data_channel_init::RTCDataChannelInit;
 use webrtc::data_channel::RTCDataChannel;
-use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
+use webrtc::ice_transport::ice_candidate::{RTCIceCandidate, RTCIceCandidateInit};
+use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
-use std::sync::Arc;
 
-pub struct WebRtcChannels {
-    pub terminal: Arc<RTCDataChannel>,
-    pub control: Arc<RTCDataChannel>,
-    pub stats: Arc<RTCDataChannel>,
+/// A data channel event received from the remote peer.
+pub struct DataChannelEvent {
+    pub label: String,
+    pub channel: Arc<RTCDataChannel>,
 }
 
+/// A WebRTC peer that acts as an answerer (host side).
 pub struct WebRtcPeer {
     pub peer: Arc<RTCPeerConnection>,
-    pub channels: Option<WebRtcChannels>,
+    /// Receives newly opened data channels from the remote peer.
+    pub channel_rx: mpsc::Receiver<DataChannelEvent>,
+    /// Receives ICE candidates to send back via signaling.
+    pub ice_tx: mpsc::Receiver<RTCIceCandidate>,
 }
 
 impl WebRtcPeer {
@@ -32,7 +37,7 @@ impl WebRtcPeer {
 
         let api = APIBuilder::new().with_media_engine(media).build();
         let config = RTCConfiguration {
-            ice_servers: vec![webrtc::ice_transport::ice_server::RTCIceServer {
+            ice_servers: vec![RTCIceServer {
                 urls: turn_uris,
                 username,
                 credential,
@@ -47,55 +52,39 @@ impl WebRtcPeer {
                 .map_err(|e| HostError::Backend(format!("peer connection create failed: {e}")))?,
         );
 
+        // Channel for receiving data channels from mobile
+        let (ch_tx, channel_rx) = mpsc::channel::<DataChannelEvent>(16);
+        peer.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
+            let tx = ch_tx.clone();
+            let label = dc.label().to_string();
+            Box::pin(async move {
+                let _ = tx.send(DataChannelEvent { label, channel: dc }).await;
+            })
+        }));
+
+        // Channel for sending ICE candidates back to mobile
+        let (ice_out_tx, ice_tx) = mpsc::channel::<RTCIceCandidate>(32);
+        peer.on_ice_candidate(Box::new(move |candidate| {
+            let tx = ice_out_tx.clone();
+            Box::pin(async move {
+                if let Some(c) = candidate {
+                    let _ = tx.send(c).await;
+                }
+            })
+        }));
+
         Ok(Self {
             peer,
-            channels: None,
+            channel_rx,
+            ice_tx,
         })
     }
 
-    pub async fn create_channels(&mut self) -> Result<()> {
-        let terminal = self
-            .peer
-            .create_data_channel("terminal", Some(RTCDataChannelInit::default()))
-            .await
-            .map_err(|e| HostError::Backend(format!("terminal channel create failed: {e}")))?;
+    /// Apply an offer from mobile, create and return an answer SDP.
+    pub async fn apply_offer(&self, sdp: &str) -> Result<String> {
+        let offer = RTCSessionDescription::offer(sdp.to_string())
+            .map_err(|e| HostError::Backend(format!("invalid offer SDP: {e}")))?;
 
-        let control = self
-            .peer
-            .create_data_channel("control", Some(RTCDataChannelInit::default()))
-            .await
-            .map_err(|e| HostError::Backend(format!("control channel create failed: {e}")))?;
-
-        let stats = self
-            .peer
-            .create_data_channel("stats", Some(RTCDataChannelInit::default()))
-            .await
-            .map_err(|e| HostError::Backend(format!("stats channel create failed: {e}")))?;
-
-        self.channels = Some(WebRtcChannels {
-            terminal,
-            control,
-            stats,
-        });
-        Ok(())
-    }
-
-    pub async fn create_offer(&self) -> Result<RTCSessionDescription> {
-        let offer = self
-            .peer
-            .create_offer(None)
-            .await
-            .map_err(|e| HostError::Backend(format!("offer create failed: {e}")))?;
-
-        self.peer
-            .set_local_description(offer.clone())
-            .await
-            .map_err(|e| HostError::Backend(format!("set local offer failed: {e}")))?;
-
-        Ok(offer)
-    }
-
-    pub async fn apply_offer(&self, offer: RTCSessionDescription) -> Result<RTCSessionDescription> {
         self.peer
             .set_remote_description(offer)
             .await
@@ -112,14 +101,7 @@ impl WebRtcPeer {
             .await
             .map_err(|e| HostError::Backend(format!("set local answer failed: {e}")))?;
 
-        Ok(answer)
-    }
-
-    pub async fn apply_answer(&self, answer: RTCSessionDescription) -> Result<()> {
-        self.peer
-            .set_remote_description(answer)
-            .await
-            .map_err(|e| HostError::Backend(format!("set remote answer failed: {e}")))
+        Ok(answer.sdp)
     }
 
     pub async fn add_ice_candidate(&self, candidate: RTCIceCandidateInit) -> Result<()> {
