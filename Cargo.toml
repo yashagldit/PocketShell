@@ -36,3 +36,4 @@ webrtc = "0.14"
 nix = { version = "0.30", features = ["signal"] }
 whoami = "1.6"
 keyring = { version = "3.6", features = ["apple-native", "linux-native", "windows-native"] }
+bytes = "1"

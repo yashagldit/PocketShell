@@ -5,6 +5,7 @@ pub mod config;
 pub mod daemon;
 pub mod discovery;
 pub mod error;
+pub mod files;
 pub mod models;
 pub mod pty;
 pub mod secure;
@@ -14,3 +15,5 @@ pub mod store;
 pub mod transport;
 #[cfg(feature = "webrtc")]
 pub mod webrtc_peer;
+#[cfg(feature = "webrtc")]
+pub mod webrtc_manager;
