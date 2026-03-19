@@ -25,9 +25,7 @@ impl portable_pty::Child for DummyChild {
         Ok(None)
     }
     fn wait(&mut self) -> std::io::Result<portable_pty::ExitStatus> {
-        loop {
-            std::thread::sleep(Duration::from_secs(3600));
-        }
+        Ok(portable_pty::ExitStatus::with_exit_code(0))
     }
     fn process_id(&self) -> Option<u32> {
         None
@@ -163,7 +161,7 @@ impl SessionManager {
         let stop = Arc::new(AtomicBool::new(false));
         let (input_tx, input_rx) = mpsc::channel::<Vec<u8>>();
         let (resize_tx, _resize_rx) = mpsc::channel::<(u16, u16)>();
-        let (output_tx, output_rx) = mpsc::channel::<Vec<u8>>();
+        let (output_tx, output_rx) = mpsc::sync_channel::<Vec<u8>>(1024);
 
         // Writer thread — sends mobile input to the host's PTY
         {
@@ -268,7 +266,7 @@ impl SessionManager {
 
         let (input_tx, input_rx) = mpsc::channel::<Vec<u8>>();
         let (resize_tx, resize_rx) = mpsc::channel::<(u16, u16)>();
-        let (output_tx, output_rx) = mpsc::channel::<Vec<u8>>();
+        let (output_tx, output_rx) = mpsc::sync_channel::<Vec<u8>>(1024);
 
         {
             let stop = Arc::clone(&stop);
@@ -370,7 +368,10 @@ impl SessionManager {
         session.stop.store(true, Ordering::Relaxed);
         if let Ok(mut child) = session.child.lock() {
             let _ = child.kill();
-            let _ = child.wait();
+            // Only wait on real processes — DummyChild has no process_id
+            if child.process_id().is_some() {
+                let _ = child.wait();
+            }
         }
 
         Ok(())
