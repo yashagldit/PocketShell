@@ -10,6 +10,7 @@ use crate::session::accept_session;
 use crate::stats::StatsCollector;
 use crate::store::StateStore;
 use crate::transport::{connect_host_ws, recv_signal, send_signal};
+use crate::webrtc_manager::{WebRtcEvent, WebRtcManager};
 use base64::Engine;
 use chrono::Utc;
 use tokio::time::{interval, sleep, Duration, Instant};
@@ -35,6 +36,8 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
     let mut stats_active = false;
     let mut stats_deadline: Option<Instant> = None;
     let mut sessions = SessionManager::new(config.session_limit);
+    let (webrtc_event_tx, mut webrtc_event_rx) = tokio::sync::mpsc::unbounded_channel::<WebRtcEvent>();
+    let mut webrtc_mgr = WebRtcManager::new(webrtc_event_tx);
     let shell = AppConfig::default_shell();
 
     info!("daemon starting for host_id={}", host_id);
@@ -84,6 +87,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
         let mut alert_tick = interval(Duration::from_secs(config.alert_check_interval_secs));
         let mut alert_checker = crate::alerts::AlertChecker::new();
         let mut discovery_tick = interval(Duration::from_secs(15));
+        let mut webrtc_poll_tick = interval(Duration::from_millis(50));
 
         loop {
             tokio::select! {
@@ -201,6 +205,9 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                 }
                 _ = output_tick.tick() => {
                     for chunk in sessions.drain_output() {
+                        if webrtc_mgr.send_output(&chunk.session_id, &chunk.bytes).await {
+                            continue;
+                        }
                         let msg = SignalEnvelope {
                             message_type: "signal".to_string(),
                             session_id: Some(chunk.session_id),
@@ -259,6 +266,40 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                         }
                     }
                 }
+                _ = webrtc_poll_tick.tick() => {
+                    webrtc_mgr.poll_events().await;
+                }
+
+                Some(webrtc_event) = webrtc_event_rx.recv() => {
+                    match webrtc_event {
+                        WebRtcEvent::Input { session_id, data } => {
+                            if let Err(e) = sessions.write_input(&session_id, data) {
+                                warn!("webrtc input write failed: {}", e);
+                            }
+                        }
+                        WebRtcEvent::ChannelOpened { session_id } => {
+                            info!("webrtc data channel opened for session {}", session_id);
+                        }
+                        WebRtcEvent::ChannelClosed { session_id } => {
+                            info!("webrtc data channel closed for session {}", session_id);
+                        }
+                        WebRtcEvent::IceCandidate { mobile_device_id: _, candidate_json } => {
+                            if let Ok(candidate_value) = serde_json::from_str::<serde_json::Value>(&candidate_json) {
+                                let ice_msg = SignalEnvelope {
+                                    message_type: "ice_candidate".to_string(),
+                                    session_id: None,
+                                    payload: Some(candidate_value),
+                                    state: None,
+                                    accepted: None,
+                                    reason: None,
+                                    extra: std::collections::HashMap::new(),
+                                };
+                                let _ = send_signal(&mut ws, &ice_msg).await;
+                            }
+                        }
+                    }
+                }
+
                 incoming = recv_signal(&mut ws) => {
                     match incoming {
                         Ok(Some(msg)) => {
@@ -269,7 +310,15 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                 }
                                 stats_active = true;
                                 stats_deadline = Some(Instant::now() + Duration::from_secs(20));
-                            } else if let Err(err) = handle_signal(&mut store, &backend, &shell, &mut sessions, msg, &mut ws).await {
+                            } else if let Err(err) = handle_signal(
+                                &mut store,
+                                &backend,
+                                &shell,
+                                &mut sessions,
+                                msg,
+                                &mut ws,
+                                &mut webrtc_mgr,
+                            ).await {
                                 error!("control message handling failed: {}", err);
                             }
                         }
@@ -285,6 +334,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                 _ = tokio::signal::ctrl_c() => {
                     info!("daemon shutting down from signal");
                     sessions.close_all();
+                    webrtc_mgr.close_all().await;
                     let _ = write_audit_event(AuditEvent {
                         event_type: "daemon_stopped".to_string(),
                         host_id: Some(host_id.clone()),
@@ -302,6 +352,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
 
         // Reconcile stale local session resources after disconnects.
         sessions.close_all();
+        webrtc_mgr.close_all().await;
         for session in &mut store.state.sessions {
             if !matches!(session.state, SessionState::Ended | SessionState::Failed) {
                 session.state = SessionState::Failed;
@@ -342,6 +393,7 @@ async fn handle_signal(
     sessions: &mut SessionManager,
     msg: SignalEnvelope,
     ws: &mut crate::transport::WsStream,
+    webrtc_mgr: &mut WebRtcManager,
 ) -> Result<()> {
     match msg.message_type.as_str() {
         "session_request" => {
@@ -537,6 +589,41 @@ async fn handle_signal(
                         _ => {}
                     }
                 }
+                "files" => {
+                    let request_id = payload
+                        .get("request_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+
+                    let result = crate::files::handle_files_action(&payload).await;
+                    let response_payload = match result {
+                        Ok(data) => serde_json::json!({
+                            "channel": "files",
+                            "response_to": request_id,
+                            "status": "ok",
+                            "data": data
+                        }),
+                        Err(err) => serde_json::json!({
+                            "channel": "files",
+                            "response_to": request_id,
+                            "status": "error",
+                            "error": err.to_string(),
+                            "error_code": "operation_failed"
+                        }),
+                    };
+
+                    let response = SignalEnvelope {
+                        message_type: "signal".to_string(),
+                        session_id: Some(session_id),
+                        payload: Some(response_payload),
+                        state: None,
+                        accepted: None,
+                        reason: None,
+                        extra: std::collections::HashMap::new(),
+                    };
+                    send_signal(ws, &response).await?;
+                }
                 _ => {}
             }
             store.save()?;
@@ -554,8 +641,70 @@ async fn handle_signal(
                 store.save()?;
             }
         }
-        "session_offer" | "ice_candidate" => {
-            // WebRTC signaling — host uses relay, not P2P. Ignore silently.
+        "session_offer" => {
+            let sid = msg.session_id.as_deref().unwrap_or_default();
+            let mobile_device_id = store
+                .state
+                .sessions
+                .iter()
+                .find(|s| s.session_id == sid)
+                .map(|s| s.mobile_device_id.clone())
+                .unwrap_or_default();
+
+            if let Some(payload) = &msg.payload {
+                if let Some(offer_sdp) = payload.get("sdp").and_then(|v| v.as_str()) {
+                    let token = store.access_token()?.to_string();
+                    match backend.turn_credentials(&token).await {
+                        Ok((username, credential, _ttl, uris)) => {
+                            match webrtc_mgr
+                                .handle_offer(&mobile_device_id, uris, username, credential, offer_sdp)
+                                .await
+                            {
+                                Ok(answer_sdp) => {
+                                    let answer_msg = SignalEnvelope {
+                                        message_type: "session_answer".to_string(),
+                                        session_id: msg.session_id.clone(),
+                                        payload: Some(serde_json::json!({ "sdp": answer_sdp })),
+                                        state: None,
+                                        accepted: None,
+                                        reason: None,
+                                        extra: std::collections::HashMap::new(),
+                                    };
+                                    let _ = send_signal(ws, &answer_msg).await;
+                                }
+                                Err(e) => {
+                                    warn!("webrtc handle_offer failed: {}", e);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!("failed to fetch TURN credentials: {}", e);
+                        }
+                    }
+                }
+            }
+        }
+        "ice_candidate" => {
+            let sid = msg.session_id.as_deref().unwrap_or_default();
+            let mobile_device_id = store
+                .state
+                .sessions
+                .iter()
+                .find(|s| s.session_id == sid)
+                .map(|s| s.mobile_device_id.clone())
+                .unwrap_or_default();
+
+            if let Some(payload) = &msg.payload {
+                if let Ok(candidate) =
+                    serde_json::from_value::<webrtc::ice_transport::ice_candidate::RTCIceCandidateInit>(
+                        payload.clone(),
+                    )
+                {
+                    if let Err(e) = webrtc_mgr.add_ice_candidate(&mobile_device_id, candidate).await {
+                        warn!("webrtc add_ice_candidate failed: {}", e);
+                    }
+                }
+            }
         }
         "alert_preferences_sync" => {
             if let Some(payload) = msg.payload {
