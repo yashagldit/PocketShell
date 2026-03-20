@@ -1,4 +1,4 @@
-use crate::api::{derive_access_expiry, BackendClient};
+use crate::api::{derive_access_expiry, BackendClient, HeartbeatAction};
 use crate::audit::{write_audit_event, AuditEvent};
 use crate::config::AppConfig;
 use crate::discovery::SessionDiscovery;
@@ -7,14 +7,103 @@ use crate::models::{AttachTarget, HeartbeatRequest, SessionRecord, SessionReques
 use crate::pty::SessionManager;
 use crate::secure::{require_refresh_token, token_is_expiring};
 use crate::session::accept_session;
+use crate::models::StatsSnapshot;
 use crate::stats::StatsCollector;
 use crate::store::StateStore;
 use crate::transport::{connect_host_ws, recv_signal, send_signal};
 use crate::webrtc_manager::{WebRtcEvent, WebRtcManager};
 use base64::Engine;
 use chrono::Utc;
+use std::collections::HashMap;
 use tokio::time::{interval, sleep, Duration, Instant};
 use tracing::{error, info, warn};
+
+/// Whether the backend kill-action is honored. Set to false during testing.
+const HONOR_KILL_ACTION: bool = false;
+
+/// In-progress file transfer from a mobile device.
+struct PendingFileTransfer {
+    name: String,
+    chunks: Vec<String>,
+}
+
+/// Handle a file transfer protocol message (sentinel already stripped).
+fn handle_file_transfer_msg(
+    transfers: &mut HashMap<String, PendingFileTransfer>,
+    session_id: &str,
+    json_str: &str,
+    sessions: &mut crate::pty::SessionManager,
+) {
+    let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str) else {
+        warn!("invalid file transfer JSON");
+        return;
+    };
+
+    let op = val.get("op").and_then(|v| v.as_str()).unwrap_or_default();
+    let id = val.get("id").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+
+    match op {
+        "start" => {
+            let name = val.get("name").and_then(|v| v.as_str()).unwrap_or("clipboard.jpg").to_string();
+            let chunks = val.get("chunks").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
+            transfers.insert(id, PendingFileTransfer {
+                name,
+                chunks: Vec::with_capacity(chunks),
+            });
+        }
+        "chunk" => {
+            if let Some(transfer) = transfers.get_mut(&id) {
+                let data = val.get("d").and_then(|v| v.as_str()).unwrap_or_default();
+                transfer.chunks.push(data.to_string());
+            }
+        }
+        "end" => {
+            if let Some(transfer) = transfers.remove(&id) {
+                let full_b64: String = transfer.chunks.concat();
+                match base64::engine::general_purpose::STANDARD.decode(&full_b64) {
+                    Ok(image_bytes) => {
+                        // Determine extension from name
+                        let ext = transfer.name
+                            .rsplit('.')
+                            .next()
+                            .unwrap_or("jpg");
+                        let temp_name = format!(
+                            "pocketshell-paste-{}.{}",
+                            chrono::Utc::now().format("%Y%m%d-%H%M%S-%3f"),
+                            ext,
+                        );
+                        let temp_path = format!("/tmp/{}", temp_name);
+
+                        match std::fs::write(&temp_path, &image_bytes) {
+                            Ok(_) => {
+                                info!(
+                                    "file transfer complete: {} ({} bytes) -> {}",
+                                    transfer.name,
+                                    image_bytes.len(),
+                                    temp_path,
+                                );
+                                // Inject the file path into the PTY as terminal input
+                                let path_bytes = temp_path.as_bytes().to_vec();
+                                if let Err(e) = sessions.write_input(session_id, path_bytes) {
+                                    warn!("failed to inject file path into PTY: {}", e);
+                                }
+                            }
+                            Err(e) => {
+                                warn!("failed to write temp file {}: {}", temp_path, e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!("file transfer base64 decode failed: {}", e);
+                    }
+                }
+            }
+        }
+        _ => {
+            warn!("unknown file transfer op: {}", op);
+        }
+    }
+}
 
 pub async fn run_foreground(config: AppConfig) -> Result<()> {
     if let Some(min) = &config.min_backend_host_version {
@@ -40,6 +129,9 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
     let mut webrtc_mgr = WebRtcManager::new(webrtc_event_tx);
     let shell = AppConfig::default_shell();
 
+    let mut file_transfers: HashMap<String, PendingFileTransfer> = HashMap::new();
+    let mut minute_stats_buffer: Vec<StatsSnapshot> = Vec::with_capacity(5);
+
     info!("daemon starting for host_id={}", host_id);
     let _ = write_audit_event(AuditEvent {
         event_type: "daemon_started".to_string(),
@@ -53,13 +145,18 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
         match refresh_auth_if_needed(&backend, &mut store).await {
             Ok(()) => {}
             Err(HostError::AuthRevoked) => {
-                warn!("authentication expired — waiting for re-login via `myapp login`");
-                sleep(Duration::from_secs(30)).await;
-                // Reload state in case user ran `myapp login` in another terminal
+                warn!("authentication expired — waiting for re-pairing via `pocketshell pair`");
+                sleep(Duration::from_secs(60)).await;
+                // Reload state in case user ran `pocketshell login` in another terminal
                 store = StateStore::load()?;
                 continue;
             }
-            Err(err) => return Err(err),
+            Err(err) => {
+                warn!("auth refresh failed: {} — retrying in 30s", err);
+                sleep(Duration::from_secs(30)).await;
+                store = StateStore::load()?;
+                continue;
+            }
         }
         let token = store.access_token()?.to_string();
         let mut last_tick;
@@ -84,6 +181,10 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
         stats_bg_tick.tick().await; // skip immediate first tick
         let mut output_tick = interval(Duration::from_millis(40));
         let mut trusted_devices_tick = interval(Duration::from_secs(30));
+        let mut stats_minute_tick = interval(Duration::from_secs(60));
+        stats_minute_tick.tick().await; // skip immediate first tick
+        let mut stats_minute_flush_tick = interval(Duration::from_secs(5 * 60));
+        stats_minute_flush_tick.tick().await; // skip immediate first tick
         let mut alert_tick = interval(Duration::from_secs(config.alert_check_interval_secs));
         let mut alert_checker = crate::alerts::AlertChecker::new();
         let mut discovery_tick = interval(Duration::from_secs(15));
@@ -102,12 +203,12 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                     match refresh_auth_if_needed(&backend, &mut store).await {
                         Ok(()) => {}
                         Err(HostError::AuthRevoked) => {
-                            warn!("authentication expired — run `myapp login` to re-authenticate");
+                            warn!("authentication expired — run `pocketshell pair` to re-authenticate");
                             break; // reconnect loop will retry after reload
                         }
                         Err(err) => {
-                            warn!("token refresh failed: {}", err);
-                            break;
+                            warn!("token refresh failed: {} — will retry next tick", err);
+                            continue;
                         }
                     }
 
@@ -118,8 +219,23 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                     };
 
                     let token = store.access_token()?.to_string();
-                    if let Err(err) = backend.send_heartbeat(&token, &payload).await {
-                        warn!("heartbeat failed: {}", err);
+                    match backend.send_heartbeat(&token, &payload).await {
+                        Ok(HeartbeatAction::Kill) if HONOR_KILL_ACTION => {
+                            info!("backend requested shutdown — stopping daemon");
+                            sessions.close_all();
+                            webrtc_mgr.close_all().await;
+                            let _ = write_audit_event(AuditEvent {
+                                event_type: "daemon_stopped".to_string(),
+                                host_id: Some(host_id.clone()),
+                                ..AuditEvent::new("daemon_stopped")
+                            });
+                            store.save()?;
+                            return Ok(());
+                        }
+                        Ok(_) => {}
+                        Err(err) => {
+                            warn!("heartbeat failed: {}", err);
+                        }
                     }
 
                     store.clear_ended_sessions(config.stale_session_secs as i64);
@@ -203,6 +319,33 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                         }
                     }
                 }
+                _ = stats_minute_tick.tick() => {
+                    let snapshot = stats.snapshot();
+                    minute_stats_buffer.push(snapshot);
+                    // Cap buffer to avoid unbounded growth if flush fails
+                    if minute_stats_buffer.len() > 5 {
+                        minute_stats_buffer.drain(..minute_stats_buffer.len() - 5);
+                    }
+                }
+                _ = stats_minute_flush_tick.tick() => {
+                    if !minute_stats_buffer.is_empty() {
+                        let batch: Vec<StatsSnapshot> = minute_stats_buffer.drain(..).collect();
+                        let msg = SignalEnvelope {
+                            message_type: "stats_minute_batch".to_string(),
+                            session_id: None,
+                            payload: Some(serde_json::to_value(&batch).unwrap_or(serde_json::json!([]))),
+                            state: None,
+                            accepted: None,
+                            reason: None,
+                            extra: std::collections::HashMap::new(),
+                        };
+                        if let Err(err) = send_signal(&mut ws, &msg).await {
+                            warn!("stats minute batch send failed: {}", err);
+                            break;
+                        }
+                        info!("sent stats_minute_batch with {} snapshots", batch.len());
+                    }
+                }
                 _ = output_tick.tick() => {
                     for chunk in sessions.drain_output() {
                         if webrtc_mgr.send_output(&chunk.session_id, &chunk.bytes).await {
@@ -273,7 +416,12 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                 Some(webrtc_event) = webrtc_event_rx.recv() => {
                     match webrtc_event {
                         WebRtcEvent::Input { session_id, data } => {
-                            if let Err(e) = sessions.write_input(&session_id, data) {
+                            // Check for file transfer sentinel: \x00PSFT
+                            if data.len() > 5 && data[0] == 0x00 && &data[1..5] == b"PSFT" {
+                                if let Ok(json_str) = std::str::from_utf8(&data[5..]) {
+                                    handle_file_transfer_msg(&mut file_transfers, &session_id, json_str, &mut sessions);
+                                }
+                            } else if let Err(e) = sessions.write_input(&session_id, data) {
                                 warn!("webrtc input write failed: {}", e);
                             }
                         }
@@ -318,6 +466,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                 msg,
                                 &mut ws,
                                 &mut webrtc_mgr,
+                                &mut file_transfers,
                             ).await {
                                 error!("control message handling failed: {}", err);
                             }
@@ -349,6 +498,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
         // Reset stats subscription on disconnect.
         stats_active = false;
         stats_deadline = None;
+        minute_stats_buffer.clear();
 
         // Reconcile stale local session resources after disconnects.
         sessions.close_all();
@@ -374,7 +524,22 @@ async fn refresh_auth_if_needed(backend: &BackendClient, store: &mut StateStore)
     }
 
     let refresh = require_refresh_token(&auth)?;
-    let tokens = backend.refresh_tokens(&refresh).await?;
+    let tokens = match backend.refresh_tokens(&refresh).await {
+        Ok(t) => t,
+        Err(HostError::AuthRevoked) => {
+            // Before giving up, reload state — another process may have refreshed
+            let reloaded = StateStore::load()?;
+            if let Some(ref reloaded_auth) = reloaded.state.auth {
+                if !token_is_expiring(reloaded_auth.access_expires_at, 60) {
+                    // Another process already refreshed the token
+                    *store = reloaded;
+                    return Ok(());
+                }
+            }
+            return Err(HostError::AuthRevoked);
+        }
+        Err(e) => return Err(e),
+    };
 
     let expires = derive_access_expiry(&tokens.access_token);
     store.state.auth = Some(crate::models::AuthState {
@@ -382,7 +547,11 @@ async fn refresh_auth_if_needed(backend: &BackendClient, store: &mut StateStore)
         refresh_token: tokens.refresh_token,
         access_expires_at: expires,
     });
-    store.save()?;
+    // Persist immediately — losing the new refresh token means auth death
+    if let Err(e) = store.save() {
+        warn!("failed to persist refreshed tokens: {}", e);
+        return Err(e);
+    }
     Ok(())
 }
 
@@ -394,6 +563,7 @@ async fn handle_signal(
     msg: SignalEnvelope,
     ws: &mut crate::transport::WsStream,
     webrtc_mgr: &mut WebRtcManager,
+    file_transfers: &mut HashMap<String, PendingFileTransfer>,
 ) -> Result<()> {
     match msg.message_type.as_str() {
         "session_request" => {
@@ -530,7 +700,15 @@ async fn handle_signal(
                     } else {
                         return Err(HostError::Backend("missing terminal data".to_string()));
                     };
-                    sessions.write_input(&session_id, bytes)?;
+
+                    // Check for file transfer sentinel via signaling relay
+                    if bytes.len() > 5 && bytes[0] == 0x00 && &bytes[1..5] == b"PSFT" {
+                        if let Ok(json_str) = std::str::from_utf8(&bytes[5..]) {
+                            handle_file_transfer_msg(file_transfers, &session_id, json_str, sessions);
+                        }
+                    } else {
+                        sessions.write_input(&session_id, bytes)?;
+                    }
 
                     if let Some(record) = store.state.sessions.iter().find(|s| s.session_id == session_id) {
                         if matches!(record.state, SessionState::Approved | SessionState::Connecting) {

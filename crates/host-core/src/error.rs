@@ -4,11 +4,11 @@ use thiserror::Error;
 pub enum HostError {
     #[error("configuration error: {0}")]
     Config(String),
-    #[error("not logged in: run `myapp login` first")]
+    #[error("not paired: run `pocketshell pair <CODE>` first")]
     NotLoggedIn,
     #[error("backend request failed: {0}")]
     Backend(String),
-    #[error("authentication revoked or invalid; please run `myapp login` again")]
+    #[error("authentication revoked or invalid; please run `pocketshell pair <CODE>` again")]
     AuthRevoked,
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),

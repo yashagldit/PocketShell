@@ -60,6 +60,16 @@ pub struct HostApiResponse {
     pub status: String,
 }
 
+/// Combined response from pairing code validation: host info + auth tokens.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PairingValidateResponse {
+    #[serde(flatten)]
+    pub host: HostApiResponse,
+    pub access_token: String,
+    pub refresh_token: String,
+    pub token_type: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrustedDeviceRecord {
     pub id: String,

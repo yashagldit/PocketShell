@@ -6,7 +6,7 @@ license.workspace = true
 authors.workspace = true
 
 [[bin]]
-name = "myapp"
+name = "pocketshell"
 path = "src/main.rs"
 
 [dependencies]

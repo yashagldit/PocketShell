@@ -21,7 +21,7 @@ use tokio::time::sleep;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
-#[command(name = "myapp")]
+#[command(name = "pocketshell")]
 #[command(about = "PocketShell host agent")]
 struct Cli {
     #[command(subcommand)]
@@ -30,13 +30,10 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    Login {
-        #[arg(long)]
-        email: Option<String>,
-        #[arg(long)]
-        otp: Option<String>,
-        #[arg(long)]
-        pairing_code: Option<String>,
+    /// Register this host using a pairing code from the mobile app
+    Pair {
+        /// Pairing code displayed in the mobile app
+        code: Option<String>,
     },
     Logout {
         #[arg(long)]
@@ -97,11 +94,9 @@ async fn main() -> Result<()> {
     let config = AppConfig::from_env();
 
     match cli.command {
-        Commands::Login {
-            email,
-            otp,
-            pairing_code,
-        } => login(config, email, otp, pairing_code).await,
+        Commands::Pair {
+            code,
+        } => pair(config, code).await,
         Commands::Logout { reset } => logout(reset),
         Commands::Status => status(config).await,
         Commands::Devices { command } => devices(config, command).await,
@@ -123,33 +118,13 @@ fn init_logging() {
     tracing_subscriber::fmt().with_env_filter(filter).init();
 }
 
-async fn login(
+async fn pair(
     config: AppConfig,
-    email: Option<String>,
-    otp: Option<String>,
-    pairing_code: Option<String>,
+    code: Option<String>,
 ) -> Result<()> {
     let mut store = StateStore::load().context("loading local state")?;
-    let email = email.unwrap_or_else(|| prompt("Email: "));
 
-    let backend = BackendClient::new(config.backend_base_url.clone());
-
-    // Skip OTP request when OTP is already provided (non-interactive usage)
-    let otp = if let Some(code) = otp {
-        code
-    } else {
-        backend
-            .request_otp(&email)
-            .await
-            .context("requesting OTP")?;
-        prompt("OTP code: ")
-    };
-    let tokens = backend
-        .verify_otp(&email, &otp)
-        .await
-        .context("verifying OTP")?;
-
-    let pairing_code = pairing_code.unwrap_or_else(|| prompt("Pairing code: "));
+    let pairing_code = code.unwrap_or_else(|| prompt("Pairing code: "));
 
     let hostname = std::env::var("HOSTNAME")
         .unwrap_or_else(|_| whoami::fallible::hostname().unwrap_or_else(|_| "unknown".to_string()));
@@ -158,29 +133,27 @@ async fn login(
     let (public_key, private_key) = generate_keypair();
     persist_private_key(&private_key);
 
-    let host = backend
-        .validate_pairing_code(
-            &tokens.access_token,
-            &PairingValidateRequest {
-                code: pairing_code,
-                hostname: hostname.clone(),
-                platform: platform.clone(),
-                public_key: public_key.clone(),
-                app_version: Some(config.app_version.clone()),
-            },
-        )
+    let backend = BackendClient::new(config.backend_base_url.clone());
+    let response = backend
+        .validate_pairing_code(&PairingValidateRequest {
+            code: pairing_code,
+            hostname: hostname.clone(),
+            platform: platform.clone(),
+            public_key: public_key.clone(),
+            app_version: Some(config.app_version.clone()),
+        })
         .await
         .context("validating pairing code")?;
 
     store.state.auth = Some(AuthState {
-        access_token: tokens.access_token.clone(),
-        refresh_token: tokens.refresh_token.clone(),
-        access_expires_at: derive_access_expiry(&tokens.access_token)
-            .or_else(|| parse_jwt_exp(&tokens.access_token)),
+        access_token: response.access_token.clone(),
+        refresh_token: response.refresh_token.clone(),
+        access_expires_at: derive_access_expiry(&response.access_token)
+            .or_else(|| parse_jwt_exp(&response.access_token)),
     });
     store.state.host = Some(HostIdentity {
-        host_id: host.id.clone(),
-        user_id: host.user_id,
+        host_id: response.host.id.clone(),
+        user_id: response.host.user_id,
         hostname,
         platform,
         app_version: config.app_version,
@@ -191,11 +164,12 @@ async fn login(
 
     let _ = write_audit_event(AuditEvent {
         event_type: "login_success".to_string(),
-        host_id: Some(host.id),
+        host_id: Some(response.host.id),
         ..AuditEvent::new("login_success")
     });
 
-    println!("login successful");
+    println!("login successful — host registered as {}", response.host.hostname);
+    println!("run `pocketshell daemon start` to begin accepting connections");
     Ok(())
 }
 

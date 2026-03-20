@@ -1,11 +1,19 @@
 use crate::error::{HostError, Result};
 use crate::models::{
-    HeartbeatRequest, HostApiResponse, PairingValidateRequest, SessionState, TokenPairResponse,
-    TrustedDeviceRecord,
+    HeartbeatRequest, PairingValidateRequest, PairingValidateResponse,
+    SessionState, TokenPairResponse, TrustedDeviceRecord,
 };
 use crate::secure::parse_jwt_exp;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use reqwest::{Client, StatusCode};
+
+/// Optional action the backend can request via heartbeat response.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HeartbeatAction {
+    None,
+    /// Backend requests the daemon to shut down (e.g. free-tier limit).
+    Kill,
+}
 
 #[derive(Clone)]
 pub struct BackendClient {
@@ -19,45 +27,6 @@ impl BackendClient {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             client: Client::new(),
         }
-    }
-
-    pub async fn request_otp(&self, email: &str) -> Result<()> {
-        let url = format!("{}/api/v1/auth/otp/request", self.base_url);
-        let res = self
-            .client
-            .post(url)
-            .header(CONTENT_TYPE, "application/json")
-            .json(&serde_json::json!({"email": email}))
-            .send()
-            .await
-            .map_err(|e| HostError::Backend(e.to_string()))?;
-
-        if res.status() != StatusCode::ACCEPTED {
-            let body = res.text().await.unwrap_or_default();
-            return Err(HostError::Backend(format!("otp request failed: {body}")));
-        }
-        Ok(())
-    }
-
-    pub async fn verify_otp(&self, email: &str, otp_code: &str) -> Result<TokenPairResponse> {
-        let url = format!("{}/api/v1/auth/otp/verify", self.base_url);
-        let res = self
-            .client
-            .post(url)
-            .header(CONTENT_TYPE, "application/json")
-            .json(&serde_json::json!({"email": email, "otp_code": otp_code}))
-            .send()
-            .await
-            .map_err(|e| HostError::Backend(e.to_string()))?;
-
-        if !res.status().is_success() {
-            let body = res.text().await.unwrap_or_default();
-            return Err(HostError::Backend(format!("otp verify failed: {body}")));
-        }
-
-        res.json::<TokenPairResponse>()
-            .await
-            .map_err(|e| HostError::Backend(format!("invalid auth payload: {e}")))
     }
 
     pub async fn refresh_tokens(&self, refresh_token: &str) -> Result<TokenPairResponse> {
@@ -87,14 +56,12 @@ impl BackendClient {
 
     pub async fn validate_pairing_code(
         &self,
-        access_token: &str,
         payload: &PairingValidateRequest,
-    ) -> Result<HostApiResponse> {
+    ) -> Result<PairingValidateResponse> {
         let url = format!("{}/api/v1/pairing/codes/validate", self.base_url);
         let res = self
             .client
             .post(url)
-            .header(AUTHORIZATION, format!("Bearer {access_token}"))
             .json(payload)
             .send()
             .await
@@ -105,12 +72,12 @@ impl BackendClient {
             return Err(HostError::Backend(format!("pairing validate failed: {body}")));
         }
 
-        res.json::<HostApiResponse>()
+        res.json::<PairingValidateResponse>()
             .await
             .map_err(|e| HostError::Backend(format!("invalid host registration payload: {e}")))
     }
 
-    pub async fn send_heartbeat(&self, token: &str, payload: &HeartbeatRequest) -> Result<()> {
+    pub async fn send_heartbeat(&self, token: &str, payload: &HeartbeatRequest) -> Result<HeartbeatAction> {
         let url = format!("{}/api/v1/presence/hosts/{}", self.base_url, payload.host_id);
         let res = self
             .client
@@ -131,7 +98,19 @@ impl BackendClient {
             )));
         }
 
-        Ok(())
+        // Check if backend is requesting an action (e.g. kill for free-tier)
+        let body: serde_json::Value = res
+            .json()
+            .await
+            .map_err(|e| HostError::Backend(format!("invalid heartbeat response: {e}")))?;
+
+        if let Some(action) = body.get("action").and_then(|v| v.as_str()) {
+            if action == "kill" {
+                return Ok(HeartbeatAction::Kill);
+            }
+        }
+
+        Ok(HeartbeatAction::None)
     }
 
     pub async fn list_trusted_devices(
