@@ -12,6 +12,7 @@ pub struct AppConfig {
     pub stats_interval_secs: u64,
     pub session_limit: usize,
     pub stale_session_secs: u64,
+    pub detach_max_secs: u64,
     pub alert_check_interval_secs: u64,
 }
 
@@ -53,6 +54,11 @@ impl AppConfig {
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(300);
 
+        let detach_max_secs = env::var("POCKETSHELL_DETACH_MAX_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(86400); // 24 hours default
+
         let alert_check_interval_secs = env::var("POCKETSHELL_ALERT_CHECK_SECS")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
@@ -67,6 +73,7 @@ impl AppConfig {
             stats_interval_secs,
             session_limit,
             stale_session_secs,
+            detach_max_secs,
             alert_check_interval_secs,
         }
     }

@@ -19,13 +19,58 @@ pub struct AvailableSession {
 pub struct SessionDiscovery;
 
 impl SessionDiscovery {
-    /// Discover all tmux, screen, and manually exposed sessions on this host.
+    /// Discover all tmux, screen, manually exposed, and PocketShell persistent sessions on this host.
     pub fn discover() -> Vec<AvailableSession> {
         let mut sessions = Vec::new();
+        sessions.extend(Self::discover_pocketshell());
         sessions.extend(Self::discover_exposed());
         sessions.extend(Self::discover_tmux());
         sessions.extend(Self::discover_screen());
         sessions
+    }
+
+    /// Discover PocketShell-managed persistent tmux sessions (prefixed with "ps-").
+    fn discover_pocketshell() -> Vec<AvailableSession> {
+        let output = Command::new("tmux")
+            .args(["list-sessions", "-F", "#{session_name}\t#{session_attached}\t#{session_created}\t#{session_windows}"])
+            .output();
+
+        let output = match output {
+            Ok(o) if o.status.success() => o,
+            _ => return Vec::new(),
+        };
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        stdout
+            .lines()
+            .filter_map(|line| {
+                let parts: Vec<&str> = line.split('\t').collect();
+                if parts.len() < 4 {
+                    return None;
+                }
+                let name = parts[0];
+                // Only include PocketShell-managed sessions
+                if !name.starts_with("ps-") {
+                    return None;
+                }
+                let display_name = name.strip_prefix("ps-").unwrap_or(name).to_string();
+                let attached = parts[1] == "1";
+                let created_at = parts[2]
+                    .parse::<i64>()
+                    .ok()
+                    .and_then(|ts| DateTime::from_timestamp(ts, 0));
+                let windows = parts[3].parse::<u32>().unwrap_or(1);
+
+                Some(AvailableSession {
+                    name: display_name,
+                    session_type: "pocketshell".to_string(),
+                    attached,
+                    created_at,
+                    windows,
+                    pty_path: None,
+                })
+            })
+            .collect()
     }
 
     /// Register a named shell session via marker file with the current PTY path.
@@ -138,6 +183,10 @@ impl SessionDiscovery {
                     return None;
                 }
                 let name = parts[0].to_string();
+                // Skip PocketShell-managed sessions — they appear under "pocketshell" type
+                if name.starts_with("ps-") {
+                    return None;
+                }
                 let attached = parts[1] == "1";
                 let created_at = parts[2]
                     .parse::<i64>()

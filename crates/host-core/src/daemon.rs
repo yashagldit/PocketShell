@@ -124,7 +124,17 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
     let mut stats = StatsCollector::new();
     let mut stats_active = false;
     let mut stats_deadline: Option<Instant> = None;
-    let mut sessions = SessionManager::new(config.session_limit);
+    let has_tmux = std::process::Command::new("tmux")
+        .arg("-V")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if has_tmux {
+        info!("tmux detected — sessions will be persistent");
+    } else {
+        info!("tmux not found — sessions will be ephemeral");
+    }
+    let mut sessions = SessionManager::new(config.session_limit, has_tmux);
     let (webrtc_event_tx, mut webrtc_event_rx) = tokio::sync::mpsc::unbounded_channel::<WebRtcEvent>();
     let mut webrtc_mgr = WebRtcManager::new(webrtc_event_tx);
     let shell = AppConfig::default_shell();
@@ -238,7 +248,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                         }
                     }
 
-                    store.clear_ended_sessions(config.stale_session_secs as i64);
+                    store.clear_ended_sessions(config.stale_session_secs as i64, config.detach_max_secs as i64);
                     let _ = store.save();
                 }
                 _ = trusted_devices_tick.tick() => {
@@ -500,14 +510,20 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
         stats_deadline = None;
         minute_stats_buffer.clear();
 
-        // Reconcile stale local session resources after disconnects.
-        sessions.close_all();
+        // Reconcile session resources after WebSocket disconnect.
+        // Persistent (tmux-backed) sessions survive — only I/O threads are stopped.
+        let detached_ids = sessions.detach_all();
         webrtc_mgr.close_all().await;
         for session in &mut store.state.sessions {
-            if !matches!(session.state, SessionState::Ended | SessionState::Failed) {
-                session.state = SessionState::Failed;
-                session.updated_at = Utc::now();
+            if matches!(session.state, SessionState::Ended | SessionState::Failed) {
+                continue;
             }
+            if detached_ids.contains(&session.session_id) {
+                session.state = SessionState::Detached;
+            } else {
+                session.state = SessionState::Failed;
+            }
+            session.updated_at = Utc::now();
         }
         let _ = store.save();
     }
@@ -657,11 +673,15 @@ async fn handle_signal(
                     .transition_session(&token, &session_id, SessionState::Connected, None)
                     .await?;
 
+                let is_persistent = sessions.is_persistent(&session_id);
+                let tmux_name = sessions.tmux_session_name(&session_id);
                 store.upsert_session(SessionRecord {
                     session_id: session_id.clone(),
                     mobile_device_id: mobile_device_id.clone(),
                     state: SessionState::Connected,
                     updated_at: Utc::now(),
+                    persistent: is_persistent,
+                    tmux_session_name: tmux_name,
                 });
                 let _ = write_audit_event(AuditEvent {
                     event_type: "session_started".to_string(),
@@ -741,7 +761,51 @@ async fn handle_signal(
                             let rows = payload.get("rows").and_then(|v| v.as_u64()).unwrap_or(30) as u16;
                             sessions.resize(&session_id, cols, rows)?;
                         }
+                        "session_detach" => {
+                            // Mobile wants to detach (keep session alive for later).
+                            let was_persistent = sessions.detach_session(&session_id).unwrap_or(false);
+                            if was_persistent {
+                                store.touch_session_state(&session_id, SessionState::Detached);
+                                let detach_event = SignalEnvelope {
+                                    message_type: "session_event".to_string(),
+                                    session_id: Some(session_id.clone()),
+                                    payload: None,
+                                    state: Some("detached".to_string()),
+                                    accepted: None,
+                                    reason: None,
+                                    extra: std::collections::HashMap::new(),
+                                };
+                                let _ = send_signal(ws, &detach_event).await;
+                                let token = store.access_token()?.to_string();
+                                let _ = backend
+                                    .transition_session(&token, &session_id, SessionState::Detached, None)
+                                    .await;
+                                let _ = write_audit_event(AuditEvent {
+                                    event_type: "session_detached".to_string(),
+                                    session_id: Some(session_id),
+                                    ..AuditEvent::new("session_detached")
+                                });
+                            } else {
+                                // Non-persistent session — detach acts as close
+                                store.touch_session_state(&session_id, SessionState::Ended);
+                                let ended_event = SignalEnvelope {
+                                    message_type: "session_event".to_string(),
+                                    session_id: Some(session_id.clone()),
+                                    payload: None,
+                                    state: Some("ended".to_string()),
+                                    accepted: None,
+                                    reason: None,
+                                    extra: std::collections::HashMap::new(),
+                                };
+                                let _ = send_signal(ws, &ended_event).await;
+                                let token = store.access_token()?.to_string();
+                                let _ = backend
+                                    .transition_session(&token, &session_id, SessionState::Ended, None)
+                                    .await;
+                            }
+                        }
                         "disconnect" | "session_close" => {
+                            // Explicit close — kills the session (including tmux if persistent).
                             sessions.close_session(&session_id)?;
                             store.touch_session_state(&session_id, SessionState::Ended);
                             let ended_event = SignalEnvelope {
@@ -806,6 +870,111 @@ async fn handle_signal(
             }
             store.save()?;
         }
+        "session_join" => {
+            // A device wants to join (reconnect to) an existing persistent session.
+            let Some(session_id) = msg.session_id else {
+                return Ok(());
+            };
+            let mobile_device_id = msg
+                .extra
+                .get("mobile_device_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let cols = msg
+                .extra
+                .get("cols")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(120) as u16;
+            let rows = msg
+                .extra
+                .get("rows")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(30) as u16;
+
+            if !store.is_trusted(&mobile_device_id) {
+                let reject = SignalEnvelope {
+                    message_type: "session_ack".to_string(),
+                    session_id: Some(session_id.clone()),
+                    payload: None,
+                    state: Some("failed".to_string()),
+                    accepted: Some(false),
+                    reason: Some("device_not_trusted".to_string()),
+                    extra: std::collections::HashMap::new(),
+                };
+                send_signal(ws, &reject).await?;
+                return Ok(());
+            }
+
+            // If session is already active in SessionManager (another device is using it),
+            // we just need to ACK — the new WebRTC channel will be added via session_offer.
+            // If session is detached (not in SessionManager but tmux is alive), reconnect.
+            let needs_reconnect = !sessions.is_active(&session_id);
+            let accept = if needs_reconnect {
+                sessions.reconnect_session(session_id.clone(), cols, rows).is_ok()
+            } else {
+                true
+            };
+
+            let ack = SignalEnvelope {
+                message_type: "session_ack".to_string(),
+                session_id: Some(session_id.clone()),
+                payload: None,
+                state: Some(if accept { "approved" } else { "failed" }.to_string()),
+                accepted: Some(accept),
+                reason: if accept { None } else { Some("reconnect_failed".to_string()) },
+                extra: std::collections::HashMap::new(),
+            };
+            send_signal(ws, &ack).await?;
+
+            if accept {
+                let event = SignalEnvelope {
+                    message_type: "session_event".to_string(),
+                    session_id: Some(session_id.clone()),
+                    payload: None,
+                    state: Some("connected".to_string()),
+                    accepted: None,
+                    reason: None,
+                    extra: std::collections::HashMap::new(),
+                };
+                let _ = send_signal(ws, &event).await;
+
+                // Send scrollback replay ONLY to the joining device (not all viewers)
+                if let Ok(scrollback) = SessionManager::capture_scrollback(&session_id) {
+                    if !scrollback.is_empty() {
+                        let mut extra = std::collections::HashMap::new();
+                        extra.insert("target_mobile_device_id".to_string(), serde_json::json!(mobile_device_id));
+                        let replay_msg = SignalEnvelope {
+                            message_type: "session_replay".to_string(),
+                            session_id: Some(session_id.clone()),
+                            payload: Some(serde_json::json!({
+                                "data_b64": base64::engine::general_purpose::STANDARD.encode(&scrollback)
+                            })),
+                            state: None,
+                            accepted: None,
+                            reason: None,
+                            extra,
+                        };
+                        let _ = send_signal(ws, &replay_msg).await;
+                    }
+                }
+
+                let token = store.access_token()?.to_string();
+                let _ = backend
+                    .transition_session(&token, &session_id, SessionState::Connected, None)
+                    .await;
+
+                store.upsert_session(SessionRecord {
+                    session_id: session_id.clone(),
+                    mobile_device_id: mobile_device_id.clone(),
+                    state: SessionState::Connected,
+                    updated_at: Utc::now(),
+                    persistent: true,
+                    tmux_session_name: Some(format!("ps-{session_id}")),
+                });
+                store.save()?;
+            }
+        }
         "session_event" => {
             if let (Some(session_id), Some(state)) = (msg.session_id, msg.state) {
                 let mapped = match state.as_str() {
@@ -813,6 +982,7 @@ async fn handle_signal(
                     "connected" => SessionState::Connected,
                     "ended" => SessionState::Ended,
                     "failed" => SessionState::Failed,
+                    "detached" => SessionState::Detached,
                     _ => SessionState::Requested,
                 };
                 store.touch_session_state(&session_id, mapped);

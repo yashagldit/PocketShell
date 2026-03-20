@@ -87,15 +87,22 @@ pub struct SessionRecord {
     pub mobile_device_id: String,
     pub state: SessionState,
     pub updated_at: DateTime<Utc>,
+    /// Whether this session is backed by a persistent tmux session.
+    #[serde(default)]
+    pub persistent: bool,
+    /// The tmux session name (e.g. "ps-{session_id}") if persistent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tmux_session_name: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionState {
     Requested,
     Approved,
     Connecting,
     Connected,
+    Detached,
     Ended,
     Failed,
 }
@@ -107,6 +114,7 @@ impl SessionState {
             Self::Approved => "approved",
             Self::Connecting => "connecting",
             Self::Connected => "connected",
+            Self::Detached => "detached",
             Self::Ended => "ended",
             Self::Failed => "failed",
         }

@@ -20,8 +20,11 @@ pub enum WebRtcEvent {
 
 pub struct WebRtcManager {
     peers: HashMap<String, WebRtcPeer>,
-    session_channels: HashMap<String, Arc<RTCDataChannel>>,
-    session_to_mobile: HashMap<String, String>,
+    /// Multiple data channels per session — supports multi-device viewing.
+    session_channels: HashMap<String, Vec<Arc<RTCDataChannel>>>,
+    /// Maps (session_id, mobile_device_id) to the index range of channels owned by that mobile.
+    /// Used for cleanup when a specific mobile peer disconnects.
+    channel_owners: Vec<(String, String, Arc<RTCDataChannel>)>, // (session_id, mobile_device_id, channel)
     event_tx: mpsc::UnboundedSender<WebRtcEvent>,
 }
 
@@ -30,7 +33,7 @@ impl WebRtcManager {
         Self {
             peers: HashMap::new(),
             session_channels: HashMap::new(),
-            session_to_mobile: HashMap::new(),
+            channel_owners: Vec::new(),
             event_tx,
         }
     }
@@ -102,33 +105,41 @@ impl WebRtcManager {
         }
     }
 
+    /// Send output to all connected data channels for a session (fan-out).
     pub async fn send_output(&self, session_id: &str, data: &[u8]) -> bool {
-        if let Some(channel) = self.session_channels.get(session_id) {
+        if let Some(channels) = self.session_channels.get(session_id) {
+            if channels.is_empty() {
+                return false;
+            }
             let bytes = bytes::Bytes::copy_from_slice(data);
-            match channel.send(&bytes).await {
-                Ok(_) => true,
-                Err(e) => {
-                    warn!("webrtc send failed for session {}: {}", session_id, e);
-                    false
+            let mut any_sent = false;
+            for channel in channels {
+                match channel.send(&bytes).await {
+                    Ok(_) => any_sent = true,
+                    Err(e) => {
+                        warn!("webrtc send failed for session {}: {}", session_id, e);
+                    }
                 }
             }
+            any_sent
         } else {
             false
         }
     }
 
     pub fn has_channel(&self, session_id: &str) -> bool {
-        self.session_channels.contains_key(session_id)
+        self.session_channels.get(session_id).map_or(false, |v| !v.is_empty())
     }
 
     pub fn close_session(&mut self, session_id: &str) {
-        if let Some(channel) = self.session_channels.remove(session_id) {
-            // close() is async in webrtc 0.14 — spawn it
-            tokio::spawn(async move {
-                let _ = channel.close().await;
-            });
+        if let Some(channels) = self.session_channels.remove(session_id) {
+            for channel in channels {
+                tokio::spawn(async move {
+                    let _ = channel.close().await;
+                });
+            }
         }
-        self.session_to_mobile.remove(session_id);
+        self.channel_owners.retain(|(sid, _, _)| sid != session_id);
     }
 
     pub async fn close_peer(&mut self, mobile_device_id: &str) {
@@ -136,18 +147,24 @@ impl WebRtcManager {
             peer.close().await;
         }
 
-        let affected: Vec<String> = self.session_to_mobile.iter()
-            .filter(|(_, mid)| mid.as_str() == mobile_device_id)
-            .map(|(sid, _)| sid.clone())
-            .collect();
+        // Collect channels owned by this mobile device
+        let (to_close, remaining): (Vec<_>, Vec<_>) = self.channel_owners.drain(..)
+            .partition(|(_, mid, _)| mid == mobile_device_id);
 
-        for session_id in affected {
-            if let Some(channel) = self.session_channels.remove(&session_id) {
-                tokio::spawn(async move {
-                    let _ = channel.close().await;
-                });
+        self.channel_owners = remaining;
+
+        // Close the channels and remove them from session_channels
+        for (session_id, _, channel) in to_close {
+            // Remove this specific channel from the session's channel vec
+            if let Some(channels) = self.session_channels.get_mut(&session_id) {
+                channels.retain(|c| !Arc::ptr_eq(c, &channel));
+                if channels.is_empty() {
+                    self.session_channels.remove(&session_id);
+                }
             }
-            self.session_to_mobile.remove(&session_id);
+            tokio::spawn(async move {
+                let _ = channel.close().await;
+            });
         }
     }
 
@@ -169,10 +186,13 @@ impl WebRtcManager {
             return;
         };
 
-        info!("data channel opened: {} for session {}", label, session_id);
+        info!("data channel opened: {} for session {} from mobile {}", label, session_id, mobile_id);
 
-        self.session_channels.insert(session_id.clone(), Arc::clone(&channel));
-        self.session_to_mobile.insert(session_id.clone(), mobile_id.to_string());
+        self.session_channels
+            .entry(session_id.clone())
+            .or_insert_with(Vec::new)
+            .push(Arc::clone(&channel));
+        self.channel_owners.push((session_id.clone(), mobile_id.to_string(), Arc::clone(&channel)));
 
         // on_message is async in webrtc 0.14 — returns Pin<Box<dyn Future>>
         let event_tx = self.event_tx.clone();

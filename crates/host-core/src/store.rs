@@ -131,14 +131,29 @@ impl StateStore {
             mobile_device_id: "unknown".to_string(),
             state,
             updated_at: now,
+            persistent: false,
+            tmux_session_name: None,
         });
     }
 
-    pub fn clear_ended_sessions(&mut self, stale_after_secs: i64) {
+    pub fn clear_ended_sessions(&mut self, stale_after_secs: i64, detach_max_secs: i64) {
         let now = Utc::now();
         self.state.sessions.retain(|s| {
             let age = (now - s.updated_at).num_seconds();
-            !(age > stale_after_secs && matches!(s.state, crate::models::SessionState::Ended | crate::models::SessionState::Failed))
+            // Clear ended/failed sessions after stale threshold
+            if age > stale_after_secs && matches!(s.state, crate::models::SessionState::Ended | crate::models::SessionState::Failed) {
+                return false;
+            }
+            // Clear detached sessions older than max detach time (and kill their tmux session)
+            if age > detach_max_secs && matches!(s.state, crate::models::SessionState::Detached) {
+                if let Some(ref tmux_name) = s.tmux_session_name {
+                    let _ = std::process::Command::new("tmux")
+                        .args(["kill-session", "-t", tmux_name])
+                        .status();
+                }
+                return false;
+            }
+            true
         });
     }
 
