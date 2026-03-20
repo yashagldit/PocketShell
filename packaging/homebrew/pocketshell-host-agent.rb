@@ -12,13 +12,13 @@ class PocketshellHostAgent < Formula
   end
 
   service do
-    run [opt_bin/"myapp", "daemon", "run"]
+    run [opt_bin/"pocketshell", "daemon", "run"]
     keep_alive true
     log_path var/"log/pocketshell-host-agent.log"
     error_log_path var/"log/pocketshell-host-agent.log"
   end
 
   test do
-    assert_match "PocketShell host agent", shell_output("#{bin}/myapp --help")
+    assert_match "PocketShell host agent", shell_output("#{bin}/pocketshell --help")
   end
 end

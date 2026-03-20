@@ -6,7 +6,7 @@
   <string>com.pocketshell.host-agent</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/local/bin/myapp</string>
+    <string>/usr/local/bin/pocketshell</string>
     <string>daemon</string>
     <string>run</string>
   </array>

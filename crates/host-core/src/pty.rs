@@ -7,7 +7,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-/// Dummy child process for PTY relay sessions (the real process is owned by `myapp rc`).
+/// Dummy child process for PTY relay sessions (the real process is owned by `pocketshell rc`).
 #[derive(Debug)]
 struct DummyChild;
 
@@ -96,7 +96,7 @@ impl SessionManager {
                 cols,
                 rows,
             ),
-            // "shell" type from `myapp rc` — attach to existing PTY device
+            // "shell" type from `pocketshell rc` — attach to existing PTY device
             "shell" => self.create_pty_relay_session(session_id, target_name),
             _ => Err(HostError::Pty(format!("unsupported session type: {session_type}"))),
         }
@@ -131,7 +131,7 @@ impl SessionManager {
         }
     }
 
-    /// Relay I/O to/from an existing PTY device (used by `myapp rc` exposed sessions).
+    /// Relay I/O to/from an existing PTY device (used by `pocketshell rc` exposed sessions).
     pub fn create_pty_relay_session(
         &mut self,
         session_id: String,

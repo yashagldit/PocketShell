@@ -16,7 +16,7 @@ use base64::Engine;
 use chrono::Utc;
 use std::collections::HashMap;
 use tokio::time::{interval, sleep, Duration, Instant};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Whether the backend kill-action is honored. Set to false during testing.
 const HONOR_KILL_ACTION: bool = false;
@@ -343,7 +343,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                             warn!("stats minute batch send failed: {}", err);
                             break;
                         }
-                        info!("sent stats_minute_batch with {} snapshots", batch.len());
+                        debug!("sent stats_minute_batch with {} snapshots", batch.len());
                     }
                 }
                 _ = output_tick.tick() => {

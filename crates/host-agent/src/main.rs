@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
-use host_core::api::{derive_access_expiry, BackendClient};
+use host_core::api::BackendClient;
 use host_core::audit::{write_audit_event, AuditEvent};
 use host_core::config::AppConfig;
 use host_core::daemon;
@@ -148,8 +148,7 @@ async fn pair(
     store.state.auth = Some(AuthState {
         access_token: response.access_token.clone(),
         refresh_token: response.refresh_token.clone(),
-        access_expires_at: derive_access_expiry(&response.access_token)
-            .or_else(|| parse_jwt_exp(&response.access_token)),
+        access_expires_at: parse_jwt_exp(&response.access_token),
     });
     store.state.host = Some(HostIdentity {
         host_id: response.host.id.clone(),

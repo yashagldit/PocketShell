@@ -5,7 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/myapp daemon run
+ExecStart=/usr/bin/pocketshell daemon run
 Restart=always
 RestartSec=5
 Environment=RUST_LOG=info
