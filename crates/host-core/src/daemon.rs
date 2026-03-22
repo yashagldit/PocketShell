@@ -3,11 +3,13 @@ use crate::audit::{write_audit_event, AuditEvent};
 use crate::config::AppConfig;
 use crate::discovery::SessionDiscovery;
 use crate::error::{HostError, Result};
-use crate::models::{AttachTarget, HeartbeatRequest, SessionRecord, SessionRequest, SessionState, SignalEnvelope};
+use crate::models::StatsSnapshot;
+use crate::models::{
+    AttachTarget, HeartbeatRequest, SessionRecord, SessionRequest, SessionState, SignalEnvelope,
+};
 use crate::pty::SessionManager;
 use crate::secure::{require_refresh_token, token_is_expiring};
 use crate::session::accept_session;
-use crate::models::StatsSnapshot;
 use crate::stats::StatsCollector;
 use crate::store::StateStore;
 use crate::transport::{connect_host_ws, recv_signal, send_signal};
@@ -23,8 +25,16 @@ const HONOR_KILL_ACTION: bool = false;
 
 /// In-progress file transfer from a mobile device.
 struct PendingFileTransfer {
+    request_id: String,
     name: String,
+    expected_chunks: usize,
     chunks: Vec<String>,
+}
+
+enum FileTransferUpdate {
+    Progress { request_id: String, progress: u8 },
+    Complete { request_id: String, path: String },
+    Error { request_id: String, message: String },
 }
 
 /// Handle a file transfer protocol message (sentinel already stripped).
@@ -33,28 +43,61 @@ fn handle_file_transfer_msg(
     session_id: &str,
     json_str: &str,
     sessions: &mut crate::pty::SessionManager,
-) {
+) -> Option<FileTransferUpdate> {
     let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str) else {
         warn!("invalid file transfer JSON");
-        return;
+        return None;
     };
 
     let op = val.get("op").and_then(|v| v.as_str()).unwrap_or_default();
-    let id = val.get("id").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    let id = val
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
 
     match op {
         "start" => {
-            let name = val.get("name").and_then(|v| v.as_str()).unwrap_or("clipboard.jpg").to_string();
+            let name = val
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("clipboard.jpg")
+                .to_string();
             let chunks = val.get("chunks").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
-            transfers.insert(id, PendingFileTransfer {
-                name,
-                chunks: Vec::with_capacity(chunks),
-            });
+            transfers.insert(
+                id.clone(),
+                PendingFileTransfer {
+                    request_id: id.clone(),
+                    name,
+                    expected_chunks: chunks,
+                    chunks: Vec::with_capacity(chunks),
+                },
+            );
+            Some(FileTransferUpdate::Progress {
+                request_id: id,
+                progress: 0,
+            })
         }
         "chunk" => {
             if let Some(transfer) = transfers.get_mut(&id) {
                 let data = val.get("d").and_then(|v| v.as_str()).unwrap_or_default();
                 transfer.chunks.push(data.to_string());
+                let progress = if transfer.expected_chunks == 0 {
+                    100
+                } else {
+                    (((transfer.chunks.len() * 100) as f32) / transfer.expected_chunks as f32)
+                        .round()
+                        .clamp(0.0, 100.0) as u8
+                };
+                Some(FileTransferUpdate::Progress {
+                    request_id: transfer.request_id.clone(),
+                    progress,
+                })
+            } else {
+                Some(FileTransferUpdate::Error {
+                    request_id: id,
+                    message: "upload_state_missing".to_string(),
+                })
             }
         }
         "end" => {
@@ -63,10 +106,7 @@ fn handle_file_transfer_msg(
                 match base64::engine::general_purpose::STANDARD.decode(&full_b64) {
                     Ok(image_bytes) => {
                         // Determine extension from name
-                        let ext = transfer.name
-                            .rsplit('.')
-                            .next()
-                            .unwrap_or("jpg");
+                        let ext = transfer.name.rsplit('.').next().unwrap_or("jpg");
                         let temp_name = format!(
                             "pocketshell-paste-{}.{}",
                             chrono::Utc::now().format("%Y%m%d-%H%M%S-%3f"),
@@ -86,21 +126,43 @@ fn handle_file_transfer_msg(
                                 let path_bytes = temp_path.as_bytes().to_vec();
                                 if let Err(e) = sessions.write_input(session_id, path_bytes) {
                                     warn!("failed to inject file path into PTY: {}", e);
+                                    return Some(FileTransferUpdate::Error {
+                                        request_id: transfer.request_id,
+                                        message: format!("pty_inject_failed: {e}"),
+                                    });
                                 }
+                                Some(FileTransferUpdate::Complete {
+                                    request_id: transfer.request_id,
+                                    path: temp_path,
+                                })
                             }
                             Err(e) => {
                                 warn!("failed to write temp file {}: {}", temp_path, e);
+                                Some(FileTransferUpdate::Error {
+                                    request_id: transfer.request_id,
+                                    message: format!("temp_write_failed: {e}"),
+                                })
                             }
                         }
                     }
                     Err(e) => {
                         warn!("file transfer base64 decode failed: {}", e);
+                        Some(FileTransferUpdate::Error {
+                            request_id: transfer.request_id,
+                            message: format!("decode_failed: {e}"),
+                        })
                     }
                 }
+            } else {
+                Some(FileTransferUpdate::Error {
+                    request_id: id,
+                    message: "upload_state_missing".to_string(),
+                })
             }
         }
         _ => {
             warn!("unknown file transfer op: {}", op);
+            None
         }
     }
 }
@@ -135,7 +197,8 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
         info!("tmux not found — sessions will be ephemeral");
     }
     let mut sessions = SessionManager::new(config.session_limit, has_tmux);
-    let (webrtc_event_tx, mut webrtc_event_rx) = tokio::sync::mpsc::unbounded_channel::<WebRtcEvent>();
+    let (webrtc_event_tx, mut webrtc_event_rx) =
+        tokio::sync::mpsc::unbounded_channel::<WebRtcEvent>();
     let mut webrtc_mgr = WebRtcManager::new(webrtc_event_tx);
     let shell = AppConfig::default_shell();
 
@@ -191,6 +254,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
         stats_bg_tick.tick().await; // skip immediate first tick
         let mut output_tick = interval(Duration::from_millis(10));
         let mut trusted_devices_tick = interval(Duration::from_secs(30));
+        let mut session_reap_tick = interval(Duration::from_secs(1));
         let mut stats_minute_tick = interval(Duration::from_secs(60));
         stats_minute_tick.tick().await; // skip immediate first tick
         let mut stats_minute_flush_tick = interval(Duration::from_secs(5 * 60));
@@ -380,6 +444,31 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                         }
                     }
                 }
+                _ = session_reap_tick.tick() => {
+                    let ended_sessions = sessions.reap_exited_sessions();
+                    if !ended_sessions.is_empty() {
+                        let token = store.access_token()?.to_string();
+                        for session_id in ended_sessions {
+                            webrtc_mgr.close_session(&session_id);
+                            store.touch_session_state(&session_id, SessionState::Ended);
+
+                            let ended_event = SignalEnvelope {
+                                message_type: "session_event".to_string(),
+                                session_id: Some(session_id.clone()),
+                                payload: None,
+                                state: Some("ended".to_string()),
+                                accepted: None,
+                                reason: None,
+                                extra: std::collections::HashMap::new(),
+                            };
+                            let _ = send_signal(&mut ws, &ended_event).await;
+                            let _ = backend
+                                .transition_session(&token, &session_id, SessionState::Ended, None)
+                                .await;
+                        }
+                        let _ = store.save();
+                    }
+                }
                 _ = alert_tick.tick() => {
                     if !store.state.alert_thresholds.is_empty() {
                         let snapshot = stats.snapshot();
@@ -434,11 +523,52 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
 
                 Some(webrtc_event) = webrtc_event_rx.recv() => {
                     match webrtc_event {
-                        WebRtcEvent::Input { session_id, data } => {
+                        WebRtcEvent::Input { session_id, mobile_device_id, data } => {
                             // Check for file transfer sentinel: \x00PSFT
                             if data.len() > 5 && data[0] == 0x00 && &data[1..5] == b"PSFT" {
                                 if let Ok(json_str) = std::str::from_utf8(&data[5..]) {
-                                    handle_file_transfer_msg(&mut file_transfers, &session_id, json_str, &mut sessions);
+                                    if let Some(update) =
+                                        handle_file_transfer_msg(&mut file_transfers, &session_id, json_str, &mut sessions)
+                                    {
+                                        let mut extra = std::collections::HashMap::new();
+                                        extra.insert(
+                                            "target_mobile_device_id".to_string(),
+                                            serde_json::json!(mobile_device_id),
+                                        );
+
+                                        let payload = match update {
+                                            FileTransferUpdate::Progress { request_id, progress } => serde_json::json!({
+                                                "channel": "files",
+                                                "response_to": request_id,
+                                                "status": "progress",
+                                                "progress": progress,
+                                            }),
+                                            FileTransferUpdate::Complete { request_id, path } => serde_json::json!({
+                                                "channel": "files",
+                                                "response_to": request_id,
+                                                "status": "ok",
+                                                "path": path,
+                                            }),
+                                            FileTransferUpdate::Error { request_id, message } => serde_json::json!({
+                                                "channel": "files",
+                                                "response_to": request_id,
+                                                "status": "error",
+                                                "error": message,
+                                                "error_code": "transfer_failed",
+                                            }),
+                                        };
+
+                                        let response = SignalEnvelope {
+                                            message_type: "signal".to_string(),
+                                            session_id: Some(session_id.clone()),
+                                            payload: Some(payload),
+                                            state: None,
+                                            accepted: None,
+                                            reason: None,
+                                            extra,
+                                        };
+                                        let _ = send_signal(&mut ws, &response).await;
+                                    }
                                 }
                             } else if let Err(e) = sessions.write_input(&session_id, data) {
                                 warn!("webrtc input write failed: {}", e);
@@ -634,11 +764,7 @@ async fn handle_signal(
                 .get("cols")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(120) as u16;
-            let rows = msg
-                .extra
-                .get("rows")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(30) as u16;
+            let rows = msg.extra.get("rows").and_then(|v| v.as_u64()).unwrap_or(30) as u16;
 
             if !store.is_trusted(&mobile_device_id) {
                 let reject = SignalEnvelope {
@@ -663,7 +789,10 @@ async fn handle_signal(
             if let Some(ref mut target) = attach_target {
                 if target.session_type == "shell" {
                     let discovered = SessionDiscovery::discover();
-                    if let Some(session) = discovered.iter().find(|s| s.name == target.name && s.session_type == "shell") {
+                    if let Some(session) = discovered
+                        .iter()
+                        .find(|s| s.name == target.name && s.session_type == "shell")
+                    {
                         if let Some(ref pty_path) = session.pty_path {
                             target.name = pty_path.clone();
                         }
@@ -686,7 +815,11 @@ async fn handle_signal(
                 payload: None,
                 state: Some(if accept { "approved" } else { "failed" }.to_string()),
                 accepted: Some(accept),
-                reason: if accept { None } else { Some("pty_failed".to_string()) },
+                reason: if accept {
+                    None
+                } else {
+                    Some("pty_failed".to_string())
+                },
                 extra: std::collections::HashMap::new(),
             };
             send_signal(ws, &ack).await?;
@@ -748,27 +881,43 @@ async fn handle_signal(
 
             match channel {
                 "terminal" => {
-                    let bytes = if let Some(data_b64) = payload.get("data_b64").and_then(|v| v.as_str()) {
-                        base64::engine::general_purpose::STANDARD
-                            .decode(data_b64)
-                            .map_err(|e| HostError::Backend(format!("invalid terminal payload: {e}")))?
-                    } else if let Some(text) = payload.get("text").and_then(|v| v.as_str()) {
-                        text.as_bytes().to_vec()
-                    } else {
-                        return Err(HostError::Backend("missing terminal data".to_string()));
-                    };
+                    let bytes =
+                        if let Some(data_b64) = payload.get("data_b64").and_then(|v| v.as_str()) {
+                            base64::engine::general_purpose::STANDARD
+                                .decode(data_b64)
+                                .map_err(|e| {
+                                    HostError::Backend(format!("invalid terminal payload: {e}"))
+                                })?
+                        } else if let Some(text) = payload.get("text").and_then(|v| v.as_str()) {
+                            text.as_bytes().to_vec()
+                        } else {
+                            return Err(HostError::Backend("missing terminal data".to_string()));
+                        };
 
                     // Check for file transfer sentinel via signaling relay
                     if bytes.len() > 5 && bytes[0] == 0x00 && &bytes[1..5] == b"PSFT" {
                         if let Ok(json_str) = std::str::from_utf8(&bytes[5..]) {
-                            handle_file_transfer_msg(file_transfers, &session_id, json_str, sessions);
+                            handle_file_transfer_msg(
+                                file_transfers,
+                                &session_id,
+                                json_str,
+                                sessions,
+                            );
                         }
                     } else {
                         sessions.write_input(&session_id, bytes)?;
                     }
 
-                    if let Some(record) = store.state.sessions.iter().find(|s| s.session_id == session_id) {
-                        if matches!(record.state, SessionState::Approved | SessionState::Connecting) {
+                    if let Some(record) = store
+                        .state
+                        .sessions
+                        .iter()
+                        .find(|s| s.session_id == session_id)
+                    {
+                        if matches!(
+                            record.state,
+                            SessionState::Approved | SessionState::Connecting
+                        ) {
                             let connected_msg = SignalEnvelope {
                                 message_type: "session_event".to_string(),
                                 session_id: Some(session_id.clone()),
@@ -781,7 +930,12 @@ async fn handle_signal(
                             let _ = send_signal(ws, &connected_msg).await;
                             let token = store.access_token()?.to_string();
                             let _ = backend
-                                .transition_session(&token, &session_id, SessionState::Connected, Some("p2p"))
+                                .transition_session(
+                                    &token,
+                                    &session_id,
+                                    SessionState::Connected,
+                                    Some("p2p"),
+                                )
                                 .await;
                             store.touch_session_state(&session_id, SessionState::Connected);
                         }
@@ -794,13 +948,16 @@ async fn handle_signal(
                         .unwrap_or_default();
                     match action {
                         "resize" => {
-                            let cols = payload.get("cols").and_then(|v| v.as_u64()).unwrap_or(120) as u16;
-                            let rows = payload.get("rows").and_then(|v| v.as_u64()).unwrap_or(30) as u16;
+                            let cols =
+                                payload.get("cols").and_then(|v| v.as_u64()).unwrap_or(120) as u16;
+                            let rows =
+                                payload.get("rows").and_then(|v| v.as_u64()).unwrap_or(30) as u16;
                             sessions.resize(&session_id, cols, rows)?;
                         }
                         "session_detach" => {
                             // Mobile wants to detach (keep session alive for later).
-                            let was_persistent = sessions.detach_session(&session_id).unwrap_or(false);
+                            let was_persistent =
+                                sessions.detach_session(&session_id).unwrap_or(false);
                             if was_persistent {
                                 store.touch_session_state(&session_id, SessionState::Detached);
                                 let detach_event = SignalEnvelope {
@@ -815,7 +972,12 @@ async fn handle_signal(
                                 let _ = send_signal(ws, &detach_event).await;
                                 let token = store.access_token()?.to_string();
                                 let _ = backend
-                                    .transition_session(&token, &session_id, SessionState::Detached, None)
+                                    .transition_session(
+                                        &token,
+                                        &session_id,
+                                        SessionState::Detached,
+                                        None,
+                                    )
                                     .await;
                                 let _ = write_audit_event(AuditEvent {
                                     event_type: "session_detached".to_string(),
@@ -837,7 +999,12 @@ async fn handle_signal(
                                 let _ = send_signal(ws, &ended_event).await;
                                 let token = store.access_token()?.to_string();
                                 let _ = backend
-                                    .transition_session(&token, &session_id, SessionState::Ended, None)
+                                    .transition_session(
+                                        &token,
+                                        &session_id,
+                                        SessionState::Ended,
+                                        None,
+                                    )
                                     .await;
                             }
                         }
@@ -869,6 +1036,11 @@ async fn handle_signal(
                     }
                 }
                 "files" => {
+                    let target_mobile_device_id = msg
+                        .extra
+                        .get("mobile_device_id")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
                     let request_id = payload
                         .get("request_id")
                         .and_then(|v| v.as_str())
@@ -892,6 +1064,13 @@ async fn handle_signal(
                         }),
                     };
 
+                    let mut extra = std::collections::HashMap::new();
+                    if let Some(target) = target_mobile_device_id {
+                        extra.insert(
+                            "target_mobile_device_id".to_string(),
+                            serde_json::json!(target),
+                        );
+                    }
                     let response = SignalEnvelope {
                         message_type: "signal".to_string(),
                         session_id: Some(session_id),
@@ -899,7 +1078,7 @@ async fn handle_signal(
                         state: None,
                         accepted: None,
                         reason: None,
-                        extra: std::collections::HashMap::new(),
+                        extra,
                     };
                     send_signal(ws, &response).await?;
                 }
@@ -923,11 +1102,7 @@ async fn handle_signal(
                 .get("cols")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(120) as u16;
-            let rows = msg
-                .extra
-                .get("rows")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(30) as u16;
+            let rows = msg.extra.get("rows").and_then(|v| v.as_u64()).unwrap_or(30) as u16;
 
             if !store.is_trusted(&mobile_device_id) {
                 let reject = SignalEnvelope {
@@ -948,7 +1123,9 @@ async fn handle_signal(
             // If session is detached (not in SessionManager but tmux is alive), reconnect.
             let needs_reconnect = !sessions.is_active(&session_id);
             let accept = if needs_reconnect {
-                sessions.reconnect_session(session_id.clone(), cols, rows).is_ok()
+                sessions
+                    .reconnect_session(session_id.clone(), cols, rows)
+                    .is_ok()
             } else {
                 true
             };
@@ -959,7 +1136,11 @@ async fn handle_signal(
                 payload: None,
                 state: Some(if accept { "approved" } else { "failed" }.to_string()),
                 accepted: Some(accept),
-                reason: if accept { None } else { Some("reconnect_failed".to_string()) },
+                reason: if accept {
+                    None
+                } else {
+                    Some("reconnect_failed".to_string())
+                },
                 extra: std::collections::HashMap::new(),
             };
             send_signal(ws, &ack).await?;
@@ -980,7 +1161,10 @@ async fn handle_signal(
                 if let Ok(scrollback) = SessionManager::capture_scrollback(&session_id) {
                     if !scrollback.is_empty() {
                         let mut extra = std::collections::HashMap::new();
-                        extra.insert("target_mobile_device_id".to_string(), serde_json::json!(mobile_device_id));
+                        extra.insert(
+                            "target_mobile_device_id".to_string(),
+                            serde_json::json!(mobile_device_id),
+                        );
                         let replay_msg = SignalEnvelope {
                             message_type: "session_replay".to_string(),
                             session_id: Some(session_id.clone()),
@@ -1042,7 +1226,13 @@ async fn handle_signal(
                     match backend.turn_credentials(&token).await {
                         Ok((username, credential, _ttl, uris)) => {
                             match webrtc_mgr
-                                .handle_offer(&mobile_device_id, uris, username, credential, offer_sdp)
+                                .handle_offer(
+                                    &mobile_device_id,
+                                    uris,
+                                    username,
+                                    credential,
+                                    offer_sdp,
+                                )
                                 .await
                             {
                                 Ok(answer_sdp) => {
@@ -1080,12 +1270,14 @@ async fn handle_signal(
                 .unwrap_or_default();
 
             if let Some(payload) = &msg.payload {
-                if let Ok(candidate) =
-                    serde_json::from_value::<webrtc::ice_transport::ice_candidate::RTCIceCandidateInit>(
-                        payload.clone(),
-                    )
+                if let Ok(candidate) = serde_json::from_value::<
+                    webrtc::ice_transport::ice_candidate::RTCIceCandidateInit,
+                >(payload.clone())
                 {
-                    if let Err(e) = webrtc_mgr.add_ice_candidate(&mobile_device_id, candidate).await {
+                    if let Err(e) = webrtc_mgr
+                        .add_ice_candidate(&mobile_device_id, candidate)
+                        .await
+                    {
                         warn!("webrtc add_ice_candidate failed: {}", e);
                     }
                 }
@@ -1106,12 +1298,21 @@ async fn handle_signal(
                     match backend.turn_credentials(&token).await {
                         Ok((username, credential, _ttl, uris)) => {
                             match webrtc_mgr
-                                .handle_offer(&mobile_device_id, uris, username, credential, offer_sdp)
+                                .handle_offer(
+                                    &mobile_device_id,
+                                    uris,
+                                    username,
+                                    credential,
+                                    offer_sdp,
+                                )
                                 .await
                             {
                                 Ok(answer_sdp) => {
                                     let mut extra = std::collections::HashMap::new();
-                                    extra.insert("mobile_device_id".to_string(), serde_json::json!(mobile_device_id));
+                                    extra.insert(
+                                        "mobile_device_id".to_string(),
+                                        serde_json::json!(mobile_device_id),
+                                    );
                                     let answer_msg = SignalEnvelope {
                                         message_type: "stats_answer".to_string(),
                                         session_id: None,
@@ -1144,12 +1345,14 @@ async fn handle_signal(
                 .to_string();
 
             if let Some(payload) = &msg.payload {
-                if let Ok(candidate) =
-                    serde_json::from_value::<webrtc::ice_transport::ice_candidate::RTCIceCandidateInit>(
-                        payload.clone(),
-                    )
+                if let Ok(candidate) = serde_json::from_value::<
+                    webrtc::ice_transport::ice_candidate::RTCIceCandidateInit,
+                >(payload.clone())
                 {
-                    if let Err(e) = webrtc_mgr.add_ice_candidate(&mobile_device_id, candidate).await {
+                    if let Err(e) = webrtc_mgr
+                        .add_ice_candidate(&mobile_device_id, candidate)
+                        .await
+                    {
                         warn!("webrtc stats add_ice_candidate failed: {}", e);
                     }
                 }
@@ -1158,7 +1361,9 @@ async fn handle_signal(
         "alert_preferences_sync" => {
             if let Some(payload) = msg.payload {
                 if let Some(prefs) = payload.get("preferences") {
-                    if let Ok(thresholds) = serde_json::from_value::<Vec<crate::models::AlertThreshold>>(prefs.clone()) {
+                    if let Ok(thresholds) =
+                        serde_json::from_value::<Vec<crate::models::AlertThreshold>>(prefs.clone())
+                    {
                         info!("received {} alert thresholds", thresholds.len());
                         store.state.alert_thresholds = thresholds;
                         store.save()?;

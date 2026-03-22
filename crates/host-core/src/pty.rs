@@ -105,16 +105,29 @@ impl SessionManager {
         // Create a detached tmux session with status bar disabled
         let status = std::process::Command::new("tmux")
             .args([
-                "new-session", "-d", "-s", &tmux_name,
-                "-x", &cols.to_string(), "-y", &rows.to_string(),
+                "new-session",
+                "-d",
+                "-s",
+                &tmux_name,
+                "-x",
+                &cols.to_string(),
+                "-y",
+                &rows.to_string(),
                 shell,
-                ";", "set-option", "-t", &tmux_name, "status", "off",
+                ";",
+                "set-option",
+                "-t",
+                &tmux_name,
+                "status",
+                "off",
             ])
             .status()
             .map_err(|e| HostError::Pty(format!("tmux new-session failed: {e}")))?;
 
         if !status.success() {
-            return Err(HostError::Pty(format!("tmux new-session exited with {status}")));
+            return Err(HostError::Pty(format!(
+                "tmux new-session exited with {status}"
+            )));
         }
 
         // Now attach to it via the existing tmux attach path
@@ -131,12 +144,7 @@ impl SessionManager {
     }
 
     /// Reconnect to an existing persistent tmux session.
-    pub fn reconnect_session(
-        &mut self,
-        session_id: String,
-        cols: u16,
-        rows: u16,
-    ) -> Result<()> {
+    pub fn reconnect_session(&mut self, session_id: String, cols: u16, rows: u16) -> Result<()> {
         let tmux_name = format!("ps-{session_id}");
 
         // Check tmux session still exists
@@ -146,7 +154,9 @@ impl SessionManager {
             .map_err(|e| HostError::Pty(format!("tmux has-session failed: {e}")))?;
 
         if !status.success() {
-            return Err(HostError::Pty(format!("tmux session {tmux_name} no longer exists")));
+            return Err(HostError::Pty(format!(
+                "tmux session {tmux_name} no longer exists"
+            )));
         }
 
         // Attach to it
@@ -171,7 +181,10 @@ impl SessionManager {
             .map_err(|e| HostError::Pty(format!("tmux capture-pane failed: {e}")))?;
 
         if !output.status.success() {
-            return Err(HostError::Pty(format!("tmux capture-pane exited with {}", output.status)));
+            return Err(HostError::Pty(format!(
+                "tmux capture-pane exited with {}",
+                output.status
+            )));
         }
 
         Ok(output.stdout)
@@ -179,12 +192,16 @@ impl SessionManager {
 
     /// Check if a session is persistent (tmux-backed).
     pub fn is_persistent(&self, session_id: &str) -> bool {
-        self.sessions.get(session_id).map_or(false, |s| s.persistent)
+        self.sessions
+            .get(session_id)
+            .map_or(false, |s| s.persistent)
     }
 
     /// Get the tmux session name for a session.
     pub fn tmux_session_name(&self, session_id: &str) -> Option<String> {
-        self.sessions.get(session_id).and_then(|s| s.tmux_session_name.clone())
+        self.sessions
+            .get(session_id)
+            .and_then(|s| s.tmux_session_name.clone())
     }
 
     /// Create a session that attaches to an existing tmux/screen session.
@@ -231,7 +248,9 @@ impl SessionManager {
             }
             // "shell" type from `pocketshell rc` — attach to existing PTY device
             "shell" => self.create_pty_relay_session(session_id, target_name),
-            _ => Err(HostError::Pty(format!("unsupported session type: {session_type}"))),
+            _ => Err(HostError::Pty(format!(
+                "unsupported session type: {session_type}"
+            ))),
         }
     }
 
@@ -269,21 +288,24 @@ impl SessionManager {
     }
 
     /// Relay I/O to/from an existing PTY device (used by `pocketshell rc` exposed sessions).
-    pub fn create_pty_relay_session(
-        &mut self,
-        session_id: String,
-        pty_path: &str,
-    ) -> Result<()> {
+    pub fn create_pty_relay_session(&mut self, session_id: String, pty_path: &str) -> Result<()> {
         use std::fs::OpenOptions;
 
         if self.sessions.len() >= self.limit {
-            return Err(HostError::Pty(format!("session limit reached ({})", self.limit)));
+            return Err(HostError::Pty(format!(
+                "session limit reached ({})",
+                self.limit
+            )));
         }
         if self.sessions.contains_key(&session_id) {
-            return Err(HostError::Pty(format!("session already exists: {session_id}")));
+            return Err(HostError::Pty(format!(
+                "session already exists: {session_id}"
+            )));
         }
         if pty_path.is_empty() {
-            return Err(HostError::Pty("no PTY path for exposed session".to_string()));
+            return Err(HostError::Pty(
+                "no PTY path for exposed session".to_string(),
+            ));
         }
 
         let pty_read = OpenOptions::new()
@@ -369,7 +391,9 @@ impl SessionManager {
             )));
         }
         if self.sessions.contains_key(&session_id) {
-            return Err(HostError::Pty(format!("session already exists: {session_id}")));
+            return Err(HostError::Pty(format!(
+                "session already exists: {session_id}"
+            )));
         }
 
         let pty = native_pty_system();
@@ -399,7 +423,9 @@ impl SessionManager {
             .try_clone_reader()
             .map_err(|e| HostError::Pty(format!("clone reader failed: {e}")))?;
         let mut writer = pair.master.take_writer().map_err(|e| {
-            HostError::Pty(format!("failed to take PTY writer for session {session_id}: {e}"))
+            HostError::Pty(format!(
+                "failed to take PTY writer for session {session_id}: {e}"
+            ))
         })?;
 
         let master = Arc::new(Mutex::new(pair.master));
@@ -502,10 +528,43 @@ impl SessionManager {
         out
     }
 
+    /// Reap sessions whose underlying child process has exited.
+    pub fn reap_exited_sessions(&mut self) -> Vec<String> {
+        let mut ended = Vec::new();
+        let ids: Vec<String> = self.sessions.keys().cloned().collect();
+
+        for session_id in ids {
+            let exited = self
+                .sessions
+                .get(&session_id)
+                .and_then(|session| {
+                    session
+                        .child
+                        .lock()
+                        .ok()
+                        .and_then(|mut child| child.try_wait().ok().flatten())
+                })
+                .is_some();
+
+            if !exited {
+                continue;
+            }
+
+            if self.close_session(&session_id).is_ok() {
+                ended.push(session_id);
+            }
+        }
+
+        ended
+    }
+
     /// Detach a persistent session: stop I/O threads but keep the tmux session alive.
     /// For non-persistent sessions, this falls through to close_session.
     pub fn detach_session(&mut self, session_id: &str) -> Result<bool> {
-        let is_persistent = self.sessions.get(session_id).map_or(false, |s| s.persistent);
+        let is_persistent = self
+            .sessions
+            .get(session_id)
+            .map_or(false, |s| s.persistent);
         if !is_persistent {
             self.close_session(session_id)?;
             return Ok(false);

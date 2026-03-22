@@ -12,12 +12,27 @@ use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 
 #[derive(Debug)]
 pub enum WebRtcEvent {
-    Input { session_id: String, data: Vec<u8> },
-    ChannelOpened { session_id: String },
-    ChannelClosed { session_id: String },
-    IceCandidate { mobile_device_id: String, candidate_json: String },
-    StatsChannelOpened { host_id: String },
-    StatsChannelClosed { host_id: String },
+    Input {
+        session_id: String,
+        mobile_device_id: String,
+        data: Vec<u8>,
+    },
+    ChannelOpened {
+        session_id: String,
+    },
+    ChannelClosed {
+        session_id: String,
+    },
+    IceCandidate {
+        mobile_device_id: String,
+        candidate_json: String,
+    },
+    StatsChannelOpened {
+        host_id: String,
+    },
+    StatsChannelClosed {
+        host_id: String,
+    },
 }
 
 pub struct WebRtcManager {
@@ -54,14 +69,22 @@ impl WebRtcManager {
         if !self.peers.contains_key(mobile_device_id) {
             let peer = WebRtcPeer::new(turn_uris, username, credential).await?;
             self.peers.insert(mobile_device_id.to_string(), peer);
-            info!("created WebRTC peer for mobile_device_id={}", mobile_device_id);
+            info!(
+                "created WebRTC peer for mobile_device_id={}",
+                mobile_device_id
+            );
         }
 
-        let peer = self.peers.get(mobile_device_id)
+        let peer = self
+            .peers
+            .get(mobile_device_id)
             .ok_or_else(|| HostError::Backend("peer not found after creation".into()))?;
 
         let answer_sdp = peer.apply_offer(offer_sdp).await?;
-        info!("applied offer, sending answer for mobile_device_id={}", mobile_device_id);
+        info!(
+            "applied offer, sending answer for mobile_device_id={}",
+            mobile_device_id
+        );
 
         Ok(answer_sdp)
     }
@@ -71,7 +94,9 @@ impl WebRtcManager {
         mobile_device_id: &str,
         candidate: RTCIceCandidateInit,
     ) -> Result<()> {
-        let peer = self.peers.get(mobile_device_id)
+        let peer = self
+            .peers
+            .get(mobile_device_id)
             .ok_or_else(|| HostError::Backend(format!("no peer for mobile {mobile_device_id}")))?;
         peer.add_ice_candidate(candidate).await
     }
@@ -144,19 +169,23 @@ impl WebRtcManager {
     }
 
     pub fn has_channel(&self, session_id: &str) -> bool {
-        self.session_channels.get(session_id).map_or(false, |v| !v.is_empty())
+        self.session_channels
+            .get(session_id)
+            .map_or(false, |v| !v.is_empty())
     }
 
     /// Send stats data to all connected stats channels.
     pub async fn send_stats(&mut self, data: &[u8]) -> bool {
-        let mut channels: Vec<Arc<RTCDataChannel>> = self.stats_channel_owners
+        let mut channels: Vec<Arc<RTCDataChannel>> = self
+            .stats_channel_owners
             .iter()
             .map(|(_, ch)| Arc::clone(ch))
             .collect();
         let result = Self::broadcast(&mut channels, data, "stats").await;
         // If broadcast pruned any, sync back to owners
         if channels.len() != self.stats_channel_owners.len() {
-            self.stats_channel_owners.retain(|(_, ch)| channels.iter().any(|c| Arc::ptr_eq(c, ch)));
+            self.stats_channel_owners
+                .retain(|(_, ch)| channels.iter().any(|c| Arc::ptr_eq(c, ch)));
         }
         result
     }
@@ -189,7 +218,9 @@ impl WebRtcManager {
         }
 
         // Close terminal channels owned by this mobile device
-        let (to_close, remaining): (Vec<_>, Vec<_>) = self.channel_owners.drain(..)
+        let (to_close, remaining): (Vec<_>, Vec<_>) = self
+            .channel_owners
+            .drain(..)
             .partition(|(_, mid, _)| mid == mobile_device_id);
 
         self.channel_owners = remaining;
@@ -207,11 +238,15 @@ impl WebRtcManager {
         }
 
         // Close stats channels owned by this specific peer
-        let (stats_to_close, stats_remaining): (Vec<_>, Vec<_>) = self.stats_channel_owners.drain(..)
+        let (stats_to_close, stats_remaining): (Vec<_>, Vec<_>) = self
+            .stats_channel_owners
+            .drain(..)
             .partition(|(mid, _)| mid == mobile_device_id);
         self.stats_channel_owners = stats_remaining;
         for (_, ch) in stats_to_close {
-            tokio::spawn(async move { let _ = ch.close().await; });
+            tokio::spawn(async move {
+                let _ = ch.close().await;
+            });
         }
     }
 
@@ -227,8 +262,12 @@ impl WebRtcManager {
         let channel = dc_event.channel;
 
         if let Some(host_id) = label.strip_prefix("stats-") {
-            info!("stats data channel opened for host {} from mobile {}", host_id, mobile_id);
-            self.stats_channel_owners.push((mobile_id.to_string(), Arc::clone(&channel)));
+            info!(
+                "stats data channel opened for host {} from mobile {}",
+                host_id, mobile_id
+            );
+            self.stats_channel_owners
+                .push((mobile_id.to_string(), Arc::clone(&channel)));
 
             let event_tx = self.event_tx.clone();
             let hid = host_id.to_string();
@@ -253,22 +292,32 @@ impl WebRtcManager {
             return;
         };
 
-        info!("data channel opened: {} for session {} from mobile {}", label, session_id, mobile_id);
+        info!(
+            "data channel opened: {} for session {} from mobile {}",
+            label, session_id, mobile_id
+        );
 
         self.session_channels
             .entry(session_id.clone())
             .or_insert_with(Vec::new)
             .push(Arc::clone(&channel));
-        self.channel_owners.push((session_id.clone(), mobile_id.to_string(), Arc::clone(&channel)));
+        self.channel_owners.push((
+            session_id.clone(),
+            mobile_id.to_string(),
+            Arc::clone(&channel),
+        ));
 
         let event_tx = self.event_tx.clone();
         let sid = session_id.clone();
+        let mobile_device_id = mobile_id.to_string();
         channel.on_message(Box::new(move |msg: DataChannelMessage| {
             let tx = event_tx.clone();
             let session = sid.clone();
+            let mobile = mobile_device_id.clone();
             Box::pin(async move {
                 let _ = tx.send(WebRtcEvent::Input {
                     session_id: session,
+                    mobile_device_id: mobile,
                     data: msg.data.to_vec(),
                 });
             })
@@ -280,12 +329,14 @@ impl WebRtcManager {
             let tx = event_tx.clone();
             let session = sid.clone();
             Box::pin(async move {
-                let _ = tx.send(WebRtcEvent::ChannelClosed { session_id: session });
+                let _ = tx.send(WebRtcEvent::ChannelClosed {
+                    session_id: session,
+                });
             })
         }));
 
-        let _ = self.event_tx.send(WebRtcEvent::ChannelOpened {
-            session_id,
-        });
+        let _ = self
+            .event_tx
+            .send(WebRtcEvent::ChannelOpened { session_id });
     }
 }
