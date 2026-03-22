@@ -199,6 +199,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
         let mut alert_checker = crate::alerts::AlertChecker::new();
         let mut discovery_tick = interval(Duration::from_secs(15));
         let mut webrtc_poll_tick = interval(Duration::from_millis(10));
+        let mut stats_stream_tick = interval(Duration::from_secs(2));
 
         loop {
             tokio::select! {
@@ -422,6 +423,14 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                 _ = webrtc_poll_tick.tick() => {
                     webrtc_mgr.poll_events().await;
                 }
+                _ = stats_stream_tick.tick() => {
+                    if webrtc_mgr.has_stats_channel() {
+                        let snapshot = stats.snapshot_with_processes();
+                        if let Ok(json) = serde_json::to_vec(&snapshot) {
+                            webrtc_mgr.send_stats(&json).await;
+                        }
+                    }
+                }
 
                 Some(webrtc_event) = webrtc_event_rx.recv() => {
                     match webrtc_event {
@@ -441,18 +450,46 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                         WebRtcEvent::ChannelClosed { session_id } => {
                             info!("webrtc data channel closed for session {}", session_id);
                         }
-                        WebRtcEvent::IceCandidate { mobile_device_id: _, candidate_json } => {
+                        WebRtcEvent::StatsChannelOpened { host_id } => {
+                            info!("stats WebRTC channel opened for host {}", host_id);
+                        }
+                        WebRtcEvent::StatsChannelClosed { host_id } => {
+                            info!("stats WebRTC channel closed for host {}", host_id);
+                            webrtc_mgr.prune_stats_channels();
+                        }
+                        WebRtcEvent::IceCandidate { mobile_device_id, candidate_json } => {
                             if let Ok(candidate_value) = serde_json::from_str::<serde_json::Value>(&candidate_json) {
-                                let ice_msg = SignalEnvelope {
-                                    message_type: "ice_candidate".to_string(),
-                                    session_id: None,
-                                    payload: Some(candidate_value),
-                                    state: None,
-                                    accepted: None,
-                                    reason: None,
-                                    extra: std::collections::HashMap::new(),
-                                };
-                                let _ = send_signal(&mut ws, &ice_msg).await;
+                                // Check if this mobile has a terminal session (route via session_id)
+                                // or is a stats-only peer (route via stats_ice_candidate)
+                                let session = store.state.sessions.iter()
+                                    .find(|s| s.mobile_device_id == mobile_device_id);
+
+                                if let Some(session) = session {
+                                    let ice_msg = SignalEnvelope {
+                                        message_type: "ice_candidate".to_string(),
+                                        session_id: Some(session.session_id.clone()),
+                                        payload: Some(candidate_value),
+                                        state: None,
+                                        accepted: None,
+                                        reason: None,
+                                        extra: std::collections::HashMap::new(),
+                                    };
+                                    let _ = send_signal(&mut ws, &ice_msg).await;
+                                } else {
+                                    // Stats-only peer — route via stats_ice_candidate
+                                    let mut extra = std::collections::HashMap::new();
+                                    extra.insert("mobile_device_id".to_string(), serde_json::json!(mobile_device_id));
+                                    let ice_msg = SignalEnvelope {
+                                        message_type: "stats_ice_candidate".to_string(),
+                                        session_id: None,
+                                        payload: Some(candidate_value),
+                                        state: None,
+                                        accepted: None,
+                                        reason: None,
+                                        extra,
+                                    };
+                                    let _ = send_signal(&mut ws, &ice_msg).await;
+                                }
                             }
                         }
                     }
@@ -1050,6 +1087,70 @@ async fn handle_signal(
                 {
                     if let Err(e) = webrtc_mgr.add_ice_candidate(&mobile_device_id, candidate).await {
                         warn!("webrtc add_ice_candidate failed: {}", e);
+                    }
+                }
+            }
+        }
+        "stats_offer" => {
+            // WebRTC offer specifically for stats streaming — same flow as session_offer
+            let mobile_device_id = msg
+                .extra
+                .get("mobile_device_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+
+            if let Some(payload) = &msg.payload {
+                if let Some(offer_sdp) = payload.get("sdp").and_then(|v| v.as_str()) {
+                    let token = store.access_token()?.to_string();
+                    match backend.turn_credentials(&token).await {
+                        Ok((username, credential, _ttl, uris)) => {
+                            match webrtc_mgr
+                                .handle_offer(&mobile_device_id, uris, username, credential, offer_sdp)
+                                .await
+                            {
+                                Ok(answer_sdp) => {
+                                    let mut extra = std::collections::HashMap::new();
+                                    extra.insert("mobile_device_id".to_string(), serde_json::json!(mobile_device_id));
+                                    let answer_msg = SignalEnvelope {
+                                        message_type: "stats_answer".to_string(),
+                                        session_id: None,
+                                        payload: Some(serde_json::json!({ "sdp": answer_sdp })),
+                                        state: None,
+                                        accepted: None,
+                                        reason: None,
+                                        extra,
+                                    };
+                                    let _ = send_signal(ws, &answer_msg).await;
+                                }
+                                Err(e) => {
+                                    warn!("webrtc stats handle_offer failed: {}", e);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!("failed to fetch TURN credentials for stats: {}", e);
+                        }
+                    }
+                }
+            }
+        }
+        "stats_ice_candidate" => {
+            let mobile_device_id = msg
+                .extra
+                .get("mobile_device_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+
+            if let Some(payload) = &msg.payload {
+                if let Ok(candidate) =
+                    serde_json::from_value::<webrtc::ice_transport::ice_candidate::RTCIceCandidateInit>(
+                        payload.clone(),
+                    )
+                {
+                    if let Err(e) = webrtc_mgr.add_ice_candidate(&mobile_device_id, candidate).await {
+                        warn!("webrtc stats add_ice_candidate failed: {}", e);
                     }
                 }
             }

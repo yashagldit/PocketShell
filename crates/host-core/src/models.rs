@@ -145,6 +145,15 @@ pub struct AttachTarget {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProcessInfo {
+    pub pid: u32,
+    pub name: String,
+    pub cpu_percent: f32,
+    pub memory_bytes: u64,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatsSnapshot {
     pub cpu_usage_percent: f32,
     pub memory_total_bytes: u64,
@@ -157,6 +166,9 @@ pub struct StatsSnapshot {
     pub load_fifteen: f64,
     pub battery_percent: Option<f32>,
     pub collected_at: DateTime<Utc>,
+    /// Per-process data for live stats mode. None for lightweight snapshots.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub processes: Option<Vec<ProcessInfo>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
