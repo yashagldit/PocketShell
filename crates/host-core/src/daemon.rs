@@ -189,7 +189,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
         let mut stats_tick = interval(Duration::from_secs(config.stats_interval_secs));
         let mut stats_bg_tick = interval(Duration::from_secs(30 * 60));
         stats_bg_tick.tick().await; // skip immediate first tick
-        let mut output_tick = interval(Duration::from_millis(40));
+        let mut output_tick = interval(Duration::from_millis(10));
         let mut trusted_devices_tick = interval(Duration::from_secs(30));
         let mut stats_minute_tick = interval(Duration::from_secs(60));
         stats_minute_tick.tick().await; // skip immediate first tick
@@ -198,7 +198,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
         let mut alert_tick = interval(Duration::from_secs(config.alert_check_interval_secs));
         let mut alert_checker = crate::alerts::AlertChecker::new();
         let mut discovery_tick = interval(Duration::from_secs(15));
-        let mut webrtc_poll_tick = interval(Duration::from_millis(50));
+        let mut webrtc_poll_tick = interval(Duration::from_millis(10));
 
         loop {
             tokio::select! {

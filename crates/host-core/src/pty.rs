@@ -102,9 +102,14 @@ impl SessionManager {
     ) -> Result<()> {
         let tmux_name = format!("ps-{session_id}");
 
-        // Create a detached tmux session
+        // Create a detached tmux session with status bar disabled
         let status = std::process::Command::new("tmux")
-            .args(["new-session", "-d", "-s", &tmux_name, "-x", &cols.to_string(), "-y", &rows.to_string(), shell])
+            .args([
+                "new-session", "-d", "-s", &tmux_name,
+                "-x", &cols.to_string(), "-y", &rows.to_string(),
+                shell,
+                ";", "set-option", "-t", &tmux_name, "status", "off",
+            ])
             .status()
             .map_err(|e| HostError::Pty(format!("tmux new-session failed: {e}")))?;
 
