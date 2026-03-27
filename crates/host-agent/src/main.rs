@@ -52,6 +52,11 @@ enum Commands {
         #[arg(long)]
         watch: bool,
     },
+    /// List and manage terminal sessions on this host
+    Sessions {
+        #[command(subcommand)]
+        command: Option<SessionCommands>,
+    },
     /// Expose a terminal session for mobile access.
     /// Creates a named tmux session that the daemon auto-discovers.
     #[command(alias = "rc")]
@@ -80,6 +85,15 @@ enum DeviceCommands {
 }
 
 #[derive(Subcommand, Debug)]
+enum SessionCommands {
+    /// Attach to a persistent tmux session locally on this host
+    Attach {
+        /// Session ID (or prefix) to attach to
+        session_id: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 enum DaemonCommands {
     Start,
     Stop,
@@ -102,6 +116,7 @@ async fn main() -> Result<()> {
         Commands::Devices { command } => devices(config, command).await,
         Commands::Daemon { command } => daemon_cmd(config, command).await,
         Commands::Stats { watch } => stats_cmd(watch).await,
+        Commands::Sessions { command } => sessions_cmd(config, command).await,
         Commands::Remote { name, detached, list, remove } => remote_cmd(name, detached, list, remove),
     }
 }
@@ -419,6 +434,120 @@ async fn stats_cmd(watch: bool) -> Result<()> {
     }
 
     #[allow(unreachable_code)]
+    Ok(())
+}
+
+async fn sessions_cmd(config: AppConfig, command: Option<SessionCommands>) -> Result<()> {
+    match command {
+        Some(SessionCommands::Attach { session_id }) => sessions_attach(session_id),
+        None => sessions_list(config).await,
+    }
+}
+
+async fn sessions_list(config: AppConfig) -> Result<()> {
+    let store = StateStore::load().context("loading local state")?;
+    store.require_logged_in().map_err(|e| anyhow!(e.to_string()))?;
+
+    // Local discoverable sessions (tmux, screen, pocketshell persistent, exposed)
+    let local_sessions = SessionDiscovery::discover();
+
+    // Backend active sessions (CONNECTED / DETACHED)
+    let backend_sessions = {
+        let token = store.access_token()?.to_string();
+        let host_id = store.host_id()?;
+        let backend = BackendClient::new(config.backend_base_url);
+        backend
+            .list_active_sessions_full(&token, &host_id)
+            .await
+            .unwrap_or_else(|e| {
+                eprintln!("warning: could not fetch backend sessions: {e}");
+                Vec::new()
+            })
+    };
+
+    // Print backend (active/detached) sessions
+    if !backend_sessions.is_empty() {
+        println!("Active Sessions (backend):");
+        println!("{:<38} {:<12} {:<8} {}", "SESSION ID", "STATE", "MODE", "STARTED");
+        for s in &backend_sessions {
+            let started = s.started_at.as_deref().unwrap_or("-");
+            let mode = s.connection_mode.as_deref().unwrap_or("-");
+            println!("{:<38} {:<12} {:<8} {}", s.id, s.state, mode, started);
+        }
+        println!();
+    }
+
+    // Print local discoverable sessions
+    if !local_sessions.is_empty() {
+        println!("Local Sessions (discoverable):");
+        println!("{:<12} {:<24} {:<12} {}", "TYPE", "NAME", "STATUS", "WINDOWS");
+        for s in &local_sessions {
+            let status = if s.attached { "attached" } else { "available" };
+            println!("{:<12} {:<24} {:<12} {}", s.session_type, s.name, status, s.windows);
+        }
+        println!();
+    }
+
+    if backend_sessions.is_empty() && local_sessions.is_empty() {
+        println!("no sessions found");
+        return Ok(());
+    }
+
+    // Show hint for resumable sessions
+    let ps_sessions: Vec<_> = local_sessions.iter().filter(|s| s.session_type == "pocketshell").collect();
+    if !ps_sessions.is_empty() {
+        println!("Tip: attach to a persistent PocketShell session locally with:");
+        for s in &ps_sessions {
+            println!("  pocketshell sessions attach {}", s.name);
+        }
+    }
+
+    Ok(())
+}
+
+fn sessions_attach(session_id: String) -> Result<()> {
+    let tmux_name = if session_id.starts_with("ps-") {
+        session_id.clone()
+    } else {
+        format!("ps-{session_id}")
+    };
+
+    // Check if the tmux session exists
+    if !SessionDiscovery::tmux_session_exists(&tmux_name) {
+        // Also try as a plain tmux session name (non-pocketshell)
+        if SessionDiscovery::tmux_session_exists(&session_id) {
+            println!("attaching to tmux session '{}'...", session_id);
+            let status = Command::new("tmux")
+                .args(["attach-session", "-t", &session_id])
+                .stdin(Stdio::inherit())
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit())
+                .status()
+                .context("failed to run tmux attach")?;
+            if !status.success() {
+                return Err(anyhow!("tmux attach exited with {}", status));
+            }
+            return Ok(());
+        }
+        return Err(anyhow!(
+            "session '{}' not found. Run `pocketshell sessions` to see available sessions.",
+            session_id
+        ));
+    }
+
+    println!("attaching to PocketShell session '{}'...", session_id);
+    let status = Command::new("tmux")
+        .args(["attach-session", "-t", &tmux_name])
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .context("failed to run tmux attach")?;
+
+    if !status.success() {
+        return Err(anyhow!("tmux attach exited with {}", status));
+    }
+
     Ok(())
 }
 

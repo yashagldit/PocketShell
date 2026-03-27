@@ -265,6 +265,46 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
         let mut webrtc_poll_tick = interval(Duration::from_millis(10));
         let mut stats_stream_tick = interval(Duration::from_secs(2));
 
+        // Reconcile stale sessions: fetch active sessions from backend and end
+        // any whose backing tmux process no longer exists on this host.
+        // Also kill orphaned ps-* tmux sessions that have no active DB session.
+        {
+            let token = store.access_token()?.to_string();
+            match backend.list_active_sessions(&token, &host_id).await {
+                Ok(active) => {
+                    let active_ids: std::collections::HashSet<String> =
+                        active.iter().map(|(id, _)| id.clone()).collect();
+
+                    // End DB sessions whose tmux process is gone
+                    for (session_id, _state) in &active {
+                        let tmux_name = format!("ps-{session_id}");
+                        let alive = sessions.is_active(session_id)
+                            || crate::discovery::SessionDiscovery::tmux_session_exists(&tmux_name);
+                        if !alive {
+                            info!("reconcile: session {} has no live process, ending", session_id);
+                            let _ = backend
+                                .transition_session(&token, session_id, SessionState::Ended, None)
+                                .await;
+                        }
+                    }
+
+                    // Kill orphaned ps-* tmux sessions with no active DB session
+                    for ps in crate::discovery::SessionDiscovery::discover_pocketshell_names() {
+                        if !active_ids.contains(&ps) && !sessions.is_active(&ps) {
+                            let tmux_name = format!("ps-{ps}");
+                            info!("reconcile: killing orphaned tmux session {}", tmux_name);
+                            let _ = std::process::Command::new("tmux")
+                                .args(["kill-session", "-t", &tmux_name])
+                                .status();
+                        }
+                    }
+                }
+                Err(err) => {
+                    warn!("reconcile: failed to list active sessions: {}", err);
+                }
+            }
+        }
+
         loop {
             tokio::select! {
                 _ = heartbeat_tick.tick() => {

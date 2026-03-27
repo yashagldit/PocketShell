@@ -19,6 +19,30 @@ pub struct AvailableSession {
 pub struct SessionDiscovery;
 
 impl SessionDiscovery {
+    /// Return session IDs (without "ps-" prefix) of all PocketShell tmux sessions.
+    pub fn discover_pocketshell_names() -> Vec<String> {
+        let output = Command::new("tmux")
+            .args(["list-sessions", "-F", "#{session_name}"])
+            .output();
+        let output = match output {
+            Ok(o) if o.status.success() => o,
+            _ => return Vec::new(),
+        };
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| line.strip_prefix("ps-").map(|s| s.to_string()))
+            .collect()
+    }
+
+    /// Check if a specific tmux session exists by name.
+    pub fn tmux_session_exists(name: &str) -> bool {
+        Command::new("tmux")
+            .args(["has-session", "-t", name])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
     /// Discover all tmux, screen, manually exposed, and PocketShell persistent sessions on this host.
     pub fn discover() -> Vec<AvailableSession> {
         let mut sessions = Vec::new();

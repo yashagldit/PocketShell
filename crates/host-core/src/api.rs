@@ -1,6 +1,6 @@
 use crate::error::{HostError, Result};
 use crate::models::{
-    HeartbeatRequest, PairingValidateRequest, PairingValidateResponse,
+    BackendSessionInfo, HeartbeatRequest, PairingValidateRequest, PairingValidateResponse,
     SessionState, TokenPairResponse, TrustedDeviceRecord,
 };
 use crate::secure::parse_jwt_exp;
@@ -216,6 +216,93 @@ impl BackendClient {
         }
 
         Ok(())
+    }
+
+    /// Fetch active (CONNECTED + DETACHED) sessions for this host from the backend.
+    /// Returns a list of `{"id": "...", "state": "..."}` objects.
+    pub async fn list_active_sessions(
+        &self,
+        token: &str,
+        host_id: &str,
+    ) -> Result<Vec<(String, SessionState)>> {
+        let url = format!("{}/api/v1/sessions/host/{}/active", self.base_url, host_id);
+        let res = self
+            .client
+            .get(url)
+            .header(AUTHORIZATION, format!("Bearer {token}"))
+            .send()
+            .await
+            .map_err(|e| HostError::Backend(e.to_string()))?;
+
+        if res.status() == StatusCode::UNAUTHORIZED {
+            return Err(HostError::AuthRevoked);
+        }
+
+        if !res.status().is_success() {
+            let body = res.text().await.unwrap_or_default();
+            return Err(HostError::Backend(format!("list active sessions failed: {body}")));
+        }
+
+        let body: Vec<serde_json::Value> = res
+            .json()
+            .await
+            .map_err(|e| HostError::Backend(format!("invalid sessions payload: {e}")))?;
+
+        Ok(body
+            .into_iter()
+            .filter_map(|v| {
+                let id = v.get("id")?.as_str()?.to_string();
+                let state_str = v.get("state")?.as_str()?;
+                let state = match state_str {
+                    "CONNECTED" | "connected" => SessionState::Connected,
+                    "DETACHED" | "detached" => SessionState::Detached,
+                    _ => return None,
+                };
+                Some((id, state))
+            })
+            .collect())
+    }
+
+    /// Fetch active sessions with full detail from the backend.
+    pub async fn list_active_sessions_full(
+        &self,
+        token: &str,
+        host_id: &str,
+    ) -> Result<Vec<BackendSessionInfo>> {
+        let url = format!("{}/api/v1/sessions/host/{}/active", self.base_url, host_id);
+        let res = self
+            .client
+            .get(url)
+            .header(AUTHORIZATION, format!("Bearer {token}"))
+            .send()
+            .await
+            .map_err(|e| HostError::Backend(e.to_string()))?;
+
+        if res.status() == StatusCode::UNAUTHORIZED {
+            return Err(HostError::AuthRevoked);
+        }
+
+        if !res.status().is_success() {
+            let body = res.text().await.unwrap_or_default();
+            return Err(HostError::Backend(format!("list active sessions failed: {body}")));
+        }
+
+        let body: Vec<serde_json::Value> = res
+            .json()
+            .await
+            .map_err(|e| HostError::Backend(format!("invalid sessions payload: {e}")))?;
+
+        Ok(body
+            .into_iter()
+            .map(|v| BackendSessionInfo {
+                id: v.get("id").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+                state: v.get("state").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+                started_at: v.get("started_at").and_then(|x| x.as_str()).map(|s| s.to_string()),
+                ended_at: v.get("ended_at").and_then(|x| x.as_str()).map(|s| s.to_string()),
+                connection_mode: v.get("connection_mode").and_then(|x| x.as_str()).map(|s| s.to_string()),
+                mobile_device_id: v.get("mobile_device_id").and_then(|x| x.as_str()).map(|s| s.to_string()),
+            })
+            .collect())
     }
 
     pub async fn turn_credentials(

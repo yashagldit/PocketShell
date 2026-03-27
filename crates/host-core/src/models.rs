@@ -144,6 +144,17 @@ pub struct AttachTarget {
     pub name: String,
 }
 
+/// Rich session info returned by the backend's active-sessions endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackendSessionInfo {
+    pub id: String,
+    pub state: String,
+    pub started_at: Option<String>,
+    pub ended_at: Option<String>,
+    pub connection_mode: Option<String>,
+    pub mobile_device_id: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessInfo {
     pub pid: u32,

@@ -69,6 +69,21 @@ pub async fn handle_files_action(payload: &serde_json::Value) -> Result<serde_js
                 write_file(&path_str, data_b64, append)
             }
             "download" => download_file(&path_str),
+            "search" => {
+                let query = payload
+                    .get("query")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let max_results = payload
+                    .get("max_results")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(200) as usize;
+                let max_depth = payload
+                    .get("max_depth")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(10) as usize;
+                search_files(&path_str, query, max_results, max_depth)
+            }
             _ => Err(HostError::Backend(format!("unknown files action: {action}"))),
         }
     })
@@ -385,6 +400,148 @@ fn download_file(path_str: &str) -> Result<serde_json::Value> {
         "name": name,
         "size": metadata.len(),
         "mime_type": mime_type,
+    }))
+}
+
+/// Check if a query string contains glob characters (`*` or `?`).
+fn is_glob(query: &str) -> bool {
+    query.contains('*') || query.contains('?')
+}
+
+/// Convert a simple glob pattern to a regex pattern string.
+/// Supports `*` (match any chars) and `?` (match single char).
+fn glob_to_regex(glob: &str) -> String {
+    let mut regex = String::with_capacity(glob.len() * 2 + 2);
+    regex.push('^');
+    for ch in glob.chars() {
+        match ch {
+            '*' => regex.push_str(".*"),
+            '?' => regex.push('.'),
+            '.' | '+' | '(' | ')' | '[' | ']' | '{' | '}' | '^' | '$' | '|' | '\\' => {
+                regex.push('\\');
+                regex.push(ch);
+            }
+            _ => regex.push(ch),
+        }
+    }
+    regex.push('$');
+    regex
+}
+
+enum SearchMatcher {
+    Substring(String),
+    Glob(regex::Regex),
+}
+
+impl SearchMatcher {
+    fn new(query: &str) -> Result<Self> {
+        let query_lower = query.to_lowercase();
+        if is_glob(&query_lower) {
+            let pattern = glob_to_regex(&query_lower);
+            let re = regex::Regex::new(&pattern)
+                .map_err(|e| HostError::Backend(format!("invalid search pattern: {e}")))?;
+            Ok(SearchMatcher::Glob(re))
+        } else {
+            Ok(SearchMatcher::Substring(query_lower))
+        }
+    }
+
+    fn matches(&self, name: &str) -> bool {
+        let lower = name.to_lowercase();
+        match self {
+            SearchMatcher::Substring(q) => lower.contains(q.as_str()),
+            SearchMatcher::Glob(re) => re.is_match(&lower),
+        }
+    }
+}
+
+fn search_files(
+    path_str: &str,
+    query: &str,
+    max_results: usize,
+    max_depth: usize,
+) -> Result<serde_json::Value> {
+    if query.is_empty() {
+        return Err(HostError::Backend("search query is required".to_string()));
+    }
+
+    let dir = resolve_path(path_str)?;
+    let canonical = safe_canonicalize(&dir)?;
+    let matcher = SearchMatcher::new(query)?;
+
+    let mut results: Vec<FileEntry> = Vec::new();
+
+    fn walk(
+        dir: &Path,
+        matcher: &SearchMatcher,
+        results: &mut Vec<FileEntry>,
+        max_results: usize,
+        depth: usize,
+        max_depth: usize,
+    ) {
+        if depth > max_depth || results.len() >= max_results {
+            return;
+        }
+        let reader = match fs::read_dir(dir) {
+            Ok(r) => r,
+            Err(_) => return,
+        };
+        for entry_result in reader {
+            if results.len() >= max_results {
+                return;
+            }
+            let entry = match entry_result {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            let name = entry.file_name().to_string_lossy().to_string();
+
+            // Skip common heavy directories
+            if depth == 0
+                && (name == "node_modules"
+                    || name == ".git"
+                    || name == "target"
+                    || name == "__pycache__"
+                    || name == ".venv"
+                    || name == "venv")
+            {
+                continue;
+            }
+
+            let entry_path = entry.path();
+            let metadata = match entry.metadata() {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            let is_symlink = entry
+                .file_type()
+                .map(|ft| ft.is_symlink())
+                .unwrap_or(false);
+
+            if matcher.matches(&name) {
+                results.push(FileEntry {
+                    name: name.clone(),
+                    path: entry_path.to_string_lossy().to_string(),
+                    is_dir: metadata.is_dir(),
+                    size: metadata.len(),
+                    permissions: get_permissions(&metadata),
+                    modified_at: modified_iso(&metadata),
+                    is_symlink,
+                });
+            }
+
+            if metadata.is_dir() && !is_symlink {
+                walk(&entry_path, matcher, results, max_results, depth + 1, max_depth);
+            }
+        }
+    }
+
+    walk(&canonical, &matcher, &mut results, max_results, 0, max_depth);
+
+    Ok(serde_json::json!({
+        "entries": results,
+        "total": results.len(),
+        "cwd": canonical.to_string_lossy(),
     }))
 }
 
