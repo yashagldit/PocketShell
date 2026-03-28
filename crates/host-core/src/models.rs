@@ -165,6 +165,64 @@ pub struct ProcessInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetworkIOStats {
+    pub bytes_sent: u64,
+    pub bytes_recv: u64,
+    pub packets_sent: u64,
+    pub packets_recv: u64,
+    /// Per-second rates (None on first sample before a delta can be computed).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes_sent_per_sec: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes_recv_per_sec: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiskIOStats {
+    pub read_bytes: u64,
+    pub write_bytes: u64,
+    /// Per-second rates (None on first sample before a delta can be computed).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub read_bytes_per_sec: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub write_bytes_per_sec: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TemperatureReading {
+    pub label: String,
+    pub temp_celsius: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_celsius: Option<f32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetworkConnection {
+    pub tcp_established: u32,
+    pub tcp_time_wait: u32,
+    pub tcp_close_wait: u32,
+    pub tcp_listen: u32,
+    pub tcp_total: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoggedInUser {
+    pub username: String,
+    pub terminal: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote_host: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OsInfo {
+    pub os_name: String,
+    pub os_version: String,
+    pub kernel_version: String,
+    pub hostname: String,
+    pub arch: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatsSnapshot {
     pub cpu_usage_percent: f32,
     pub memory_total_bytes: u64,
@@ -180,6 +238,24 @@ pub struct StatsSnapshot {
     /// Per-process data for live stats mode. None for lightweight snapshots.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub processes: Option<Vec<ProcessInfo>>,
+    /// Network I/O totals and rates.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network_io: Option<NetworkIOStats>,
+    /// Disk I/O totals and rates.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disk_io: Option<DiskIOStats>,
+    /// Temperature sensor readings.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperatures: Option<Vec<TemperatureReading>>,
+    /// TCP connection counts by state.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network_connections: Option<NetworkConnection>,
+    /// Currently logged-in users.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logged_in_users: Option<Vec<LoggedInUser>>,
+    /// Static OS information.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub os_info: Option<OsInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
