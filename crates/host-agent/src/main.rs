@@ -6,7 +6,7 @@ use host_core::config::AppConfig;
 use host_core::daemon;
 use host_core::discovery::SessionDiscovery;
 use host_core::models::{AuthState, HostIdentity, PairingValidateRequest};
-use host_core::secure::{clear_private_key, clear_tokens, parse_jwt_exp, persist_private_key};
+use host_core::secure::parse_jwt_exp;
 use host_core::stats::StatsCollector;
 use host_core::store::StateStore;
 use nix::sys::signal::{kill, Signal};
@@ -146,8 +146,6 @@ async fn pair(
     let platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
 
     let (public_key, private_key) = generate_keypair();
-    persist_private_key(&private_key);
-
     let backend = BackendClient::new(config.backend_base_url.clone());
     let response = backend
         .validate_pairing_code(&PairingValidateRequest {
@@ -172,6 +170,7 @@ async fn pair(
         platform,
         app_version: config.app_version,
         public_key,
+        private_key,
         registered_at: chrono::Utc::now(),
     });
     store.save().context("persisting local state")?;
@@ -190,9 +189,7 @@ async fn pair(
 fn logout(reset: bool) -> Result<()> {
     let mut store = StateStore::load().context("loading local state")?;
 
-    clear_tokens();
     if reset {
-        clear_private_key();
         store.state = Default::default();
     } else {
         store.state.auth = None;

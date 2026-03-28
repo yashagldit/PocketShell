@@ -1,7 +1,6 @@
 use crate::config::AppConfig;
 use crate::error::{HostError, Result};
 use crate::models::{AgentState, SessionRecord, TrustedDeviceRecord};
-use crate::secure::{load_tokens, persist_tokens};
 use chrono::Utc;
 use std::fs;
 use std::io::Write;
@@ -30,17 +29,7 @@ impl StateStore {
         }
 
         let raw = fs::read_to_string(&paths.state_file)?;
-        let mut state = serde_json::from_str::<AgentState>(&raw).unwrap_or_default();
-
-        if let (Some(auth), Some((access, refresh))) = (state.auth.as_mut(), load_tokens()) {
-            // Prefer keyring values only when state file tokens are empty.
-            if auth.access_token.is_empty() {
-                auth.access_token = access;
-            }
-            if auth.refresh_token.is_empty() {
-                auth.refresh_token = refresh;
-            }
-        }
+        let state = serde_json::from_str::<AgentState>(&raw).unwrap_or_default();
 
         Ok(Self {
             path: paths.state_file,
@@ -49,19 +38,7 @@ impl StateStore {
     }
 
     pub fn save(&self) -> Result<()> {
-        let mut sanitized = self.state.clone();
-        if let Some(auth) = sanitized.auth.as_mut() {
-            let plaintext_tokens = std::env::var("POCKETSHELL_PLAINTEXT_TOKENS")
-                .map(|v| v.eq_ignore_ascii_case("true"))
-                .unwrap_or(false);
-
-            if !plaintext_tokens && persist_tokens(auth) {
-                auth.access_token.clear();
-                auth.refresh_token.clear();
-            }
-        }
-
-        let raw = serde_json::to_string_pretty(&sanitized)?;
+        let raw = serde_json::to_string_pretty(&self.state)?;
         fs::write(&self.path, raw)?;
         set_file_permissions(&self.path)?;
         Ok(())

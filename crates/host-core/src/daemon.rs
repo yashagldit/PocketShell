@@ -670,11 +670,29 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                         Ok(Some(msg)) => {
                             info!("ws received: type={} session_id={:?}", msg.message_type, msg.session_id);
                             if msg.message_type == "stats_subscribe" {
-                                if !stats_active {
-                                    info!("stats subscription activated");
+                                // stats_subscribe may arrive from the backend REST
+                                // endpoint (no mobile_device_id) or from a mobile
+                                // device via WebSocket.  Backend-originated subscribes
+                                // are trusted because the backend already verified
+                                // host ownership.  Device-originated ones must pass
+                                // the trusted-device check.
+                                let stats_device_id = msg
+                                    .extra
+                                    .get("mobile_device_id")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or_default()
+                                    .to_string();
+                                let allowed = stats_device_id.is_empty()
+                                    || store.is_trusted(&stats_device_id);
+                                if !allowed {
+                                    warn!("stats_subscribe rejected: device {} is not trusted", stats_device_id);
+                                } else {
+                                    if !stats_active {
+                                        info!("stats subscription activated");
+                                    }
+                                    stats_active = true;
+                                    stats_deadline = Some(Instant::now() + Duration::from_secs(20));
                                 }
-                                stats_active = true;
-                                stats_deadline = Some(Instant::now() + Duration::from_secs(20));
                             } else if let Err(err) = handle_signal(
                                 &mut store,
                                 &backend,
@@ -913,6 +931,22 @@ async fn handle_signal(
             let Some(payload) = msg.payload else {
                 return Ok(());
             };
+
+            // Verify the sending device is trusted on this host.
+            // The backend ConnectionManager already validates viewer membership
+            // before routing, so we only need the trust gate here.  This supports
+            // the multi-viewer model where session_join adds additional viewers.
+            let mobile_device_id = msg
+                .extra
+                .get("mobile_device_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+
+            if !store.is_trusted(&mobile_device_id) {
+                warn!("signal rejected: device {} is not trusted", mobile_device_id);
+                return Ok(());
+            }
 
             let channel = payload
                 .get("channel")
@@ -1332,6 +1366,11 @@ async fn handle_signal(
                 .unwrap_or_default()
                 .to_string();
 
+            if !store.is_trusted(&mobile_device_id) {
+                warn!("stats_offer rejected: device {} is not trusted", mobile_device_id);
+                return Ok(());
+            }
+
             if let Some(payload) = &msg.payload {
                 if let Some(offer_sdp) = payload.get("sdp").and_then(|v| v.as_str()) {
                     let token = store.access_token()?.to_string();
@@ -1383,6 +1422,11 @@ async fn handle_signal(
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string();
+
+            if !store.is_trusted(&mobile_device_id) {
+                warn!("stats_ice_candidate rejected: device {} is not trusted", mobile_device_id);
+                return Ok(());
+            }
 
             if let Some(payload) = &msg.payload {
                 if let Ok(candidate) = serde_json::from_value::<

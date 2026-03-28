@@ -28,6 +28,8 @@ pub struct HostIdentity {
     pub platform: String,
     pub app_version: String,
     pub public_key: String,
+    #[serde(default)]
+    pub private_key: String,
     pub registered_at: DateTime<Utc>,
 }
 
