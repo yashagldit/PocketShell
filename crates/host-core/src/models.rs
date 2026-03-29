@@ -40,6 +40,10 @@ pub struct PairingValidateRequest {
     pub platform: String,
     pub public_key: String,
     pub app_version: Option<String>,
+    /// When set, indicates the host is already registered and wants to add a new
+    /// mobile device's trust (device-add flow) rather than registering as a new host.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -70,6 +74,9 @@ pub struct PairingValidateResponse {
     pub access_token: String,
     pub refresh_token: String,
     pub token_type: Option<String>,
+    /// True when a device was added to an already-registered host (device-add flow).
+    #[serde(default)]
+    pub already_paired: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

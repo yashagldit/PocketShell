@@ -30,10 +30,15 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Register this host using a pairing code from the mobile app
+    /// Register this host using a pairing code from the mobile app.
+    /// If already paired, adds the new device to this host.
+    /// Use --reset to wipe existing pairing and start fresh (e.g. switching accounts).
     Pair {
         /// Pairing code displayed in the mobile app
         code: Option<String>,
+        /// Clear existing host identity before pairing (use when switching accounts)
+        #[arg(long)]
+        reset: bool,
     },
     Logout {
         #[arg(long)]
@@ -110,7 +115,8 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Pair {
             code,
-        } => pair(config, code).await,
+            reset,
+        } => pair(config, code, reset).await,
         Commands::Logout { reset } => logout(reset),
         Commands::Status => status(config).await,
         Commands::Devices { command } => devices(config, command).await,
@@ -136,8 +142,18 @@ fn init_logging() {
 async fn pair(
     config: AppConfig,
     code: Option<String>,
+    reset: bool,
 ) -> Result<()> {
     let mut store = StateStore::load().context("loading local state")?;
+
+    // --reset: wipe existing identity so the host can pair with a different account
+    if reset {
+        if store.state.host.is_some() {
+            println!("resetting existing host identity...");
+        }
+        store.state = Default::default();
+        store.save().context("persisting reset state")?;
+    }
 
     let pairing_code = code.unwrap_or_else(|| prompt("Pairing code: "));
 
@@ -145,44 +161,86 @@ async fn pair(
         .unwrap_or_else(|_| whoami::fallible::hostname().unwrap_or_else(|_| "unknown".to_string()));
     let platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
 
-    let (public_key, private_key) = generate_keypair();
+    // If the host is already registered, send host_id so the backend adds the
+    // mobile device's trust instead of creating a new host (device-add flow).
+    let existing_host_id = store.state.host.as_ref().map(|h| h.host_id.clone());
+    let is_new_host = existing_host_id.is_none();
+
+    // Only generate a new keypair for new-host registration; device-add flow
+    // doesn't need one since the host identity already exists.
+    let (public_key, private_key) = if is_new_host {
+        generate_keypair()
+    } else {
+        let h = store.state.host.as_ref().unwrap();
+        (h.public_key.clone(), h.private_key.clone())
+    };
+
     let backend = BackendClient::new(config.backend_base_url.clone());
-    let response = backend
+    let result = backend
         .validate_pairing_code(&PairingValidateRequest {
             code: pairing_code,
             hostname: hostname.clone(),
             platform: platform.clone(),
             public_key: public_key.clone(),
             app_version: Some(config.app_version.clone()),
+            host_id: existing_host_id.clone(),
         })
-        .await
-        .context("validating pairing code")?;
+        .await;
 
-    store.state.auth = Some(AuthState {
-        access_token: response.access_token.clone(),
-        refresh_token: response.refresh_token.clone(),
-        access_expires_at: parse_jwt_exp(&response.access_token),
-    });
-    store.state.host = Some(HostIdentity {
-        host_id: response.host.id.clone(),
-        user_id: response.host.user_id,
-        hostname,
-        platform,
-        app_version: config.app_version,
-        public_key,
-        private_key,
-        registered_at: chrono::Utc::now(),
-    });
-    store.save().context("persisting local state")?;
+    let response = match result {
+        Ok(r) => r,
+        Err(e) if existing_host_id.is_some() => {
+            // Device-add failed — likely the pairing code belongs to a different account
+            eprintln!("error: {e}");
+            eprintln!();
+            eprintln!("this host is already paired with a different account.");
+            eprintln!("to switch accounts, run:");
+            eprintln!("  pocketshell pair --reset <CODE>");
+            return Err(anyhow!("pairing failed — account mismatch"));
+        }
+        Err(e) => return Err(e).context("validating pairing code"),
+    };
 
-    let _ = write_audit_event(AuditEvent {
-        event_type: "login_success".to_string(),
-        host_id: Some(response.host.id),
-        ..AuditEvent::new("login_success")
-    });
+    if response.already_paired {
+        // Device-add flow: host identity and tokens already exist locally.
+        // Just refresh the trusted devices list on next daemon tick.
+        println!("new mobile device approved on this host");
+        println!("the device can now connect to this host");
 
-    println!("login successful — host registered as {}", response.host.hostname);
-    println!("run `pocketshell daemon start` to begin accepting connections");
+        let _ = write_audit_event(AuditEvent {
+            event_type: "device_approved".to_string(),
+            host_id: Some(response.host.id),
+            ..AuditEvent::new("device_approved")
+        });
+    } else {
+        // New-host flow: save host identity and tokens.
+        store.state.auth = Some(AuthState {
+            access_token: response.access_token.clone(),
+            refresh_token: response.refresh_token.clone(),
+            access_expires_at: parse_jwt_exp(&response.access_token),
+        });
+        store.state.host = Some(HostIdentity {
+            host_id: response.host.id.clone(),
+            user_id: response.host.user_id,
+            hostname,
+            platform,
+            app_version: config.app_version,
+            public_key,
+            private_key,
+            registered_at: chrono::Utc::now(),
+        });
+        store.save().context("persisting local state")?;
+
+        let _ = write_audit_event(AuditEvent {
+            event_type: "login_success".to_string(),
+            host_id: Some(response.host.id),
+            ..AuditEvent::new("login_success")
+        });
+
+        println!("login successful — host registered as {}", response.host.hostname);
+        println!("run `pocketshell daemon start` to begin accepting connections");
+    }
+
     Ok(())
 }
 
