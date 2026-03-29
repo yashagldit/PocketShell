@@ -14,6 +14,6 @@ pub mod stats;
 pub mod store;
 pub mod transport;
 #[cfg(feature = "webrtc")]
-pub mod webrtc_peer;
-#[cfg(feature = "webrtc")]
 pub mod webrtc_manager;
+#[cfg(feature = "webrtc")]
+pub mod webrtc_peer;

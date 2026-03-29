@@ -69,7 +69,9 @@ impl BackendClient {
 
         if !res.status().is_success() {
             let body = res.text().await.unwrap_or_default();
-            return Err(HostError::Backend(format!("pairing validate failed: {body}")));
+            return Err(HostError::Backend(format!(
+                "pairing validate failed: {body}"
+            )));
         }
 
         res.json::<PairingValidateResponse>()
@@ -77,8 +79,15 @@ impl BackendClient {
             .map_err(|e| HostError::Backend(format!("invalid host registration payload: {e}")))
     }
 
-    pub async fn send_heartbeat(&self, token: &str, payload: &HeartbeatRequest) -> Result<HeartbeatAction> {
-        let url = format!("{}/api/v1/presence/hosts/{}", self.base_url, payload.host_id);
+    pub async fn send_heartbeat(
+        &self,
+        token: &str,
+        payload: &HeartbeatRequest,
+    ) -> Result<HeartbeatAction> {
+        let url = format!(
+            "{}/api/v1/presence/hosts/{}",
+            self.base_url, payload.host_id
+        );
         let res = self
             .client
             .get(url)
@@ -143,8 +152,16 @@ impl BackendClient {
             .map_err(|e| HostError::Backend(format!("invalid trusted-device payload: {e}")))
     }
 
-    pub async fn approve_device(&self, token: &str, host_id: &str, mobile_device_id: &str) -> Result<TrustedDeviceRecord> {
-        let url = format!("{}/api/v1/hosts/{}/trusted-devices/approve", self.base_url, host_id);
+    pub async fn approve_device(
+        &self,
+        token: &str,
+        host_id: &str,
+        mobile_device_id: &str,
+    ) -> Result<TrustedDeviceRecord> {
+        let url = format!(
+            "{}/api/v1/hosts/{}/trusted-devices/approve",
+            self.base_url, host_id
+        );
         let res = self
             .client
             .post(url)
@@ -167,8 +184,16 @@ impl BackendClient {
             .map_err(|e| HostError::Backend(format!("invalid approve response: {e}")))
     }
 
-    pub async fn revoke_device(&self, token: &str, host_id: &str, mobile_device_id: &str) -> Result<TrustedDeviceRecord> {
-        let url = format!("{}/api/v1/hosts/{}/trusted-devices/revoke", self.base_url, host_id);
+    pub async fn revoke_device(
+        &self,
+        token: &str,
+        host_id: &str,
+        mobile_device_id: &str,
+    ) -> Result<TrustedDeviceRecord> {
+        let url = format!(
+            "{}/api/v1/hosts/{}/trusted-devices/revoke",
+            self.base_url, host_id
+        );
         let res = self
             .client
             .post(url)
@@ -212,7 +237,9 @@ impl BackendClient {
 
         if !res.status().is_success() {
             let body = res.text().await.unwrap_or_default();
-            return Err(HostError::Backend(format!("session transition failed: {body}")));
+            return Err(HostError::Backend(format!(
+                "session transition failed: {body}"
+            )));
         }
 
         Ok(())
@@ -240,7 +267,9 @@ impl BackendClient {
 
         if !res.status().is_success() {
             let body = res.text().await.unwrap_or_default();
-            return Err(HostError::Backend(format!("list active sessions failed: {body}")));
+            return Err(HostError::Backend(format!(
+                "list active sessions failed: {body}"
+            )));
         }
 
         let body: Vec<serde_json::Value> = res
@@ -284,7 +313,9 @@ impl BackendClient {
 
         if !res.status().is_success() {
             let body = res.text().await.unwrap_or_default();
-            return Err(HostError::Backend(format!("list active sessions failed: {body}")));
+            return Err(HostError::Backend(format!(
+                "list active sessions failed: {body}"
+            )));
         }
 
         let body: Vec<serde_json::Value> = res
@@ -295,12 +326,32 @@ impl BackendClient {
         Ok(body
             .into_iter()
             .map(|v| BackendSessionInfo {
-                id: v.get("id").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-                state: v.get("state").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-                started_at: v.get("started_at").and_then(|x| x.as_str()).map(|s| s.to_string()),
-                ended_at: v.get("ended_at").and_then(|x| x.as_str()).map(|s| s.to_string()),
-                connection_mode: v.get("connection_mode").and_then(|x| x.as_str()).map(|s| s.to_string()),
-                mobile_device_id: v.get("mobile_device_id").and_then(|x| x.as_str()).map(|s| s.to_string()),
+                id: v
+                    .get("id")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                state: v
+                    .get("state")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                started_at: v
+                    .get("started_at")
+                    .and_then(|x| x.as_str())
+                    .map(|s| s.to_string()),
+                ended_at: v
+                    .get("ended_at")
+                    .and_then(|x| x.as_str())
+                    .map(|s| s.to_string()),
+                connection_mode: v
+                    .get("connection_mode")
+                    .and_then(|x| x.as_str())
+                    .map(|s| s.to_string()),
+                mobile_device_id: v
+                    .get("mobile_device_id")
+                    .and_then(|x| x.as_str())
+                    .map(|s| s.to_string()),
             })
             .collect())
     }

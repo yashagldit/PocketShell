@@ -27,11 +27,12 @@ pub struct AppPaths {
 
 impl AppConfig {
     pub fn from_env() -> Self {
-        let backend_base_url =
-            env::var("POCKETSHELL_BACKEND_URL").unwrap_or_else(|_| "http://127.0.0.1:8000".to_string());
+        let backend_base_url = env::var("POCKETSHELL_BACKEND_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:8000".to_string());
         let ws_url = env::var("POCKETSHELL_WS_URL")
             .unwrap_or_else(|_| "ws://127.0.0.1:8000/ws/host".to_string());
-        let app_version = env::var("POCKETSHELL_APP_VERSION").unwrap_or_else(|_| "0.1.0".to_string());
+        let app_version =
+            env::var("POCKETSHELL_APP_VERSION").unwrap_or_else(|_| "0.1.0".to_string());
         let min_backend_host_version = env::var("POCKETSHELL_MIN_HOST_VERSION").ok();
 
         let heartbeat_interval_secs = env::var("POCKETSHELL_HEARTBEAT_SECS")

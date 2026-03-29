@@ -3,13 +3,17 @@ use crate::models::SignalEnvelope;
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::tungstenite::http::header::{AUTHORIZATION, HeaderValue};
+use tokio_tungstenite::tungstenite::http::header::{HeaderValue, AUTHORIZATION};
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
 pub type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
-pub async fn connect_host_ws(base_ws_url: &str, host_id: &str, access_token: &str) -> Result<WsStream> {
+pub async fn connect_host_ws(
+    base_ws_url: &str,
+    host_id: &str,
+    access_token: &str,
+) -> Result<WsStream> {
     let full_url = if base_ws_url.contains('?') {
         format!("{base_ws_url}&host_id={host_id}")
     } else {

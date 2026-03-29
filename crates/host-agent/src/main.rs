@@ -113,17 +113,19 @@ async fn main() -> Result<()> {
     let config = AppConfig::from_env();
 
     match cli.command {
-        Commands::Pair {
-            code,
-            reset,
-        } => pair(config, code, reset).await,
+        Commands::Pair { code, reset } => pair(config, code, reset).await,
         Commands::Logout { reset } => logout(reset),
         Commands::Status => status(config).await,
         Commands::Devices { command } => devices(config, command).await,
         Commands::Daemon { command } => daemon_cmd(config, command).await,
         Commands::Stats { watch } => stats_cmd(watch).await,
         Commands::Sessions { command } => sessions_cmd(config, command).await,
-        Commands::Remote { name, detached, list, remove } => remote_cmd(name, detached, list, remove),
+        Commands::Remote {
+            name,
+            detached,
+            list,
+            remove,
+        } => remote_cmd(name, detached, list, remove),
     }
 }
 
@@ -131,7 +133,9 @@ fn ensure_supported_platform() -> Result<()> {
     if cfg!(target_os = "linux") || cfg!(target_os = "macos") {
         return Ok(());
     }
-    Err(anyhow!("unsupported host OS; only linux and macos are supported"))
+    Err(anyhow!(
+        "unsupported host OS; only linux and macos are supported"
+    ))
 }
 
 fn init_logging() {
@@ -139,11 +143,7 @@ fn init_logging() {
     tracing_subscriber::fmt().with_env_filter(filter).init();
 }
 
-async fn pair(
-    config: AppConfig,
-    code: Option<String>,
-    reset: bool,
-) -> Result<()> {
+async fn pair(config: AppConfig, code: Option<String>, reset: bool) -> Result<()> {
     let mut store = StateStore::load().context("loading local state")?;
 
     // --reset: wipe existing identity so the host can pair with a different account
@@ -237,7 +237,10 @@ async fn pair(
             ..AuditEvent::new("login_success")
         });
 
-        println!("login successful — host registered as {}", response.host.hostname);
+        println!(
+            "login successful — host registered as {}",
+            response.host.hostname
+        );
         println!("run `pocketshell daemon start` to begin accepting connections");
     }
 
@@ -255,7 +258,11 @@ fn logout(reset: bool) -> Result<()> {
 
     store.save().context("persisting state")?;
 
-    let _ = write_audit_event(AuditEvent::new(if reset { "logout_reset" } else { "logout" }));
+    let _ = write_audit_event(AuditEvent::new(if reset {
+        "logout_reset"
+    } else {
+        "logout"
+    }));
 
     println!("logged out");
     Ok(())
@@ -272,11 +279,17 @@ async fn status(config: AppConfig) -> Result<()> {
 
         if let Ok(token) = store.access_token() {
             let backend = BackendClient::new(config.backend_base_url);
-            match backend.send_heartbeat(token, &host_core::models::HeartbeatRequest {
-                host_id: host.host_id.clone(),
-                active_sessions: 0,
-                pending_devices: store.state.pending_devices.len(),
-            }).await {
+            match backend
+                .send_heartbeat(
+                    token,
+                    &host_core::models::HeartbeatRequest {
+                        host_id: host.host_id.clone(),
+                        active_sessions: 0,
+                        pending_devices: store.state.pending_devices.len(),
+                    },
+                )
+                .await
+            {
                 Ok(_) => println!("connection_health: reachable"),
                 Err(_) => println!("connection_health: degraded"),
             }
@@ -301,7 +314,9 @@ async fn status(config: AppConfig) -> Result<()> {
 
 async fn devices(config: AppConfig, command: DeviceCommands) -> Result<()> {
     let mut store = StateStore::load().context("loading local state")?;
-    store.require_logged_in().map_err(|e| anyhow!(e.to_string()))?;
+    store
+        .require_logged_in()
+        .map_err(|e| anyhow!(e.to_string()))?;
 
     let token = store.access_token()?.to_string();
     let host_id = store.host_id()?;
@@ -320,7 +335,12 @@ async fn devices(config: AppConfig, command: DeviceCommands) -> Result<()> {
                 println!("no trusted devices");
             } else {
                 for d in &store.state.trusted_devices {
-                    println!("{}\tapproved={}\tcreated={} ", d.mobile_device_id, d.approved_at.is_some(), d.created_at);
+                    println!(
+                        "{}\tapproved={}\tcreated={} ",
+                        d.mobile_device_id,
+                        d.approved_at.is_some(),
+                        d.created_at
+                    );
                 }
             }
         }
@@ -501,7 +521,9 @@ async fn sessions_cmd(config: AppConfig, command: Option<SessionCommands>) -> Re
 
 async fn sessions_list(config: AppConfig) -> Result<()> {
     let store = StateStore::load().context("loading local state")?;
-    store.require_logged_in().map_err(|e| anyhow!(e.to_string()))?;
+    store
+        .require_logged_in()
+        .map_err(|e| anyhow!(e.to_string()))?;
 
     // Local discoverable sessions (tmux, screen, pocketshell persistent, exposed)
     let local_sessions = SessionDiscovery::discover();
@@ -523,7 +545,10 @@ async fn sessions_list(config: AppConfig) -> Result<()> {
     // Print backend (active/detached) sessions
     if !backend_sessions.is_empty() {
         println!("Active Sessions (backend):");
-        println!("{:<38} {:<12} {:<8} {}", "SESSION ID", "STATE", "MODE", "STARTED");
+        println!(
+            "{:<38} {:<12} {:<8} {}",
+            "SESSION ID", "STATE", "MODE", "STARTED"
+        );
         for s in &backend_sessions {
             let started = s.started_at.as_deref().unwrap_or("-");
             let mode = s.connection_mode.as_deref().unwrap_or("-");
@@ -535,10 +560,16 @@ async fn sessions_list(config: AppConfig) -> Result<()> {
     // Print local discoverable sessions
     if !local_sessions.is_empty() {
         println!("Local Sessions (discoverable):");
-        println!("{:<12} {:<24} {:<12} {}", "TYPE", "NAME", "STATUS", "WINDOWS");
+        println!(
+            "{:<12} {:<24} {:<12} {}",
+            "TYPE", "NAME", "STATUS", "WINDOWS"
+        );
         for s in &local_sessions {
             let status = if s.attached { "attached" } else { "available" };
-            println!("{:<12} {:<24} {:<12} {}", s.session_type, s.name, status, s.windows);
+            println!(
+                "{:<12} {:<24} {:<12} {}",
+                s.session_type, s.name, status, s.windows
+            );
         }
         println!();
     }
@@ -549,12 +580,13 @@ async fn sessions_list(config: AppConfig) -> Result<()> {
     }
 
     // Show hint for resumable sessions
-    let ps_sessions: Vec<_> = local_sessions.iter().filter(|s| s.session_type == "pocketshell").collect();
+    let ps_sessions: Vec<_> = local_sessions
+        .iter()
+        .filter(|s| s.session_type == "pocketshell")
+        .collect();
     if !ps_sessions.is_empty() {
-        println!("Tip: attach to a persistent PocketShell session locally with:");
-        for s in &ps_sessions {
-            println!("  pocketshell sessions attach {}", s.name);
-        }
+        println!("Tip: PocketShell persistent sessions can be resumed from mobile.");
+        println!("Local CLI attach is still only available for tmux sessions.");
     }
 
     Ok(())
@@ -584,6 +616,14 @@ fn sessions_attach(session_id: String) -> Result<()> {
             }
             return Ok(());
         }
+        if SessionDiscovery::discover()
+            .iter()
+            .any(|s| s.session_type == "pocketshell" && s.name == session_id)
+        {
+            return Err(anyhow!(
+                "local attach is not implemented yet for native PocketShell sessions; resume it from the mobile app instead"
+            ));
+        }
         return Err(anyhow!(
             "session '{}' not found. Run `pocketshell sessions` to see available sessions.",
             session_id
@@ -606,7 +646,7 @@ fn sessions_attach(session_id: String) -> Result<()> {
     Ok(())
 }
 
-fn remote_cmd(name: String, detached: bool, list: bool, remove: bool) -> Result<()> {
+fn remote_cmd(name: String, _detached: bool, list: bool, remove: bool) -> Result<()> {
     if remove {
         SessionDiscovery::unregister_exposed(&name)?;
         println!("removed exposed session '{}'", name);
@@ -618,7 +658,10 @@ fn remote_cmd(name: String, detached: bool, list: bool, remove: bool) -> Result<
         if sessions.is_empty() {
             println!("no exposed sessions found");
         } else {
-            println!("{:<12} {:<20} {:<10} {}", "TYPE", "NAME", "STATUS", "WINDOWS");
+            println!(
+                "{:<12} {:<20} {:<10} {}",
+                "TYPE", "NAME", "STATUS", "WINDOWS"
+            );
             for s in &sessions {
                 println!(
                     "{:<12} {:<20} {:<10} {}",

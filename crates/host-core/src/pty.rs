@@ -7,6 +7,8 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+const MAX_SCROLLBACK_BYTES: usize = 512 * 1024;
+
 /// Dummy child process for PTY relay sessions (the real process is owned by `pocketshell rc`).
 #[derive(Debug)]
 struct DummyChild;
@@ -43,29 +45,24 @@ struct PtySession {
     output_rx: mpsc::Receiver<Vec<u8>>,
     stop: Arc<AtomicBool>,
     child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
-    /// Whether this session is backed by a persistent tmux session.
+    scrollback: Arc<Mutex<Vec<u8>>>,
+    /// Whether this session remains resumable after viewers detach.
     persistent: bool,
-    /// The tmux session name (e.g. "ps-{session_id}") if persistent.
+    /// Legacy tmux session name when persistence is delegated to tmux.
     tmux_session_name: Option<String>,
 }
 
 pub struct SessionManager {
     sessions: HashMap<String, PtySession>,
     limit: usize,
-    has_tmux: bool,
 }
 
 impl SessionManager {
-    pub fn new(limit: usize, has_tmux: bool) -> Self {
+    pub fn new(limit: usize) -> Self {
         Self {
             sessions: HashMap::new(),
             limit,
-            has_tmux,
         }
-    }
-
-    pub fn has_tmux(&self) -> bool {
-        self.has_tmux
     }
 
     /// Check if a session is currently active (has I/O threads running).
@@ -84,120 +81,41 @@ impl SessionManager {
         cols: u16,
         rows: u16,
     ) -> Result<()> {
-        if self.has_tmux {
-            self.create_tmux_backed_session(session_id, shell, cols, rows)
-        } else {
-            self.create_session_with_command(session_id, shell, &[], cols, rows, false, None)
-        }
+        self.create_session_with_command(session_id, shell, &[], cols, rows, true, None)
     }
 
-    /// Create a persistent session backed by a tmux server session.
-    /// The tmux session survives disconnects; we attach a PTY to it for I/O.
-    fn create_tmux_backed_session(
-        &mut self,
-        session_id: String,
-        shell: &str,
-        cols: u16,
-        rows: u16,
-    ) -> Result<()> {
-        let tmux_name = format!("ps-{session_id}");
-
-        // Create a detached tmux session with status bar disabled
-        let status = std::process::Command::new("tmux")
-            .args([
-                "new-session",
-                "-d",
-                "-s",
-                &tmux_name,
-                "-x",
-                &cols.to_string(),
-                "-y",
-                &rows.to_string(),
-                shell,
-                ";",
-                "set-option",
-                "-t",
-                &tmux_name,
-                "status",
-                "off",
-            ])
-            .status()
-            .map_err(|e| HostError::Pty(format!("tmux new-session failed: {e}")))?;
-
-        if !status.success() {
-            return Err(HostError::Pty(format!(
-                "tmux new-session exited with {status}"
-            )));
-        }
-
-        // Now attach to it via the existing tmux attach path
-        let tmux_name_clone = tmux_name.clone();
-        self.create_session_with_command(
-            session_id,
-            "tmux",
-            &["attach-session", "-t", &tmux_name],
-            cols,
-            rows,
-            true,
-            Some(tmux_name_clone),
-        )
-    }
-
-    /// Reconnect to an existing persistent tmux session.
+    /// Reconnect to an existing native persistent session.
     pub fn reconnect_session(&mut self, session_id: String, cols: u16, rows: u16) -> Result<()> {
-        let tmux_name = format!("ps-{session_id}");
-
-        // Check tmux session still exists
-        let status = std::process::Command::new("tmux")
-            .args(["has-session", "-t", &tmux_name])
-            .status()
-            .map_err(|e| HostError::Pty(format!("tmux has-session failed: {e}")))?;
-
-        if !status.success() {
-            return Err(HostError::Pty(format!(
-                "tmux session {tmux_name} no longer exists"
-            )));
+        let _ = (cols, rows);
+        if self.sessions.contains_key(&session_id) {
+            return Ok(());
         }
-
-        // Attach to it
-        let tmux_name_clone = tmux_name.clone();
-        self.create_session_with_command(
-            session_id,
-            "tmux",
-            &["attach-session", "-t", &tmux_name],
-            cols,
-            rows,
-            true,
-            Some(tmux_name_clone),
-        )
+        Err(HostError::Pty(format!(
+            "session {session_id} is not active; native PocketShell sessions cannot be restored after a daemon restart"
+        )))
     }
 
-    /// Capture scrollback from a persistent tmux session for replay.
-    pub fn capture_scrollback(session_id: &str) -> Result<Vec<u8>> {
-        let tmux_name = format!("ps-{session_id}");
-        let output = std::process::Command::new("tmux")
-            .args(["capture-pane", "-t", &tmux_name, "-p", "-S", "-1000"])
-            .output()
-            .map_err(|e| HostError::Pty(format!("tmux capture-pane failed: {e}")))?;
-
-        if !output.status.success() {
-            return Err(HostError::Pty(format!(
-                "tmux capture-pane exited with {}",
-                output.status
-            )));
-        }
-
-        Ok(output.stdout)
+    /// Capture PocketShell-managed scrollback for replay.
+    pub fn capture_scrollback(&self, session_id: &str) -> Result<Vec<u8>> {
+        let session = self
+            .sessions
+            .get(session_id)
+            .ok_or_else(|| HostError::Pty(format!("unknown session: {session_id}")))?;
+        let scrollback = session
+            .scrollback
+            .lock()
+            .map_err(|_| HostError::Pty(format!("scrollback lock poisoned: {session_id}")))?;
+        Ok(scrollback.clone())
     }
 
-    /// Check if a session is persistent (tmux-backed).
+    /// Check if a session is persistent.
     pub fn is_persistent(&self, session_id: &str) -> bool {
         self.sessions
             .get(session_id)
             .map_or(false, |s| s.persistent)
     }
 
-    /// Get the tmux session name for a session.
+    /// Get the legacy tmux session name for a session, when applicable.
     pub fn tmux_session_name(&self, session_id: &str) -> Option<String> {
         self.sessions
             .get(session_id)
@@ -232,20 +150,8 @@ impl SessionManager {
                 false,
                 None,
             ),
-            // "pocketshell" type — reconnect to a ps-{name} persistent tmux session
-            "pocketshell" => {
-                let tmux_name = format!("ps-{target_name}");
-                let tmux_name_clone = tmux_name.clone();
-                self.create_session_with_command(
-                    session_id,
-                    "tmux",
-                    &["attach-session", "-t", &tmux_name],
-                    cols,
-                    rows,
-                    true,
-                    Some(tmux_name_clone),
-                )
-            }
+            // "pocketshell" type — rejoin an existing PocketShell-managed session by ID
+            "pocketshell" => self.reconnect_session(target_name.to_string(), cols, rows),
             // "shell" type from `pocketshell rc` — attach to existing PTY device
             "shell" => self.create_pty_relay_session(session_id, target_name),
             _ => Err(HostError::Pty(format!(
@@ -318,6 +224,7 @@ impl SessionManager {
             .map_err(|e| HostError::Pty(format!("open PTY {pty_path} for write: {e}")))?;
 
         let stop = Arc::new(AtomicBool::new(false));
+        let scrollback = Arc::new(Mutex::new(Vec::new()));
         let (input_tx, input_rx) = mpsc::channel::<Vec<u8>>();
         let (resize_tx, _resize_rx) = mpsc::channel::<(u16, u16)>();
         let (output_tx, output_rx) = mpsc::sync_channel::<Vec<u8>>(1024);
@@ -340,12 +247,16 @@ impl SessionManager {
         {
             let stop = Arc::clone(&stop);
             let mut reader = pty_read;
+            let scrollback = Arc::clone(&scrollback);
             thread::spawn(move || {
                 let mut buf = vec![0_u8; 4096];
                 while !stop.load(Ordering::Relaxed) {
                     match reader.read(&mut buf) {
                         Ok(0) => break,
                         Ok(n) => {
+                            if let Ok(mut stored) = scrollback.lock() {
+                                append_scrollback(&mut stored, &buf[..n]);
+                            }
                             let _ = output_tx.send(buf[..n].to_vec());
                         }
                         Err(_) => break,
@@ -366,6 +277,7 @@ impl SessionManager {
                 output_rx,
                 stop,
                 child: dummy_child,
+                scrollback,
                 persistent: false,
                 tmux_session_name: None,
             },
@@ -418,6 +330,7 @@ impl SessionManager {
             .map_err(|e| HostError::Pty(format!("spawn shell failed: {e}")))?;
 
         let child = Arc::new(Mutex::new(child));
+        let scrollback = Arc::new(Mutex::new(Vec::new()));
         let mut reader = pair
             .master
             .try_clone_reader()
@@ -463,12 +376,16 @@ impl SessionManager {
 
         {
             let stop = Arc::clone(&stop);
+            let scrollback = Arc::clone(&scrollback);
             thread::spawn(move || {
                 let mut buf = vec![0_u8; 4096];
                 while !stop.load(Ordering::Relaxed) {
                     match reader.read(&mut buf) {
                         Ok(0) => break,
                         Ok(n) => {
+                            if let Ok(mut stored) = scrollback.lock() {
+                                append_scrollback(&mut stored, &buf[..n]);
+                            }
                             let _ = output_tx.send(buf[..n].to_vec());
                         }
                         Err(_) => break,
@@ -485,6 +402,7 @@ impl SessionManager {
                 output_rx,
                 stop,
                 child,
+                scrollback,
                 persistent,
                 tmux_session_name,
             },
@@ -558,7 +476,7 @@ impl SessionManager {
         ended
     }
 
-    /// Detach a persistent session: stop I/O threads but keep the tmux session alive.
+    /// Detach a persistent session without stopping the PTY or clearing scrollback.
     /// For non-persistent sessions, this falls through to close_session.
     pub fn detach_session(&mut self, session_id: &str) -> Result<bool> {
         let is_persistent = self
@@ -570,26 +488,15 @@ impl SessionManager {
             return Ok(false);
         }
 
-        let session = self
-            .sessions
-            .remove(session_id)
-            .ok_or_else(|| HostError::Pty(format!("unknown session: {session_id}")))?;
-
-        // Stop I/O threads — the tmux server session keeps running independently
-        session.stop.store(true, Ordering::Relaxed);
-        // Kill the `tmux attach` child process (not the tmux server session)
-        if let Ok(mut child) = session.child.lock() {
-            let _ = child.kill();
-            if child.process_id().is_some() {
-                let _ = child.wait();
-            }
+        if !self.sessions.contains_key(session_id) {
+            return Err(HostError::Pty(format!("unknown session: {session_id}")));
         }
 
-        Ok(true) // persistent — tmux session still alive
+        Ok(true)
     }
 
-    /// Detach all sessions. Persistent sessions keep their tmux alive.
-    /// Returns list of session IDs that were detached (persistent, still alive).
+    /// Detach all sessions. Persistent sessions keep their PTYs alive.
+    /// Returns list of session IDs that were detached and remain resumable.
     pub fn detach_all(&mut self) -> Vec<String> {
         let ids: Vec<String> = self.sessions.keys().cloned().collect();
         let mut detached = Vec::new();
@@ -640,5 +547,30 @@ impl SessionManager {
         for id in ids {
             let _ = self.close_session(&id);
         }
+    }
+}
+
+fn append_scrollback(scrollback: &mut Vec<u8>, chunk: &[u8]) {
+    scrollback.extend_from_slice(chunk);
+    if scrollback.len() <= MAX_SCROLLBACK_BYTES {
+        return;
+    }
+
+    let overflow = scrollback.len() - MAX_SCROLLBACK_BYTES;
+    scrollback.drain(..overflow);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{append_scrollback, MAX_SCROLLBACK_BYTES};
+
+    #[test]
+    fn scrollback_trims_oldest_bytes() {
+        let mut scrollback = vec![b'a'; MAX_SCROLLBACK_BYTES - 2];
+        append_scrollback(&mut scrollback, b"bcdef");
+
+        assert_eq!(scrollback.len(), MAX_SCROLLBACK_BYTES);
+        assert_eq!(&scrollback[..4], b"aaaa");
+        assert_eq!(&scrollback[scrollback.len() - 4..], b"cdef");
     }
 }

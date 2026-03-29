@@ -1,6 +1,6 @@
+use crate::models::{AlertPayload, AlertThreshold, StatsSnapshot};
 use std::collections::HashMap;
 use tokio::time::Instant;
-use crate::models::{AlertPayload, AlertThreshold, StatsSnapshot};
 
 pub struct AlertChecker {
     last_alerted: HashMap<String, Instant>,
@@ -13,7 +13,11 @@ impl AlertChecker {
         }
     }
 
-    pub fn check(&mut self, snapshot: &StatsSnapshot, thresholds: &[AlertThreshold]) -> Vec<AlertPayload> {
+    pub fn check(
+        &mut self,
+        snapshot: &StatsSnapshot,
+        thresholds: &[AlertThreshold],
+    ) -> Vec<AlertPayload> {
         let mut alerts = Vec::new();
         let now = Instant::now();
 
@@ -21,11 +25,15 @@ impl AlertChecker {
             let actual_value = match threshold.metric.as_str() {
                 "cpu" => snapshot.cpu_usage_percent as f64,
                 "memory" => {
-                    if snapshot.memory_total_bytes == 0 { continue; }
+                    if snapshot.memory_total_bytes == 0 {
+                        continue;
+                    }
                     (snapshot.memory_used_bytes as f64 / snapshot.memory_total_bytes as f64) * 100.0
                 }
                 "disk" => {
-                    if snapshot.disk_total_bytes == 0 { continue; }
+                    if snapshot.disk_total_bytes == 0 {
+                        continue;
+                    }
                     (snapshot.disk_used_bytes as f64 / snapshot.disk_total_bytes as f64) * 100.0
                 }
                 "load" => snapshot.load_five,
@@ -37,7 +45,9 @@ impl AlertChecker {
                 _ => actual_value > threshold.threshold_value, // default "gt"
             };
 
-            if !exceeded { continue; }
+            if !exceeded {
+                continue;
+            }
 
             // Check cooldown
             if let Some(last) = self.last_alerted.get(&threshold.metric) {
@@ -61,7 +71,10 @@ impl AlertChecker {
                 metric: threshold.metric.clone(),
                 threshold_value: threshold.threshold_value,
                 actual_value: (actual_value * 10.0).round() / 10.0, // round to 1 decimal
-                message: format!("{} {:.1}% exceeds threshold {:.1}%", label, actual_value, threshold.threshold_value),
+                message: format!(
+                    "{} {:.1}% exceeds threshold {:.1}%",
+                    label, actual_value, threshold.threshold_value
+                ),
             });
         }
 

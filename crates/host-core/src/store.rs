@@ -77,10 +77,9 @@ impl StateStore {
     }
 
     pub fn is_trusted(&self, device_id: &str) -> bool {
-        self.state
-            .trusted_devices
-            .iter()
-            .any(|d| d.mobile_device_id == device_id && d.revoked_at.is_none() && d.approved_at.is_some())
+        self.state.trusted_devices.iter().any(|d| {
+            d.mobile_device_id == device_id && d.revoked_at.is_none() && d.approved_at.is_some()
+        })
     }
 
     pub fn upsert_session(&mut self, session: SessionRecord) {
@@ -113,25 +112,38 @@ impl StateStore {
         });
     }
 
-    pub fn clear_ended_sessions(&mut self, stale_after_secs: i64, detach_max_secs: i64) {
+    pub fn clear_ended_sessions(
+        &mut self,
+        stale_after_secs: i64,
+        detach_max_secs: i64,
+    ) -> Vec<String> {
         let now = Utc::now();
+        let mut native_detached_to_close = Vec::new();
         self.state.sessions.retain(|s| {
             let age = (now - s.updated_at).num_seconds();
             // Clear ended/failed sessions after stale threshold
-            if age > stale_after_secs && matches!(s.state, crate::models::SessionState::Ended | crate::models::SessionState::Failed) {
+            if age > stale_after_secs
+                && matches!(
+                    s.state,
+                    crate::models::SessionState::Ended | crate::models::SessionState::Failed
+                )
+            {
                 return false;
             }
-            // Clear detached sessions older than max detach time (and kill their tmux session)
+            // Clear detached sessions older than max detach time.
             if age > detach_max_secs && matches!(s.state, crate::models::SessionState::Detached) {
                 if let Some(ref tmux_name) = s.tmux_session_name {
                     let _ = std::process::Command::new("tmux")
                         .args(["kill-session", "-t", tmux_name])
                         .status();
+                } else if s.persistent {
+                    native_detached_to_close.push(s.session_id.clone());
                 }
                 return false;
             }
             true
         });
+        native_detached_to_close
     }
 
     pub fn host_id(&self) -> Result<String> {

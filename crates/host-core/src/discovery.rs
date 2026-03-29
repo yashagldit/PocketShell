@@ -1,6 +1,9 @@
 use crate::config::AppConfig;
+use crate::models::{SessionRecord, SessionState};
+use crate::store::StateStore;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs;
 use std::process::Command;
 use tracing::warn;
@@ -19,18 +22,11 @@ pub struct AvailableSession {
 pub struct SessionDiscovery;
 
 impl SessionDiscovery {
-    /// Return session IDs (without "ps-" prefix) of all PocketShell tmux sessions.
+    /// Return active PocketShell-managed session IDs from local state.
     pub fn discover_pocketshell_names() -> Vec<String> {
-        let output = Command::new("tmux")
-            .args(["list-sessions", "-F", "#{session_name}"])
-            .output();
-        let output = match output {
-            Ok(o) if o.status.success() => o,
-            _ => return Vec::new(),
-        };
-        String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .filter_map(|line| line.strip_prefix("ps-").map(|s| s.to_string()))
+        Self::load_pocketshell_sessions()
+            .into_iter()
+            .map(|session| session.session_id)
             .collect()
     }
 
@@ -53,46 +49,19 @@ impl SessionDiscovery {
         sessions
     }
 
-    /// Discover PocketShell-managed persistent tmux sessions (prefixed with "ps-").
+    /// Discover PocketShell-managed persistent sessions from local state.
     fn discover_pocketshell() -> Vec<AvailableSession> {
-        let output = Command::new("tmux")
-            .args(["list-sessions", "-F", "#{session_name}\t#{session_attached}\t#{session_created}\t#{session_windows}"])
-            .output();
-
-        let output = match output {
-            Ok(o) if o.status.success() => o,
-            _ => return Vec::new(),
-        };
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        stdout
-            .lines()
-            .filter_map(|line| {
-                let parts: Vec<&str> = line.split('\t').collect();
-                if parts.len() < 4 {
-                    return None;
-                }
-                let name = parts[0];
-                // Only include PocketShell-managed sessions
-                if !name.starts_with("ps-") {
-                    return None;
-                }
-                let display_name = name.strip_prefix("ps-").unwrap_or(name).to_string();
-                let attached = parts[1] == "1";
-                let created_at = parts[2]
-                    .parse::<i64>()
-                    .ok()
-                    .and_then(|ts| DateTime::from_timestamp(ts, 0));
-                let windows = parts[3].parse::<u32>().unwrap_or(1);
-
-                Some(AvailableSession {
-                    name: display_name,
-                    session_type: "pocketshell".to_string(),
-                    attached,
-                    created_at,
-                    windows,
-                    pty_path: None,
-                })
+        let mut seen = HashSet::new();
+        Self::load_pocketshell_sessions()
+            .into_iter()
+            .filter(|session| seen.insert(session.session_id.clone()))
+            .map(|session| AvailableSession {
+                name: session.session_id,
+                session_type: "pocketshell".to_string(),
+                attached: !matches!(session.state, SessionState::Detached),
+                created_at: Some(session.updated_at),
+                windows: 1,
+                pty_path: None,
             })
             .collect()
     }
@@ -166,7 +135,10 @@ impl SessionDiscovery {
                     .next()
                     .and_then(|s| DateTime::parse_from_rfc3339(s.trim()).ok())
                     .map(|dt| dt.with_timezone(&Utc));
-                let pty_path = lines.next().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+                let pty_path = lines
+                    .next()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty());
 
                 Some(AvailableSession {
                     name,
@@ -182,7 +154,11 @@ impl SessionDiscovery {
 
     fn discover_tmux() -> Vec<AvailableSession> {
         let output = Command::new("tmux")
-            .args(["list-sessions", "-F", "#{session_name}\t#{session_attached}\t#{session_created}\t#{session_windows}"])
+            .args([
+                "list-sessions",
+                "-F",
+                "#{session_name}\t#{session_attached}\t#{session_created}\t#{session_windows}",
+            ])
             .output();
 
         let output = match output {
@@ -245,11 +221,16 @@ impl SessionDiscovery {
             .filter_map(|line| {
                 let trimmed = line.trim();
                 // Lines look like: "12345.session_name\t(Attached)" or "(Detached)"
-                if !trimmed.contains('.') || (!trimmed.contains("Attached") && !trimmed.contains("Detached")) {
+                if !trimmed.contains('.')
+                    || (!trimmed.contains("Attached") && !trimmed.contains("Detached"))
+                {
                     return None;
                 }
                 let dot_pos = trimmed.find('.')?;
-                let name_end = trimmed.find('\t').or_else(|| trimmed.find(' ')).unwrap_or(trimmed.len());
+                let name_end = trimmed
+                    .find('\t')
+                    .or_else(|| trimmed.find(' '))
+                    .unwrap_or(trimmed.len());
                 let name = trimmed[dot_pos + 1..name_end].trim().to_string();
                 let attached = trimmed.contains("Attached");
 
@@ -263,5 +244,30 @@ impl SessionDiscovery {
                 })
             })
             .collect()
+    }
+
+    fn load_pocketshell_sessions() -> Vec<SessionRecord> {
+        let store = match StateStore::load() {
+            Ok(store) => store,
+            Err(_) => return Vec::new(),
+        };
+
+        let mut sessions: Vec<_> = store
+            .state
+            .sessions
+            .into_iter()
+            .filter(|session| {
+                session.persistent
+                    && matches!(
+                        session.state,
+                        SessionState::Approved
+                            | SessionState::Connecting
+                            | SessionState::Connected
+                            | SessionState::Detached
+                    )
+            })
+            .collect();
+        sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        sessions
     }
 }

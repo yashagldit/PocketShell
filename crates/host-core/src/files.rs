@@ -36,78 +36,75 @@ pub async fn handle_files_action(payload: &serde_json::Value) -> Result<serde_js
 
     let payload = payload.clone();
 
-    tokio::task::spawn_blocking(move || {
-        match action.as_str() {
-            "list_dir" => list_dir(&path_str),
-            "read_file" => {
-                let offset = payload.get("offset").and_then(|v| v.as_u64()).unwrap_or(0);
-                let limit = payload
-                    .get("limit")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(MAX_READ_SIZE);
-                read_file(&path_str, offset, limit)
-            }
-            "stat" => stat_path(&path_str),
-            "mkdir" => mkdir(&path_str),
-            "delete" => delete_path(&path_str),
-            "rename" => {
-                let new_path = payload
-                    .get("new_path")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                rename_path(&path_str, new_path)
-            }
-            "copy" => {
-                let destination = payload
-                    .get("destination")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let overwrite = payload
-                    .get("overwrite")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                copy_path(&path_str, destination, overwrite)
-            }
-            "move" => {
-                let destination = payload
-                    .get("destination")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let overwrite = payload
-                    .get("overwrite")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                move_path(&path_str, destination, overwrite)
-            }
-            "write_file" => {
-                let data_b64 = payload
-                    .get("data_b64")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let append = payload
-                    .get("append")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                write_file(&path_str, data_b64, append)
-            }
-            "download" => download_file(&path_str),
-            "search" => {
-                let query = payload
-                    .get("query")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let max_results = payload
-                    .get("max_results")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(200) as usize;
-                let max_depth = payload
-                    .get("max_depth")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(10) as usize;
-                search_files(&path_str, query, max_results, max_depth)
-            }
-            _ => Err(HostError::Backend(format!("unknown files action: {action}"))),
+    tokio::task::spawn_blocking(move || match action.as_str() {
+        "list_dir" => list_dir(&path_str),
+        "read_file" => {
+            let offset = payload.get("offset").and_then(|v| v.as_u64()).unwrap_or(0);
+            let limit = payload
+                .get("limit")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(MAX_READ_SIZE);
+            read_file(&path_str, offset, limit)
         }
+        "stat" => stat_path(&path_str),
+        "mkdir" => mkdir(&path_str),
+        "delete" => delete_path(&path_str),
+        "rename" => {
+            let new_path = payload
+                .get("new_path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            rename_path(&path_str, new_path)
+        }
+        "copy" => {
+            let destination = payload
+                .get("destination")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let overwrite = payload
+                .get("overwrite")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            copy_path(&path_str, destination, overwrite)
+        }
+        "move" => {
+            let destination = payload
+                .get("destination")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let overwrite = payload
+                .get("overwrite")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            move_path(&path_str, destination, overwrite)
+        }
+        "write_file" => {
+            let data_b64 = payload
+                .get("data_b64")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let append = payload
+                .get("append")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            write_file(&path_str, data_b64, append)
+        }
+        "download" => download_file(&path_str),
+        "search" => {
+            let query = payload.get("query").and_then(|v| v.as_str()).unwrap_or("");
+            let max_results = payload
+                .get("max_results")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(200) as usize;
+            let max_depth = payload
+                .get("max_depth")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(10) as usize;
+            search_files(&path_str, query, max_results, max_depth)
+        }
+        _ => Err(HostError::Backend(format!(
+            "unknown files action: {action}"
+        ))),
     })
     .await
     .map_err(|e| HostError::Backend(format!("file operation panicked: {e}")))?
@@ -132,17 +129,22 @@ fn resolve_path(raw: &str) -> Result<PathBuf> {
 }
 
 fn safe_canonicalize(path: &Path) -> Result<PathBuf> {
-    fs::canonicalize(path).map_err(|e| {
-        HostError::Backend(format!("path not found: {}: {}", path.display(), e))
-    })
+    fs::canonicalize(path)
+        .map_err(|e| HostError::Backend(format!("path not found: {}: {}", path.display(), e)))
 }
 
 #[cfg(unix)]
 fn format_permissions(mode: u32) -> String {
     let flags = [
-        (0o400, 'r'), (0o200, 'w'), (0o100, 'x'),
-        (0o040, 'r'), (0o020, 'w'), (0o010, 'x'),
-        (0o004, 'r'), (0o002, 'w'), (0o001, 'x'),
+        (0o400, 'r'),
+        (0o200, 'w'),
+        (0o100, 'x'),
+        (0o040, 'r'),
+        (0o020, 'w'),
+        (0o010, 'x'),
+        (0o004, 'r'),
+        (0o002, 'w'),
+        (0o001, 'x'),
     ];
     flags
         .iter()
@@ -184,7 +186,11 @@ fn list_dir(path_str: &str) -> Result<serde_json::Value> {
 
     let mut entries = Vec::new();
     let reader = fs::read_dir(&canonical).map_err(|e| {
-        HostError::Backend(format!("cannot read directory {}: {}", canonical.display(), e))
+        HostError::Backend(format!(
+            "cannot read directory {}: {}",
+            canonical.display(),
+            e
+        ))
     })?;
 
     for entry_result in reader {
@@ -204,10 +210,7 @@ fn list_dir(path_str: &str) -> Result<serde_json::Value> {
                 continue;
             }
         };
-        let is_symlink = entry
-            .file_type()
-            .map(|ft| ft.is_symlink())
-            .unwrap_or(false);
+        let is_symlink = entry.file_type().map(|ft| ft.is_symlink()).unwrap_or(false);
 
         entries.push(FileEntry {
             name,
@@ -237,9 +240,8 @@ fn read_file(path_str: &str, offset: u64, limit: u64) -> Result<serde_json::Valu
     let file_path = resolve_path(path_str)?;
     let canonical = safe_canonicalize(&file_path)?;
 
-    let metadata = fs::metadata(&canonical).map_err(|e| {
-        HostError::Backend(format!("cannot stat {}: {}", canonical.display(), e))
-    })?;
+    let metadata = fs::metadata(&canonical)
+        .map_err(|e| HostError::Backend(format!("cannot stat {}: {}", canonical.display(), e)))?;
 
     if metadata.is_dir() {
         return Err(HostError::Backend("cannot read a directory".to_string()));
@@ -269,9 +271,8 @@ fn stat_path(path_str: &str) -> Result<serde_json::Value> {
     let file_path = resolve_path(path_str)?;
     let canonical = safe_canonicalize(&file_path)?;
 
-    let metadata = fs::metadata(&canonical).map_err(|e| {
-        HostError::Backend(format!("cannot stat {}: {}", canonical.display(), e))
-    })?;
+    let metadata = fs::metadata(&canonical)
+        .map_err(|e| HostError::Backend(format!("cannot stat {}: {}", canonical.display(), e)))?;
 
     let symlink_meta = fs::symlink_metadata(&canonical).ok();
     let is_symlink = symlink_meta
@@ -321,13 +322,16 @@ fn mkdir(path_str: &str) -> Result<serde_json::Value> {
 fn delete_path(path_str: &str) -> Result<serde_json::Value> {
     let target = resolve_path(path_str)?;
     let canonical = safe_canonicalize(&target)?;
-    let metadata = fs::metadata(&canonical).map_err(|e| {
-        HostError::Backend(format!("cannot stat {}: {}", canonical.display(), e))
-    })?;
+    let metadata = fs::metadata(&canonical)
+        .map_err(|e| HostError::Backend(format!("cannot stat {}: {}", canonical.display(), e)))?;
 
     if metadata.is_dir() {
         fs::remove_dir_all(&canonical).map_err(|e| {
-            HostError::Backend(format!("cannot delete directory {}: {}", canonical.display(), e))
+            HostError::Backend(format!(
+                "cannot delete directory {}: {}",
+                canonical.display(),
+                e
+            ))
         })?;
     } else {
         fs::remove_file(&canonical).map_err(|e| {
@@ -368,7 +372,9 @@ fn copy_path(path_str: &str, destination: &str, overwrite: bool) -> Result<serde
 
     if dst.exists() {
         if !overwrite {
-            return Err(HostError::Backend("FILE_EXISTS: destination already exists".to_string()));
+            return Err(HostError::Backend(
+                "FILE_EXISTS: destination already exists".to_string(),
+            ));
         }
         // Clean replace: remove existing destination so we don't merge dirs
         if dst.is_dir() {
@@ -413,19 +419,22 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
     for entry_result in fs::read_dir(src).map_err(|e| {
         HostError::Backend(format!("cannot read directory {}: {}", src.display(), e))
     })? {
-        let entry = entry_result.map_err(|e| {
-            HostError::Backend(format!("read_dir entry error: {e}"))
-        })?;
-        let file_type = entry.file_type().map_err(|e| {
-            HostError::Backend(format!("cannot get file type: {e}"))
-        })?;
+        let entry =
+            entry_result.map_err(|e| HostError::Backend(format!("read_dir entry error: {e}")))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|e| HostError::Backend(format!("cannot get file type: {e}")))?;
         let src_child = entry.path();
         let dst_child = dst.join(entry.file_name());
 
         if file_type.is_symlink() {
             // Preserve symlink rather than following it (avoids circular loops)
             let target = fs::read_link(&src_child).map_err(|e| {
-                HostError::Backend(format!("cannot read symlink {}: {}", src_child.display(), e))
+                HostError::Backend(format!(
+                    "cannot read symlink {}: {}",
+                    src_child.display(),
+                    e
+                ))
             })?;
             #[cfg(unix)]
             std::os::unix::fs::symlink(&target, &dst_child).map_err(|e| {
@@ -479,7 +488,9 @@ fn move_path(path_str: &str, destination: &str, overwrite: bool) -> Result<serde
 
     if dst.exists() {
         if !overwrite {
-            return Err(HostError::Backend("FILE_EXISTS: destination already exists".to_string()));
+            return Err(HostError::Backend(
+                "FILE_EXISTS: destination already exists".to_string(),
+            ));
         }
         // Clean replace: remove existing destination so rename/copy doesn't merge
         if dst.is_dir() {
@@ -586,12 +597,13 @@ fn download_file(path_str: &str) -> Result<serde_json::Value> {
     let file_path = resolve_path(path_str)?;
     let canonical = safe_canonicalize(&file_path)?;
 
-    let metadata = fs::metadata(&canonical).map_err(|e| {
-        HostError::Backend(format!("cannot stat {}: {}", canonical.display(), e))
-    })?;
+    let metadata = fs::metadata(&canonical)
+        .map_err(|e| HostError::Backend(format!("cannot stat {}: {}", canonical.display(), e)))?;
 
     if metadata.is_dir() {
-        return Err(HostError::Backend("cannot download a directory".to_string()));
+        return Err(HostError::Backend(
+            "cannot download a directory".to_string(),
+        ));
     }
 
     if metadata.len() > MAX_FILE_SIZE {
@@ -729,10 +741,7 @@ fn search_files(
                 Ok(m) => m,
                 Err(_) => continue,
             };
-            let is_symlink = entry
-                .file_type()
-                .map(|ft| ft.is_symlink())
-                .unwrap_or(false);
+            let is_symlink = entry.file_type().map(|ft| ft.is_symlink()).unwrap_or(false);
 
             if matcher.matches(&name) {
                 results.push(FileEntry {
@@ -747,12 +756,26 @@ fn search_files(
             }
 
             if metadata.is_dir() && !is_symlink {
-                walk(&entry_path, matcher, results, max_results, depth + 1, max_depth);
+                walk(
+                    &entry_path,
+                    matcher,
+                    results,
+                    max_results,
+                    depth + 1,
+                    max_depth,
+                );
             }
         }
     }
 
-    walk(&canonical, &matcher, &mut results, max_results, 0, max_depth);
+    walk(
+        &canonical,
+        &matcher,
+        &mut results,
+        max_results,
+        0,
+        max_depth,
+    );
 
     Ok(serde_json::json!({
         "entries": results,

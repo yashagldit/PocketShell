@@ -96,10 +96,10 @@ pub struct SessionRecord {
     pub mobile_device_id: String,
     pub state: SessionState,
     pub updated_at: DateTime<Utc>,
-    /// Whether this session is backed by a persistent tmux session.
+    /// Whether this session should remain resumable after the viewer detaches.
     #[serde(default)]
     pub persistent: bool,
-    /// The tmux session name (e.g. "ps-{session_id}") if persistent.
+    /// Legacy tmux session name when persistence is delegated to tmux.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tmux_session_name: Option<String>,
 }

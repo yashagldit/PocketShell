@@ -186,17 +186,8 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
     let mut stats = StatsCollector::new();
     let mut stats_active = false;
     let mut stats_deadline: Option<Instant> = None;
-    let has_tmux = std::process::Command::new("tmux")
-        .arg("-V")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-    if has_tmux {
-        info!("tmux detected — sessions will be persistent");
-    } else {
-        info!("tmux not found — sessions will be ephemeral");
-    }
-    let mut sessions = SessionManager::new(config.session_limit, has_tmux);
+    info!("PocketShell native session persistence enabled");
+    let mut sessions = SessionManager::new(config.session_limit);
     let (webrtc_event_tx, mut webrtc_event_rx) =
         tokio::sync::mpsc::unbounded_channel::<WebRtcEvent>();
     let mut webrtc_mgr = WebRtcManager::new(webrtc_event_tx);
@@ -204,6 +195,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
 
     let mut file_transfers: HashMap<String, PendingFileTransfer> = HashMap::new();
     let mut minute_stats_buffer: Vec<StatsSnapshot> = Vec::with_capacity(5);
+    let mut peer_session_routes: HashMap<String, String> = HashMap::new();
 
     info!("daemon starting for host_id={}", host_id);
     let _ = write_audit_event(AuditEvent {
@@ -266,36 +258,20 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
         let mut stats_stream_tick = interval(Duration::from_secs(2));
 
         // Reconcile stale sessions: fetch active sessions from backend and end
-        // any whose backing tmux process no longer exists on this host.
-        // Also kill orphaned ps-* tmux sessions that have no active DB session.
+        // any that no longer have a live PTY in this daemon.
         {
             let token = store.access_token()?.to_string();
             match backend.list_active_sessions(&token, &host_id).await {
                 Ok(active) => {
-                    let active_ids: std::collections::HashSet<String> =
-                        active.iter().map(|(id, _)| id.clone()).collect();
-
-                    // End DB sessions whose tmux process is gone
                     for (session_id, _state) in &active {
-                        let tmux_name = format!("ps-{session_id}");
-                        let alive = sessions.is_active(session_id)
-                            || crate::discovery::SessionDiscovery::tmux_session_exists(&tmux_name);
-                        if !alive {
-                            info!("reconcile: session {} has no live process, ending", session_id);
+                        if !sessions.is_active(session_id) {
+                            info!(
+                                "reconcile: session {} has no live process, ending",
+                                session_id
+                            );
                             let _ = backend
                                 .transition_session(&token, session_id, SessionState::Ended, None)
                                 .await;
-                        }
-                    }
-
-                    // Kill orphaned ps-* tmux sessions with no active DB session
-                    for ps in crate::discovery::SessionDiscovery::discover_pocketshell_names() {
-                        if !active_ids.contains(&ps) && !sessions.is_active(&ps) {
-                            let tmux_name = format!("ps-{ps}");
-                            info!("reconcile: killing orphaned tmux session {}", tmux_name);
-                            let _ = std::process::Command::new("tmux")
-                                .args(["kill-session", "-t", &tmux_name])
-                                .status();
                         }
                     }
                 }
@@ -353,7 +329,11 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                         }
                     }
 
-                    store.clear_ended_sessions(config.stale_session_secs as i64, config.detach_max_secs as i64);
+                    let expired_native_detached =
+                        store.clear_ended_sessions(config.stale_session_secs as i64, config.detach_max_secs as i64);
+                    for session_id in expired_native_detached {
+                        let _ = sessions.close_session(&session_id);
+                    }
                     let _ = store.save();
                 }
                 _ = trusted_devices_tick.tick() => {
@@ -463,9 +443,11 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                 }
                 _ = output_tick.tick() => {
                     for chunk in sessions.drain_output() {
-                        if webrtc_mgr.send_output(&chunk.session_id, &chunk.bytes).await {
-                            continue;
-                        }
+                        // Always emit the signaling copy as well. WebRTC-connected
+                        // viewers ignore signaling terminal output on the mobile side,
+                        // but fallback viewers still need this path even when another
+                        // viewer already has a live data channel.
+                        let _ = webrtc_mgr.send_output(&chunk.session_id, &chunk.bytes).await;
                         let msg = SignalEnvelope {
                             message_type: "signal".to_string(),
                             session_id: Some(chunk.session_id),
@@ -629,20 +611,20 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                         }
                         WebRtcEvent::IceCandidate { mobile_device_id, candidate_json } => {
                             if let Ok(candidate_value) = serde_json::from_str::<serde_json::Value>(&candidate_json) {
-                                // Check if this mobile has a terminal session (route via session_id)
-                                // or is a stats-only peer (route via stats_ice_candidate)
-                                let session = store.state.sessions.iter()
-                                    .find(|s| s.mobile_device_id == mobile_device_id);
-
-                                if let Some(session) = session {
+                                if let Some(session_id) = peer_session_routes.get(&mobile_device_id).cloned() {
+                                    let mut extra = std::collections::HashMap::new();
+                                    extra.insert(
+                                        "target_mobile_device_id".to_string(),
+                                        serde_json::json!(mobile_device_id),
+                                    );
                                     let ice_msg = SignalEnvelope {
                                         message_type: "ice_candidate".to_string(),
-                                        session_id: Some(session.session_id.clone()),
+                                        session_id: Some(session_id),
                                         payload: Some(candidate_value),
                                         state: None,
                                         accepted: None,
                                         reason: None,
-                                        extra: std::collections::HashMap::new(),
+                                        extra,
                                     };
                                     let _ = send_signal(&mut ws, &ice_msg).await;
                                 } else {
@@ -702,6 +684,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                 &mut ws,
                                 &mut webrtc_mgr,
                                 &mut file_transfers,
+                                &mut peer_session_routes,
                             ).await {
                                 error!("control message handling failed: {}", err);
                             }
@@ -736,7 +719,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
         minute_stats_buffer.clear();
 
         // Reconcile session resources after WebSocket disconnect.
-        // Persistent (tmux-backed) sessions survive — only I/O threads are stopped.
+        // Persistent sessions survive; their PTYs stay alive for later rejoin.
         let detached_ids = sessions.detach_all();
         webrtc_mgr.close_all().await;
         for session in &mut store.state.sessions {
@@ -805,6 +788,7 @@ async fn handle_signal(
     ws: &mut crate::transport::WsStream,
     webrtc_mgr: &mut WebRtcManager,
     file_transfers: &mut HashMap<String, PendingFileTransfer>,
+    peer_session_routes: &mut HashMap<String, String>,
 ) -> Result<()> {
     match msg.message_type.as_str() {
         "session_request" => {
@@ -825,6 +809,11 @@ async fn handle_signal(
             let rows = msg.extra.get("rows").and_then(|v| v.as_u64()).unwrap_or(30) as u16;
 
             if !store.is_trusted(&mobile_device_id) {
+                let mut extra = std::collections::HashMap::new();
+                extra.insert(
+                    "target_mobile_device_id".to_string(),
+                    serde_json::json!(mobile_device_id),
+                );
                 let reject = SignalEnvelope {
                     message_type: "session_ack".to_string(),
                     session_id: Some(session_id.clone()),
@@ -832,7 +821,7 @@ async fn handle_signal(
                     state: Some("failed".to_string()),
                     accepted: Some(false),
                     reason: Some("device_not_trusted".to_string()),
-                    extra: std::collections::HashMap::new(),
+                    extra,
                 };
                 send_signal(ws, &reject).await?;
                 return Ok(());
@@ -867,6 +856,11 @@ async fn handle_signal(
             };
 
             let accept = accept_session(sessions, &req, shell).is_ok();
+            let mut ack_extra = std::collections::HashMap::new();
+            ack_extra.insert(
+                "target_mobile_device_id".to_string(),
+                serde_json::json!(mobile_device_id),
+            );
             let ack = SignalEnvelope {
                 message_type: "session_ack".to_string(),
                 session_id: Some(session_id.clone()),
@@ -878,7 +872,7 @@ async fn handle_signal(
                 } else {
                     Some("pty_failed".to_string())
                 },
-                extra: std::collections::HashMap::new(),
+                extra: ack_extra,
             };
             send_signal(ws, &ack).await?;
 
@@ -944,7 +938,10 @@ async fn handle_signal(
                 .to_string();
 
             if !store.is_trusted(&mobile_device_id) {
-                warn!("signal rejected: device {} is not trusted", mobile_device_id);
+                warn!(
+                    "signal rejected: device {} is not trusted",
+                    mobile_device_id
+                );
                 return Ok(());
             }
 
@@ -1033,6 +1030,7 @@ async fn handle_signal(
                             let was_persistent =
                                 sessions.detach_session(&session_id).unwrap_or(false);
                             if was_persistent {
+                                webrtc_mgr.close_session(&session_id);
                                 store.touch_session_state(&session_id, SessionState::Detached);
                                 let detach_event = SignalEnvelope {
                                     message_type: "session_event".to_string(),
@@ -1083,7 +1081,8 @@ async fn handle_signal(
                             }
                         }
                         "disconnect" | "session_close" => {
-                            // Explicit close — kills the session (including tmux if persistent).
+                            // Explicit close — kills the session.
+                            webrtc_mgr.close_session(&session_id);
                             sessions.close_session(&session_id)?;
                             store.touch_session_state(&session_id, SessionState::Ended);
                             let ended_event = SignalEnvelope {
@@ -1179,6 +1178,11 @@ async fn handle_signal(
             let rows = msg.extra.get("rows").and_then(|v| v.as_u64()).unwrap_or(30) as u16;
 
             if !store.is_trusted(&mobile_device_id) {
+                let mut extra = std::collections::HashMap::new();
+                extra.insert(
+                    "target_mobile_device_id".to_string(),
+                    serde_json::json!(mobile_device_id),
+                );
                 let reject = SignalEnvelope {
                     message_type: "session_ack".to_string(),
                     session_id: Some(session_id.clone()),
@@ -1186,7 +1190,7 @@ async fn handle_signal(
                     state: Some("failed".to_string()),
                     accepted: Some(false),
                     reason: Some("device_not_trusted".to_string()),
-                    extra: std::collections::HashMap::new(),
+                    extra,
                 };
                 send_signal(ws, &reject).await?;
                 return Ok(());
@@ -1194,7 +1198,7 @@ async fn handle_signal(
 
             // If session is already active in SessionManager (another device is using it),
             // we just need to ACK — the new WebRTC channel will be added via session_offer.
-            // If session is detached (not in SessionManager but tmux is alive), reconnect.
+            // If it is no longer active, attempt a native reconnect.
             let needs_reconnect = !sessions.is_active(&session_id);
             let accept = if needs_reconnect {
                 sessions
@@ -1204,6 +1208,11 @@ async fn handle_signal(
                 true
             };
 
+            let mut ack_extra = std::collections::HashMap::new();
+            ack_extra.insert(
+                "target_mobile_device_id".to_string(),
+                serde_json::json!(mobile_device_id),
+            );
             let ack = SignalEnvelope {
                 message_type: "session_ack".to_string(),
                 session_id: Some(session_id.clone()),
@@ -1215,7 +1224,7 @@ async fn handle_signal(
                 } else {
                     Some("reconnect_failed".to_string())
                 },
-                extra: std::collections::HashMap::new(),
+                extra: ack_extra,
             };
             send_signal(ws, &ack).await?;
 
@@ -1232,7 +1241,7 @@ async fn handle_signal(
                 let _ = send_signal(ws, &event).await;
 
                 // Send scrollback replay ONLY to the joining device (not all viewers)
-                if let Ok(scrollback) = SessionManager::capture_scrollback(&session_id) {
+                if let Ok(scrollback) = sessions.capture_scrollback(&session_id) {
                     if !scrollback.is_empty() {
                         let mut extra = std::collections::HashMap::new();
                         extra.insert(
@@ -1264,8 +1273,8 @@ async fn handle_signal(
                     mobile_device_id: mobile_device_id.clone(),
                     state: SessionState::Connected,
                     updated_at: Utc::now(),
-                    persistent: true,
-                    tmux_session_name: Some(format!("ps-{session_id}")),
+                    persistent: sessions.is_persistent(&session_id),
+                    tmux_session_name: sessions.tmux_session_name(&session_id),
                 });
                 store.save()?;
             }
@@ -1286,13 +1295,20 @@ async fn handle_signal(
         }
         "session_offer" => {
             let sid = msg.session_id.as_deref().unwrap_or_default();
-            let mobile_device_id = store
-                .state
-                .sessions
-                .iter()
-                .find(|s| s.session_id == sid)
-                .map(|s| s.mobile_device_id.clone())
-                .unwrap_or_default();
+            let mobile_device_id = msg
+                .extra
+                .get("mobile_device_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            if mobile_device_id.is_empty() || !store.is_trusted(&mobile_device_id) {
+                warn!(
+                    "session_offer rejected: device {} is not trusted for session {}",
+                    mobile_device_id, sid
+                );
+                return Ok(());
+            }
+            peer_session_routes.insert(mobile_device_id.clone(), sid.to_string());
 
             if let Some(payload) = &msg.payload {
                 if let Some(offer_sdp) = payload.get("sdp").and_then(|v| v.as_str()) {
@@ -1310,6 +1326,11 @@ async fn handle_signal(
                                 .await
                             {
                                 Ok(answer_sdp) => {
+                                    let mut extra = std::collections::HashMap::new();
+                                    extra.insert(
+                                        "target_mobile_device_id".to_string(),
+                                        serde_json::json!(mobile_device_id),
+                                    );
                                     let answer_msg = SignalEnvelope {
                                         message_type: "session_answer".to_string(),
                                         session_id: msg.session_id.clone(),
@@ -1317,7 +1338,7 @@ async fn handle_signal(
                                         state: None,
                                         accepted: None,
                                         reason: None,
-                                        extra: std::collections::HashMap::new(),
+                                        extra,
                                     };
                                     let _ = send_signal(ws, &answer_msg).await;
                                 }
@@ -1335,13 +1356,20 @@ async fn handle_signal(
         }
         "ice_candidate" => {
             let sid = msg.session_id.as_deref().unwrap_or_default();
-            let mobile_device_id = store
-                .state
-                .sessions
-                .iter()
-                .find(|s| s.session_id == sid)
-                .map(|s| s.mobile_device_id.clone())
-                .unwrap_or_default();
+            let mobile_device_id = msg
+                .extra
+                .get("mobile_device_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            if mobile_device_id.is_empty() || !store.is_trusted(&mobile_device_id) {
+                warn!(
+                    "ice_candidate rejected: device {} is not trusted for session {}",
+                    mobile_device_id, sid
+                );
+                return Ok(());
+            }
+            peer_session_routes.insert(mobile_device_id.clone(), sid.to_string());
 
             if let Some(payload) = &msg.payload {
                 if let Ok(candidate) = serde_json::from_value::<
@@ -1367,7 +1395,10 @@ async fn handle_signal(
                 .to_string();
 
             if !store.is_trusted(&mobile_device_id) {
-                warn!("stats_offer rejected: device {} is not trusted", mobile_device_id);
+                warn!(
+                    "stats_offer rejected: device {} is not trusted",
+                    mobile_device_id
+                );
                 return Ok(());
             }
 
@@ -1424,7 +1455,10 @@ async fn handle_signal(
                 .to_string();
 
             if !store.is_trusted(&mobile_device_id) {
-                warn!("stats_ice_candidate rejected: device {} is not trusted", mobile_device_id);
+                warn!(
+                    "stats_ice_candidate rejected: device {} is not trusted",
+                    mobile_device_id
+                );
                 return Ok(());
             }
 
