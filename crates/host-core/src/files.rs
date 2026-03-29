@@ -57,6 +57,28 @@ pub async fn handle_files_action(payload: &serde_json::Value) -> Result<serde_js
                     .unwrap_or("");
                 rename_path(&path_str, new_path)
             }
+            "copy" => {
+                let destination = payload
+                    .get("destination")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let overwrite = payload
+                    .get("overwrite")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                copy_path(&path_str, destination, overwrite)
+            }
+            "move" => {
+                let destination = payload
+                    .get("destination")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let overwrite = payload
+                    .get("overwrite")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                move_path(&path_str, destination, overwrite)
+            }
             "write_file" => {
                 let data_b64 = payload
                     .get("data_b64")
@@ -332,6 +354,200 @@ fn rename_path(path_str: &str, new_path: &str) -> Result<serde_json::Value> {
             e
         ))
     })?;
+
+    Ok(serde_json::json!({}))
+}
+
+fn copy_path(path_str: &str, destination: &str, overwrite: bool) -> Result<serde_json::Value> {
+    if destination.is_empty() {
+        return Err(HostError::Backend("destination is required".to_string()));
+    }
+    let src = resolve_path(path_str)?;
+    let dst = resolve_path(destination)?;
+    let canonical_src = safe_canonicalize(&src)?;
+
+    if dst.exists() {
+        if !overwrite {
+            return Err(HostError::Backend("FILE_EXISTS: destination already exists".to_string()));
+        }
+        // Clean replace: remove existing destination so we don't merge dirs
+        if dst.is_dir() {
+            fs::remove_dir_all(&dst).map_err(|e| {
+                HostError::Backend(format!("cannot remove existing {}: {}", dst.display(), e))
+            })?;
+        } else {
+            fs::remove_file(&dst).map_err(|e| {
+                HostError::Backend(format!("cannot remove existing {}: {}", dst.display(), e))
+            })?;
+        }
+    }
+
+    let metadata = fs::metadata(&canonical_src).map_err(|e| {
+        HostError::Backend(format!("cannot stat {}: {}", canonical_src.display(), e))
+    })?;
+
+    if metadata.is_dir() {
+        copy_dir_recursive(&canonical_src, &dst)?;
+    } else {
+        if let Some(parent) = dst.parent() {
+            fs::create_dir_all(parent).ok();
+        }
+        fs::copy(&canonical_src, &dst).map_err(|e| {
+            HostError::Backend(format!(
+                "cannot copy {} -> {}: {}",
+                canonical_src.display(),
+                dst.display(),
+                e
+            ))
+        })?;
+    }
+
+    Ok(serde_json::json!({}))
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
+    fs::create_dir_all(dst).map_err(|e| {
+        HostError::Backend(format!("cannot create directory {}: {}", dst.display(), e))
+    })?;
+
+    for entry_result in fs::read_dir(src).map_err(|e| {
+        HostError::Backend(format!("cannot read directory {}: {}", src.display(), e))
+    })? {
+        let entry = entry_result.map_err(|e| {
+            HostError::Backend(format!("read_dir entry error: {e}"))
+        })?;
+        let file_type = entry.file_type().map_err(|e| {
+            HostError::Backend(format!("cannot get file type: {e}"))
+        })?;
+        let src_child = entry.path();
+        let dst_child = dst.join(entry.file_name());
+
+        if file_type.is_symlink() {
+            // Preserve symlink rather than following it (avoids circular loops)
+            let target = fs::read_link(&src_child).map_err(|e| {
+                HostError::Backend(format!("cannot read symlink {}: {}", src_child.display(), e))
+            })?;
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&target, &dst_child).map_err(|e| {
+                HostError::Backend(format!(
+                    "cannot create symlink {} -> {}: {}",
+                    dst_child.display(),
+                    target.display(),
+                    e
+                ))
+            })?;
+            #[cfg(not(unix))]
+            {
+                // On non-unix, fall back to copying the target
+                if file_type.is_dir() {
+                    copy_dir_recursive(&src_child, &dst_child)?;
+                } else {
+                    fs::copy(&src_child, &dst_child).map_err(|e| {
+                        HostError::Backend(format!(
+                            "cannot copy {} -> {}: {}",
+                            src_child.display(),
+                            dst_child.display(),
+                            e
+                        ))
+                    })?;
+                }
+            }
+        } else if file_type.is_dir() {
+            copy_dir_recursive(&src_child, &dst_child)?;
+        } else {
+            fs::copy(&src_child, &dst_child).map_err(|e| {
+                HostError::Backend(format!(
+                    "cannot copy {} -> {}: {}",
+                    src_child.display(),
+                    dst_child.display(),
+                    e
+                ))
+            })?;
+        }
+    }
+
+    Ok(())
+}
+
+fn move_path(path_str: &str, destination: &str, overwrite: bool) -> Result<serde_json::Value> {
+    if destination.is_empty() {
+        return Err(HostError::Backend("destination is required".to_string()));
+    }
+    let src = resolve_path(path_str)?;
+    let dst = resolve_path(destination)?;
+    let canonical_src = safe_canonicalize(&src)?;
+
+    if dst.exists() {
+        if !overwrite {
+            return Err(HostError::Backend("FILE_EXISTS: destination already exists".to_string()));
+        }
+        // Clean replace: remove existing destination so rename/copy doesn't merge
+        if dst.is_dir() {
+            fs::remove_dir_all(&dst).map_err(|e| {
+                HostError::Backend(format!("cannot remove existing {}: {}", dst.display(), e))
+            })?;
+        } else {
+            fs::remove_file(&dst).map_err(|e| {
+                HostError::Backend(format!("cannot remove existing {}: {}", dst.display(), e))
+            })?;
+        }
+    }
+
+    // Ensure destination parent exists
+    if let Some(parent) = dst.parent() {
+        fs::create_dir_all(parent).ok();
+    }
+
+    // Try a simple rename first (fast, same-filesystem)
+    match fs::rename(&canonical_src, &dst) {
+        Ok(()) => return Ok(serde_json::json!({})),
+        Err(e) => {
+            // Only fall through to copy+delete for cross-device errors (EXDEV = 18)
+            if e.raw_os_error() != Some(18) {
+                return Err(HostError::Backend(format!(
+                    "cannot move {} -> {}: {}",
+                    canonical_src.display(),
+                    dst.display(),
+                    e
+                )));
+            }
+        }
+    }
+
+    // Fallback: copy then delete (cross-filesystem)
+    let metadata = fs::metadata(&canonical_src).map_err(|e| {
+        HostError::Backend(format!("cannot stat {}: {}", canonical_src.display(), e))
+    })?;
+
+    if metadata.is_dir() {
+        copy_dir_recursive(&canonical_src, &dst)?;
+        fs::remove_dir_all(&canonical_src).map_err(|e| {
+            HostError::Backend(format!(
+                "copied but cannot remove source dir {}: {}",
+                canonical_src.display(),
+                e
+            ))
+        })?;
+    } else {
+        if let Some(parent) = dst.parent() {
+            fs::create_dir_all(parent).ok();
+        }
+        fs::copy(&canonical_src, &dst).map_err(|e| {
+            HostError::Backend(format!(
+                "cannot copy {} -> {}: {}",
+                canonical_src.display(),
+                dst.display(),
+                e
+            ))
+        })?;
+        fs::remove_file(&canonical_src).map_err(|e| {
+            HostError::Backend(format!(
+                "copied but cannot remove source {}: {}",
+                canonical_src.display(),
+                e
+            ))
+        })?;
+    }
 
     Ok(serde_json::json!({}))
 }
