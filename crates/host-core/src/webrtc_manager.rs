@@ -5,10 +5,12 @@ use crate::webrtc_peer::{DataChannelEvent, WebRtcPeer};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;
+use tokio::time::{timeout, Duration};
 use tracing::{info, warn};
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
+use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 
 #[derive(Debug)]
 pub enum WebRtcEvent {
@@ -103,6 +105,7 @@ impl WebRtcManager {
 
     pub async fn poll_events(&mut self) {
         let mobile_ids: Vec<String> = self.peers.keys().cloned().collect();
+        let mut peers_to_close: Vec<String> = Vec::new();
 
         for mobile_id in mobile_ids {
             let mut dc_events: Vec<DataChannelEvent> = Vec::new();
@@ -110,6 +113,18 @@ impl WebRtcManager {
                 Vec::new();
 
             if let Some(peer) = self.peers.get_mut(&mobile_id) {
+                let state = peer.connection_state();
+                if matches!(
+                    state,
+                    RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed
+                ) {
+                    warn!(
+                        "closing WebRTC peer for mobile_device_id={} due to peer state {:?}",
+                        mobile_id, state
+                    );
+                    peers_to_close.push(mobile_id.clone());
+                    continue;
+                }
                 while let Ok(dc_event) = peer.channel_rx.try_recv() {
                     dc_events.push(dc_event);
                 }
@@ -132,6 +147,10 @@ impl WebRtcManager {
                 }
             }
         }
+
+        for mobile_id in peers_to_close {
+            self.close_peer(&mobile_id).await;
+        }
     }
 
     /// Broadcast data to a set of channels, returning true if any send succeeded.
@@ -144,10 +163,14 @@ impl WebRtcManager {
         let mut any_sent = false;
         let mut failed_indices = Vec::new();
         for (i, channel) in channels.iter().enumerate() {
-            match channel.send(&bytes).await {
-                Ok(_) => any_sent = true,
-                Err(e) => {
+            match timeout(Duration::from_millis(500), channel.send(&bytes)).await {
+                Ok(Ok(_)) => any_sent = true,
+                Ok(Err(e)) => {
                     warn!("{} send failed: {}", label, e);
+                    failed_indices.push(i);
+                }
+                Err(_) => {
+                    warn!("{} send timed out; pruning channel", label);
                     failed_indices.push(i);
                 }
             }

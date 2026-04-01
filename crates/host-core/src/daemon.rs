@@ -879,12 +879,73 @@ async fn handle_signal(
                 attach_target,
             };
 
-            let accept = accept_session(sessions, &req, shell).is_ok();
+            let mut accept_error: Option<String> = None;
+            let mut accept = false;
+            let first_accept = accept_session(sessions, &req, shell);
+            if let Err(err) = first_accept {
+                let first_error = err.to_string();
+                accept_error = Some(first_error.clone());
+
+                if first_error.contains("session limit reached") {
+                    let mut detached_candidates = store
+                        .state
+                        .sessions
+                        .iter()
+                        .filter(|session| {
+                            session.persistent && matches!(session.state, SessionState::Detached)
+                        })
+                        .map(|session| (session.session_id.clone(), session.updated_at))
+                        .collect::<Vec<_>>();
+                    detached_candidates.sort_by_key(|(_, updated_at)| *updated_at);
+
+                    for (evicted_session_id, _) in detached_candidates {
+                        info!(
+                            "evicting detached session to free capacity: old_session={} new_session={} active_sessions={}",
+                            evicted_session_id,
+                            session_id,
+                            sessions.active_count(),
+                        );
+                        let _ = sessions.close_session(&evicted_session_id);
+                        store.touch_session_state(&evicted_session_id, SessionState::Ended);
+                        if let Ok(token) = store.access_token().map(|s| s.to_string()) {
+                            let _ = backend
+                                .transition_session(&token, &evicted_session_id, SessionState::Ended, None)
+                                .await;
+                        }
+
+                        match accept_session(sessions, &req, shell) {
+                            Ok(()) => {
+                                accept = true;
+                                accept_error = None;
+                                break;
+                            }
+                            Err(err) => {
+                                accept_error = Some(err.to_string());
+                            }
+                        }
+                    }
+                }
+            } else {
+                accept = true;
+            }
+
+            if let Some(ref err) = accept_error {
+                warn!(
+                    "session_request rejected: session={} mobile={} active_sessions={} reason={}",
+                    session_id,
+                    mobile_device_id,
+                    sessions.active_count(),
+                    err,
+                );
+            }
             let mut ack_extra = std::collections::HashMap::new();
             ack_extra.insert(
                 "target_mobile_device_id".to_string(),
                 serde_json::json!(mobile_device_id),
             );
+            if let Some(ref err) = accept_error {
+                ack_extra.insert("error".to_string(), serde_json::json!(err));
+            }
             let ack = SignalEnvelope {
                 message_type: "session_ack".to_string(),
                 session_id: Some(session_id.clone()),
