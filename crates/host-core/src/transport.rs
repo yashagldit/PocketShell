@@ -2,6 +2,7 @@ use crate::error::{HostError, Result};
 use crate::models::SignalEnvelope;
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
+use tokio::time::Duration;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::header::{HeaderValue, AUTHORIZATION};
 use tokio_tungstenite::tungstenite::protocol::Message;
@@ -38,15 +39,19 @@ pub async fn connect_host_ws(
 
 pub async fn send_signal(ws: &mut WsStream, msg: &SignalEnvelope) -> Result<()> {
     let raw = serde_json::to_string(msg)?;
-    ws.send(Message::Text(raw.into()))
+    tokio::time::timeout(Duration::from_secs(10), ws.send(Message::Text(raw.into())))
         .await
+        .map_err(|_| HostError::Backend("ws send timed out".into()))?
         .map_err(|e| HostError::Backend(format!("ws send failed: {e}")))
 }
 
 /// Returns `Ok(Some(signal))` for a valid message, `Ok(None)` for keep-alive
 /// frames (ping/pong/binary), and `Err` for real disconnects or errors.
 pub async fn recv_signal(ws: &mut WsStream) -> Result<Option<SignalEnvelope>> {
-    match ws.next().await {
+    let msg = tokio::time::timeout(Duration::from_secs(90), ws.next())
+        .await
+        .map_err(|_| HostError::Backend("ws read timed out (no message for 90s)".into()))?;
+    match msg {
         Some(Ok(Message::Text(text))) => {
             let parsed = serde_json::from_str::<SignalEnvelope>(&text)
                 .map_err(|e| HostError::Backend(format!("invalid control payload: {e}")))?;

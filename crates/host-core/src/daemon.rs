@@ -259,8 +259,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
 
         // Reconcile stale sessions: fetch active sessions from backend and end
         // any that no longer have a live PTY in this daemon.
-        {
-            let token = store.access_token()?.to_string();
+        if let Ok(token) = store.access_token().map(|s| s.to_string()) {
             match backend.list_active_sessions(&token, &host_id).await {
                 Ok(active) => {
                     for (session_id, _state) in &active {
@@ -279,6 +278,8 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                     warn!("reconcile: failed to list active sessions: {}", err);
                 }
             }
+        } else {
+            warn!("reconcile: no access token, skipping");
         }
 
         loop {
@@ -309,7 +310,13 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                         pending_devices: store.state.pending_devices.len(),
                     };
 
-                    let token = store.access_token()?.to_string();
+                    let token = match store.access_token().map(|s| s.to_string()) {
+                        Ok(t) => t,
+                        Err(err) => {
+                            warn!("heartbeat: no access token ({}), forcing reconnect", err);
+                            break;
+                        }
+                    };
                     match backend.send_heartbeat(&token, &payload).await {
                         Ok(HeartbeatAction::Kill) if HONOR_KILL_ACTION => {
                             info!("backend requested shutdown — stopping daemon");
@@ -320,7 +327,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                 host_id: Some(host_id.clone()),
                                 ..AuditEvent::new("daemon_stopped")
                             });
-                            store.save()?;
+                            let _ = store.save();
                             return Ok(());
                         }
                         Ok(_) => {}
@@ -442,6 +449,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                     }
                 }
                 _ = output_tick.tick() => {
+                    let mut ws_failed = false;
                     for chunk in sessions.drain_output() {
                         // Always emit the signaling copy as well. WebRTC-connected
                         // viewers ignore signaling terminal output on the mobile side,
@@ -462,14 +470,24 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                         };
                         if let Err(err) = send_signal(&mut ws, &msg).await {
                             warn!("session output send failed: {}", err);
+                            ws_failed = true;
                             break;
                         }
+                    }
+                    if ws_failed {
+                        break;
                     }
                 }
                 _ = session_reap_tick.tick() => {
                     let ended_sessions = sessions.reap_exited_sessions();
                     if !ended_sessions.is_empty() {
-                        let token = store.access_token()?.to_string();
+                        let token = match store.access_token().map(|s| s.to_string()) {
+                            Ok(t) => t,
+                            Err(err) => {
+                                warn!("session reap: no access token ({}), skipping", err);
+                                continue;
+                            }
+                        };
                         for session_id in ended_sessions {
                             webrtc_mgr.close_session(&session_id);
                             store.touch_session_state(&session_id, SessionState::Ended);
@@ -713,6 +731,8 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
             }
         }
 
+        warn!("control-plane disconnected — will reconnect in {}s", backoff_secs);
+
         // Reset stats subscription on disconnect.
         stats_active = false;
         stats_deadline = None;
@@ -734,6 +754,9 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
             session.updated_at = Utc::now();
         }
         let _ = store.save();
+
+        sleep(Duration::from_secs(backoff_secs)).await;
+        backoff_secs = (backoff_secs * 2).min(30);
     }
 }
 
