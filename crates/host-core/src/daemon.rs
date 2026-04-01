@@ -533,20 +533,18 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                 _ = discovery_tick.tick() => {
                     let discovered = SessionDiscovery::discover();
                     info!("discovery tick: found {} sessions", discovered.len());
-                    if !discovered.is_empty() {
-                        let msg = SignalEnvelope {
-                            message_type: "available_sessions".to_string(),
-                            session_id: None,
-                            payload: Some(serde_json::to_value(&discovered).unwrap_or(serde_json::json!([]))),
-                            state: None,
-                            accepted: None,
-                            reason: None,
-                            extra: std::collections::HashMap::new(),
-                        };
-                        if let Err(err) = send_signal(&mut ws, &msg).await {
-                            warn!("discovery send failed: {}", err);
-                            break;
-                        }
+                    let msg = SignalEnvelope {
+                        message_type: "available_sessions".to_string(),
+                        session_id: None,
+                        payload: Some(serde_json::to_value(&discovered).unwrap_or(serde_json::json!([]))),
+                        state: None,
+                        accepted: None,
+                        reason: None,
+                        extra: std::collections::HashMap::new(),
+                    };
+                    if let Err(err) = send_signal(&mut ws, &msg).await {
+                        warn!("discovery send failed: {}", err);
+                        break;
                     }
                 }
                 _ = webrtc_poll_tick.tick() => {
@@ -731,7 +729,10 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
             }
         }
 
-        warn!("control-plane disconnected — will reconnect in {}s", backoff_secs);
+        warn!(
+            "control-plane disconnected — will reconnect in {}s",
+            backoff_secs
+        );
 
         // Reset stats subscription on disconnect.
         stats_active = false;

@@ -85,13 +85,15 @@ impl BackendClient {
         payload: &HeartbeatRequest,
     ) -> Result<HeartbeatAction> {
         let url = format!(
-            "{}/api/v1/presence/hosts/{}",
+            "{}/api/v1/presence/hosts/{}/heartbeat",
             self.base_url, payload.host_id
         );
         let res = self
             .client
-            .get(url)
+            .post(url)
             .header(AUTHORIZATION, format!("Bearer {token}"))
+            .header(CONTENT_TYPE, "application/json")
+            .json(payload)
             .send()
             .await
             .map_err(|e| HostError::Backend(e.to_string()))?;
