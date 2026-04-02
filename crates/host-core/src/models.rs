@@ -171,6 +171,15 @@ pub struct ProcessInfo {
     pub cpu_percent: f32,
     pub memory_bytes: u64,
     pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_pid: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// Seconds the process has been running
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_time_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -232,12 +241,40 @@ pub struct OsInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CpuCoreInfo {
+    pub name: String,
+    pub usage_percent: f32,
+    pub frequency_mhz: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskCounts {
+    pub total: u32,
+    pub running: u32,
+    pub sleeping: u32,
+    pub stopped: u32,
+    pub zombie: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CpuTimes {
+    pub user_percent: f32,
+    pub system_percent: f32,
+    pub idle_percent: f32,
+    pub iowait_percent: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatsSnapshot {
     pub cpu_usage_percent: f32,
     pub memory_total_bytes: u64,
     pub memory_used_bytes: u64,
+    pub memory_available_bytes: u64,
+    pub memory_free_bytes: u64,
     pub disk_total_bytes: u64,
     pub disk_used_bytes: u64,
+    pub swap_total_bytes: u64,
+    pub swap_used_bytes: u64,
     pub uptime_secs: u64,
     pub load_one: f64,
     pub load_five: f64,
@@ -265,6 +302,12 @@ pub struct StatsSnapshot {
     /// Static OS information.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub os_info: Option<OsInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpu_per_core: Option<Vec<CpuCoreInfo>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_counts: Option<TaskCounts>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpu_times: Option<CpuTimes>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

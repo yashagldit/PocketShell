@@ -35,6 +35,9 @@ pub enum WebRtcEvent {
     StatsChannelClosed {
         host_id: String,
     },
+    StatsMessage {
+        data: Vec<u8>,
+    },
 }
 
 pub struct WebRtcManager {
@@ -291,6 +294,16 @@ impl WebRtcManager {
             );
             self.stats_channel_owners
                 .push((mobile_id.to_string(), Arc::clone(&channel)));
+
+            let event_tx_msg = self.event_tx.clone();
+            channel.on_message(Box::new(move |msg: DataChannelMessage| {
+                let tx = event_tx_msg.clone();
+                Box::pin(async move {
+                    let _ = tx.send(WebRtcEvent::StatsMessage {
+                        data: msg.data.to_vec(),
+                    });
+                })
+            }));
 
             let event_tx = self.event_tx.clone();
             let hid = host_id.to_string();

@@ -625,6 +625,41 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                             info!("stats WebRTC channel closed for host {}", host_id);
                             webrtc_mgr.prune_stats_channels();
                         }
+                        WebRtcEvent::StatsMessage { data } => {
+                            if let Ok(json_str) = std::str::from_utf8(&data) {
+                                if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str) {
+                                    let msg_type = val.get("type").and_then(|v| v.as_str()).unwrap_or_default();
+                                    if msg_type == "kill_process" {
+                                        let pid = val.get("pid").and_then(|v| v.as_i64());
+                                        let signal = val.get("signal").and_then(|v| v.as_str()).unwrap_or("TERM");
+                                        if let Some(pid) = pid {
+                                            let sig_num = match signal {
+                                                "KILL" | "9" => "9",
+                                                _ => "15",
+                                            };
+                                            info!("kill_process request: pid={} signal={}", pid, sig_num);
+                                            match std::process::Command::new("kill")
+                                                .arg(format!("-{}", sig_num))
+                                                .arg(pid.to_string())
+                                                .output()
+                                            {
+                                                Ok(output) => {
+                                                    if !output.status.success() {
+                                                        let stderr = String::from_utf8_lossy(&output.stderr);
+                                                        warn!("kill_process failed for pid {}: {}", pid, stderr.trim());
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    warn!("kill_process command failed: {}", e);
+                                                }
+                                            }
+                                        } else {
+                                            warn!("kill_process message missing pid field");
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         WebRtcEvent::IceCandidate { mobile_device_id, candidate_json } => {
                             if let Ok(candidate_value) = serde_json::from_str::<serde_json::Value>(&candidate_json) {
                                 if let Some(session_id) = peer_session_routes.get(&mobile_device_id).cloned() {

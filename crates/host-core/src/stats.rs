@@ -1,14 +1,19 @@
 use crate::models::{
-    DiskIOStats, LoggedInUser, NetworkConnection, NetworkIOStats, OsInfo, ProcessInfo,
-    StatsSnapshot, TemperatureReading,
+    CpuCoreInfo, DiskIOStats, LoggedInUser, NetworkConnection, NetworkIOStats,
+    OsInfo, ProcessInfo, StatsSnapshot, TaskCounts, TemperatureReading,
 };
+#[cfg(target_os = "linux")]
+use crate::models::CpuTimes;
 use chrono::Utc;
 use std::collections::HashSet;
-use sysinfo::{Components, Disk, Disks, Networks, ProcessesToUpdate, System};
+use sysinfo::{Components, Disk, Disks, Networks, ProcessStatus, ProcessesToUpdate, System, Users};
 use tokio::time::Instant;
 
 /// Disk stats change slowly — cache and refresh at most every 30 seconds.
 const DISK_REFRESH_INTERVAL_SECS: u64 = 30;
+
+/// Battery changes slowly — cache with a refresh interval.
+const BATTERY_REFRESH_INTERVAL_SECS: u64 = 60;
 
 pub struct StatsCollector {
     system: System,
@@ -24,6 +29,13 @@ pub struct StatsCollector {
     prev_sample_at: Option<Instant>,
     // OS info is static — cache once
     os_info: OsInfo,
+    users: Users,
+    // Battery cache
+    cached_battery: Option<f32>,
+    battery_refreshed_at: Instant,
+    // Previous CPU times for delta computation (Linux only)
+    #[cfg(target_os = "linux")]
+    prev_cpu_jiffies: Option<(u64, u64, u64, u64, u64)>, // user, system, idle, iowait, total
 }
 
 /// Filter disks to only count real, unique physical storage.
@@ -154,6 +166,94 @@ fn collect_logged_in_users() -> Option<Vec<LoggedInUser>> {
     Some(users)
 }
 
+fn collect_battery() -> Option<f32> {
+    #[cfg(target_os = "macos")]
+    {
+        let output = std::process::Command::new("pmset")
+            .args(["-g", "batt"])
+            .output()
+            .ok()?;
+        let text = String::from_utf8_lossy(&output.stdout);
+        for line in text.lines() {
+            if line.contains("InternalBattery") {
+                for word in line.split_whitespace() {
+                    if word.ends_with("%;") || word.ends_with('%') {
+                        let num = word.trim_end_matches(|c| c == '%' || c == ';');
+                        return num.parse().ok();
+                    }
+                }
+            }
+        }
+        None
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // Try common battery paths
+        for path in &[
+            "/sys/class/power_supply/BAT0/capacity",
+            "/sys/class/power_supply/BAT1/capacity",
+        ] {
+            if let Ok(s) = std::fs::read_to_string(path) {
+                if let Ok(v) = s.trim().parse::<f32>() {
+                    return Some(v);
+                }
+            }
+        }
+        None
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        None
+    }
+}
+
+/// Read /proc/stat and compute CPU time percentages as deltas from the previous sample.
+/// Returns (CpuTimes, new_jiffies) so the caller can store jiffies for next delta.
+#[cfg(target_os = "linux")]
+fn read_cpu_jiffies() -> Option<(u64, u64, u64, u64, u64)> {
+    let stat = std::fs::read_to_string("/proc/stat").ok()?;
+    let first_line = stat.lines().next()?;
+    if !first_line.starts_with("cpu ") {
+        return None;
+    }
+    let parts: Vec<u64> = first_line
+        .split_whitespace()
+        .skip(1)
+        .filter_map(|s| s.parse().ok())
+        .collect();
+    if parts.len() < 4 {
+        return None;
+    }
+    let user = parts[0] + parts[1]; // user + nice
+    let system = parts[2] + parts.get(5).unwrap_or(&0) + parts.get(6).unwrap_or(&0);
+    let idle = parts[3];
+    let iowait = *parts.get(4).unwrap_or(&0);
+    let total = user + system + idle + iowait + parts.get(7).unwrap_or(&0);
+    Some((user, system, idle, iowait, total))
+}
+
+#[cfg(target_os = "linux")]
+fn compute_cpu_times_delta(
+    prev: Option<(u64, u64, u64, u64, u64)>,
+    curr: (u64, u64, u64, u64, u64),
+) -> Option<CpuTimes> {
+    let (prev_user, prev_sys, prev_idle, prev_iow, prev_total) = prev?;
+    let d_user = curr.0.saturating_sub(prev_user);
+    let d_sys = curr.1.saturating_sub(prev_sys);
+    let d_idle = curr.2.saturating_sub(prev_idle);
+    let d_iow = curr.3.saturating_sub(prev_iow);
+    let d_total = curr.4.saturating_sub(prev_total);
+    if d_total == 0 {
+        return None;
+    }
+    Some(CpuTimes {
+        user_percent: (d_user as f32 / d_total as f32) * 100.0,
+        system_percent: (d_sys as f32 / d_total as f32) * 100.0,
+        idle_percent: (d_idle as f32 / d_total as f32) * 100.0,
+        iowait_percent: (d_iow as f32 / d_total as f32) * 100.0,
+    })
+}
+
 impl StatsCollector {
     pub fn new() -> Self {
         let mut system = System::new_all();
@@ -174,6 +274,8 @@ impl StatsCollector {
             arch: System::cpu_arch(),
         };
 
+        let users = Users::new_with_refreshed_list();
+
         Self {
             system,
             networks,
@@ -186,6 +288,11 @@ impl StatsCollector {
             prev_disk_write_bytes: 0,
             prev_sample_at: None,
             os_info,
+            users,
+            cached_battery: None,
+            battery_refreshed_at: Instant::now() - std::time::Duration::from_secs(BATTERY_REFRESH_INTERVAL_SECS + 1),
+            #[cfg(target_os = "linux")]
+            prev_cpu_jiffies: None,
         }
     }
 
@@ -318,18 +425,51 @@ impl StatsCollector {
 
         let load = System::load_average();
 
-        let processes = if include_processes {
+        // Collect processes and task counts in a single pass
+        let (processes, task_counts) = if include_processes {
             self.system.refresh_processes(ProcessesToUpdate::All, true);
+            let mut running = 0u32;
+            let mut sleeping = 0u32;
+            let mut stopped = 0u32;
+            let mut zombie = 0u32;
+            let mut total = 0u32;
             let mut procs: Vec<ProcessInfo> = self
                 .system
                 .processes()
                 .values()
-                .map(|p| ProcessInfo {
-                    pid: p.pid().as_u32(),
-                    name: p.name().to_string_lossy().to_string(),
-                    cpu_percent: p.cpu_usage(),
-                    memory_bytes: p.memory(),
-                    status: format!("{:?}", p.status()),
+                .map(|p| {
+                    total += 1;
+                    match p.status() {
+                        ProcessStatus::Run => running += 1,
+                        ProcessStatus::Sleep | ProcessStatus::Idle => sleeping += 1,
+                        ProcessStatus::Stop => stopped += 1,
+                        ProcessStatus::Zombie => zombie += 1,
+                        _ => {} // Dead, Unknown, etc. — not counted in any bucket
+                    }
+                    let user = p.user_id().and_then(|uid| {
+                        self.users.get_user_by_id(uid).map(|u| u.name().to_string())
+                    });
+                    let command = {
+                        let cmd = p.cmd();
+                        if cmd.is_empty() {
+                            None
+                        } else {
+                            let mut full = cmd.iter().map(|s| s.to_string_lossy()).collect::<Vec<_>>().join(" ");
+                            if full.len() > 120 { full.truncate(120); }
+                            Some(full)
+                        }
+                    };
+                    ProcessInfo {
+                        pid: p.pid().as_u32(),
+                        name: p.name().to_string_lossy().to_string(),
+                        cpu_percent: p.cpu_usage(),
+                        memory_bytes: p.memory(),
+                        status: format!("{:?}", p.status()),
+                        parent_pid: p.parent().map(|pid| pid.as_u32()),
+                        user,
+                        command,
+                        run_time_secs: Some(p.run_time()),
+                    }
                 })
                 .collect();
             procs.sort_by(|a, b| {
@@ -338,7 +478,43 @@ impl StatsCollector {
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
             procs.truncate(50);
-            Some(procs)
+            (Some(procs), Some(TaskCounts { total, running, sleeping, stopped, zombie }))
+        } else {
+            (None, None)
+        };
+
+        let cpu_per_core = if include_processes {
+            Some(
+                self.system
+                    .cpus()
+                    .iter()
+                    .map(|c| CpuCoreInfo {
+                        name: c.name().to_string(),
+                        usage_percent: c.cpu_usage(),
+                        frequency_mhz: c.frequency(),
+                    })
+                    .collect(),
+            )
+        } else {
+            None
+        };
+
+        let cpu_times = if include_processes {
+            #[cfg(target_os = "linux")]
+            {
+                let times = if let Some(curr) = read_cpu_jiffies() {
+                    let result = compute_cpu_times_delta(self.prev_cpu_jiffies, curr);
+                    self.prev_cpu_jiffies = Some(curr);
+                    result
+                } else {
+                    None
+                };
+                times
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                None
+            }
         } else {
             None
         };
@@ -380,13 +556,25 @@ impl StatsCollector {
             cpu_usage_percent: self.system.global_cpu_usage(),
             memory_total_bytes: self.system.total_memory(),
             memory_used_bytes: self.system.used_memory(),
+            memory_available_bytes: self.system.available_memory(),
+            memory_free_bytes: self.system.free_memory(),
             disk_total_bytes: self.cached_disk_total,
             disk_used_bytes: self.cached_disk_used,
+            swap_total_bytes: self.system.total_swap(),
+            swap_used_bytes: self.system.used_swap(),
             uptime_secs: System::uptime(),
             load_one: load.one,
             load_five: load.five,
             load_fifteen: load.fifteen,
-            battery_percent: None,
+            battery_percent: if include_processes {
+                if self.battery_refreshed_at.elapsed().as_secs() >= BATTERY_REFRESH_INTERVAL_SECS {
+                    self.cached_battery = collect_battery();
+                    self.battery_refreshed_at = Instant::now();
+                }
+                self.cached_battery
+            } else {
+                self.cached_battery
+            },
             collected_at: Utc::now(),
             processes,
             network_io,
@@ -395,6 +583,9 @@ impl StatsCollector {
             network_connections,
             logged_in_users,
             os_info: Some(self.os_info.clone()),
+            cpu_per_core,
+            task_counts,
+            cpu_times,
         }
     }
 }
