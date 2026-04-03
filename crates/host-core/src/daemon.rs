@@ -362,6 +362,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                     .map(|s| s.session_id.clone())
                                     .collect::<Vec<_>>();
                                 for session_id in affected_sessions {
+                                    peer_session_routes.retain(|_, sid| sid != &session_id);
                                     let _ = sessions.close_session(&session_id);
                                     store.touch_session_state(&session_id, SessionState::Failed);
                                     let _ = backend
@@ -489,6 +490,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                             }
                         };
                         for session_id in ended_sessions {
+                            peer_session_routes.retain(|_, sid| sid != &session_id);
                             webrtc_mgr.close_session(&session_id);
                             store.touch_session_state(&session_id, SessionState::Ended);
 
@@ -1150,6 +1152,7 @@ async fn handle_signal(
                             let was_persistent =
                                 sessions.detach_session(&session_id).unwrap_or(false);
                             if was_persistent {
+                                peer_session_routes.retain(|_, sid| sid != &session_id);
                                 webrtc_mgr.close_session(&session_id);
                                 store.touch_session_state(&session_id, SessionState::Detached);
                                 let detach_event = SignalEnvelope {
@@ -1178,6 +1181,7 @@ async fn handle_signal(
                                 });
                             } else {
                                 // Non-persistent session — detach acts as close
+                                peer_session_routes.retain(|_, sid| sid != &session_id);
                                 store.touch_session_state(&session_id, SessionState::Ended);
                                 let ended_event = SignalEnvelope {
                                     message_type: "session_event".to_string(),
@@ -1202,6 +1206,7 @@ async fn handle_signal(
                         }
                         "disconnect" | "session_close" => {
                             // Explicit close — kills the session.
+                            peer_session_routes.retain(|_, sid| sid != &session_id);
                             webrtc_mgr.close_session(&session_id);
                             sessions.close_session(&session_id)?;
                             store.touch_session_state(&session_id, SessionState::Ended);
@@ -1442,6 +1447,7 @@ async fn handle_signal(
                                     username,
                                     credential,
                                     offer_sdp,
+                                    false, // session: reuse existing peer for renegotiation
                                 )
                                 .await
                             {
@@ -1534,6 +1540,7 @@ async fn handle_signal(
                                     username,
                                     credential,
                                     offer_sdp,
+                                    true, // stats: always fresh peer (mobile always creates new PC)
                                 )
                                 .await
                             {

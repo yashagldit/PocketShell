@@ -70,8 +70,30 @@ impl WebRtcManager {
         username: String,
         credential: String,
         offer_sdp: &str,
+        force_new_peer: bool,
     ) -> Result<String> {
-        if !self.peers.contains_key(mobile_device_id) {
+        let should_create = match self.peers.get(mobile_device_id) {
+            None => true,
+            Some(peer) => {
+                force_new_peer
+                    || matches!(
+                        peer.connection_state(),
+                        RTCPeerConnectionState::Failed
+                            | RTCPeerConnectionState::Closed
+                            | RTCPeerConnectionState::Disconnected
+                    )
+            }
+        };
+        if should_create {
+            if let Some(old) = self.peers.remove(mobile_device_id) {
+                info!(
+                    "replacing WebRTC peer for mobile_device_id={} (state={:?}, forced={})",
+                    mobile_device_id,
+                    old.connection_state(),
+                    force_new_peer
+                );
+                old.close().await;
+            }
             let peer = WebRtcPeer::new(turn_uris, username, credential).await?;
             self.peers.insert(mobile_device_id.to_string(), peer);
             info!(
