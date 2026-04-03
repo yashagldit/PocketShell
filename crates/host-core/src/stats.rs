@@ -15,6 +15,11 @@ const DISK_REFRESH_INTERVAL_SECS: u64 = 30;
 /// Battery changes slowly — cache with a refresh interval.
 const BATTERY_REFRESH_INTERVAL_SECS: u64 = 60;
 
+/// Network connections (netstat) and logged-in users (who) are expensive subprocess
+/// calls — cache with a TTL to avoid spawning every 2 seconds.
+const NET_CONN_REFRESH_INTERVAL_SECS: u64 = 30;
+const USERS_REFRESH_INTERVAL_SECS: u64 = 30;
+
 pub struct StatsCollector {
     system: System,
     networks: Networks,
@@ -33,6 +38,12 @@ pub struct StatsCollector {
     // Battery cache
     cached_battery: Option<f32>,
     battery_refreshed_at: Instant,
+    // Network connections cache (avoids spawning netstat every 2s)
+    cached_net_connections: Option<NetworkConnection>,
+    net_conn_refreshed_at: Instant,
+    // Logged-in users cache (avoids spawning `who` every 2s)
+    cached_logged_in_users: Option<Vec<LoggedInUser>>,
+    users_refreshed_at: Instant,
     // Previous CPU times for delta computation (Linux only)
     #[cfg(target_os = "linux")]
     prev_cpu_jiffies: Option<(u64, u64, u64, u64, u64)>, // user, system, idle, iowait, total
@@ -291,6 +302,10 @@ impl StatsCollector {
             users,
             cached_battery: None,
             battery_refreshed_at: Instant::now() - std::time::Duration::from_secs(BATTERY_REFRESH_INTERVAL_SECS + 1),
+            cached_net_connections: None,
+            net_conn_refreshed_at: Instant::now() - std::time::Duration::from_secs(NET_CONN_REFRESH_INTERVAL_SECS + 1),
+            cached_logged_in_users: None,
+            users_refreshed_at: Instant::now() - std::time::Duration::from_secs(USERS_REFRESH_INTERVAL_SECS + 1),
             #[cfg(target_os = "linux")]
             prev_cpu_jiffies: None,
         }
@@ -539,15 +554,23 @@ impl StatsCollector {
             }
         };
 
-        // These are slightly expensive — only collect for live/full snapshots
+        // These spawn subprocesses — use cached values with TTL
         let network_connections = if include_processes {
-            collect_network_connections()
+            if self.net_conn_refreshed_at.elapsed().as_secs() >= NET_CONN_REFRESH_INTERVAL_SECS {
+                self.cached_net_connections = collect_network_connections();
+                self.net_conn_refreshed_at = Instant::now();
+            }
+            self.cached_net_connections.clone()
         } else {
             None
         };
 
         let logged_in_users = if include_processes {
-            collect_logged_in_users()
+            if self.users_refreshed_at.elapsed().as_secs() >= USERS_REFRESH_INTERVAL_SECS {
+                self.cached_logged_in_users = collect_logged_in_users();
+                self.users_refreshed_at = Instant::now();
+            }
+            self.cached_logged_in_users.clone()
         } else {
             None
         };

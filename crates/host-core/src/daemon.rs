@@ -29,7 +29,11 @@ struct PendingFileTransfer {
     name: String,
     expected_chunks: usize,
     chunks: Vec<String>,
+    created_at: Instant,
 }
+
+/// File transfers older than this are expired to prevent memory leaks.
+const FILE_TRANSFER_TIMEOUT_SECS: u64 = 300;
 
 enum FileTransferUpdate {
     Progress { request_id: String, progress: u8 },
@@ -71,6 +75,7 @@ fn handle_file_transfer_msg(
                     name,
                     expected_chunks: chunks,
                     chunks: Vec::with_capacity(chunks),
+                    created_at: Instant::now(),
                 },
             );
             Some(FileTransferUpdate::Progress {
@@ -244,7 +249,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
         let mut stats_tick = interval(Duration::from_secs(config.stats_interval_secs));
         let mut stats_bg_tick = interval(Duration::from_secs(30 * 60));
         stats_bg_tick.tick().await; // skip immediate first tick
-        let mut output_tick = interval(Duration::from_millis(10));
+        let mut output_tick = interval(Duration::from_millis(50));
         let mut trusted_devices_tick = interval(Duration::from_secs(30));
         let mut session_reap_tick = interval(Duration::from_secs(1));
         let mut stats_minute_tick = interval(Duration::from_secs(60));
@@ -254,7 +259,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
         let mut alert_tick = interval(Duration::from_secs(config.alert_check_interval_secs));
         let mut alert_checker = crate::alerts::AlertChecker::new();
         let mut discovery_tick = interval(Duration::from_secs(15));
-        let mut webrtc_poll_tick = interval(Duration::from_millis(10));
+        let mut webrtc_poll_tick = interval(Duration::from_millis(50));
         let mut stats_stream_tick = interval(Duration::from_secs(2));
 
         // Reconcile stale sessions: fetch active sessions from backend and end
@@ -262,15 +267,21 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
         if let Ok(token) = store.access_token().map(|s| s.to_string()) {
             match backend.list_active_sessions(&token, &host_id).await {
                 Ok(active) => {
-                    for (session_id, _state) in &active {
+                    for (session_id, state) in &active {
                         if !sessions.is_active(session_id) {
                             info!(
-                                "reconcile: session {} has no live process, ending",
-                                session_id
+                                "reconcile: session {} (state={:?}) has no live process, ending",
+                                session_id, state
                             );
-                            let _ = backend
+                            match backend
                                 .transition_session(&token, session_id, SessionState::Ended, None)
-                                .await;
+                                .await
+                            {
+                                Ok(_) => info!("reconcile: session {} ended on backend", session_id),
+                                Err(e) => warn!("reconcile: failed to end session {} on backend: {}", session_id, e),
+                            }
+                        } else {
+                            info!("reconcile: session {} has live PTY, keeping", session_id);
                         }
                     }
                 }
@@ -336,10 +347,18 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                         }
                     }
 
-                    let expired_native_detached =
+                    let (native_to_close, all_expired) =
                         store.clear_ended_sessions(config.stale_session_secs as i64, config.detach_max_secs as i64);
-                    for session_id in expired_native_detached {
-                        let _ = sessions.close_session(&session_id);
+                    for session_id in &native_to_close {
+                        let _ = sessions.close_session(session_id);
+                    }
+                    for session_id in &all_expired {
+                        if let Err(e) = backend
+                            .transition_session(&token, session_id, SessionState::Ended, None)
+                            .await
+                        {
+                            warn!("failed to end expired session {} on backend: {}", session_id, e);
+                        }
                     }
                     let _ = store.save();
                 }
@@ -480,6 +499,9 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                     }
                 }
                 _ = session_reap_tick.tick() => {
+                    // Expire stale file transfers to prevent memory leaks
+                    file_transfers.retain(|_, t| t.created_at.elapsed().as_secs() < FILE_TRANSFER_TIMEOUT_SECS);
+
                     let ended_sessions = sessions.reap_exited_sessions();
                     if !ended_sessions.is_empty() {
                         let token = match store.access_token().map(|s| s.to_string()) {
@@ -534,7 +556,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                 }
                 _ = discovery_tick.tick() => {
                     let discovered = SessionDiscovery::discover();
-                    info!("discovery tick: found {} sessions", discovered.len());
+                    debug!("discovery tick: found {} sessions", discovered.len());
                     let msg = SignalEnvelope {
                         message_type: "available_sessions".to_string(),
                         session_id: None,

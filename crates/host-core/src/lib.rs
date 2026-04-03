@@ -9,6 +9,7 @@ pub mod files;
 pub mod models;
 pub mod pty;
 pub mod secure;
+pub mod service;
 pub mod session;
 pub mod stats;
 pub mod store;

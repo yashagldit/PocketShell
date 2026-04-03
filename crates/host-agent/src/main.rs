@@ -12,7 +12,7 @@ use host_core::store::StateStore;
 use nix::sys::signal::{kill, Signal};
 use nix::unistd::Pid;
 use rand::rngs::OsRng;
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -201,9 +201,18 @@ async fn pair(config: AppConfig, code: Option<String>, reset: bool) -> Result<()
         Err(e) => return Err(e).context("validating pairing code"),
     };
 
+    // Always update auth tokens — the backend returns fresh tokens for both
+    // new-host and device-add flows.  This ensures `pair` recovers from
+    // expired/revoked auth without needing `--reset`.
+    store.state.auth = Some(AuthState {
+        access_token: response.access_token.clone(),
+        refresh_token: response.refresh_token.clone(),
+        access_expires_at: parse_jwt_exp(&response.access_token),
+    });
+
     if response.already_paired {
-        // Device-add flow: host identity and tokens already exist locally.
-        // Just refresh the trusted devices list on next daemon tick.
+        // Device-add flow: host identity already exists locally.
+        store.save().context("persisting refreshed auth")?;
         println!("new mobile device approved on this host");
         println!("the device can now connect to this host");
 
@@ -214,11 +223,6 @@ async fn pair(config: AppConfig, code: Option<String>, reset: bool) -> Result<()
         });
     } else {
         // New-host flow: save host identity and tokens.
-        store.state.auth = Some(AuthState {
-            access_token: response.access_token.clone(),
-            refresh_token: response.refresh_token.clone(),
-            access_expires_at: parse_jwt_exp(&response.access_token),
-        });
         store.state.host = Some(HostIdentity {
             host_id: response.host.id.clone(),
             user_id: response.host.user_id,
@@ -241,7 +245,32 @@ async fn pair(config: AppConfig, code: Option<String>, reset: bool) -> Result<()
             "login successful — host registered as {}",
             response.host.hostname
         );
-        println!("run `pocketshell daemon start` to begin accepting connections");
+    }
+
+    // Ensure daemon is running as a system service
+    if !host_core::service::is_service_running() {
+        print!("installing service...");
+        let _ = io::stdout().flush();
+        match host_core::service::install_and_start() {
+            Ok(host_core::service::ServiceStatus::Installed) => {
+                println!(" done");
+                println!("daemon installed as a system service and started");
+                println!("it will auto-start on boot and restart on crash");
+            }
+            Ok(host_core::service::ServiceStatus::AlreadyRunning) => {
+                println!(" already running");
+            }
+            Ok(host_core::service::ServiceStatus::StartedDaemon) => {
+                println!(" done");
+                println!("daemon started in background");
+                println!("note: service install was not available — daemon won't auto-start on reboot");
+                println!("you can start it manually with: pocketshell daemon start");
+            }
+            Err(e) => {
+                println!(" failed ({e})");
+                println!("start the daemon manually with: pocketshell daemon start");
+            }
+        }
     }
 
     Ok(())
@@ -249,6 +278,32 @@ async fn pair(config: AppConfig, code: Option<String>, reset: bool) -> Result<()
 
 fn logout(reset: bool) -> Result<()> {
     let mut store = StateStore::load().context("loading local state")?;
+
+    // Always stop the daemon — it can't function without auth
+    // --reset also uninstalls the service (removes auto-start)
+    if reset {
+        if let Err(e) = host_core::service::uninstall() {
+            eprintln!("warning: could not uninstall service: {e}");
+        }
+    } else if host_core::service::is_service_running() {
+        // Plain logout: stop but keep service installed — `daemon start` will re-enable
+        if let Err(e) = host_core::service::stop() {
+            eprintln!("warning: could not stop service: {e}");
+        }
+    }
+
+    // Also stop any PID-based daemon
+    let paths = AppConfig::paths()?;
+    if let Some(pid) = read_pid(&paths.pid_file) {
+        if pid_running(pid) {
+            let _ = kill(Pid::from_raw(pid), Signal::SIGTERM);
+            for _ in 0..20 {
+                if !pid_running(pid) { break; }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+        let _ = fs::remove_file(&paths.pid_file);
+    }
 
     if reset {
         store.state = Default::default();
@@ -298,15 +353,19 @@ async fn status(config: AppConfig) -> Result<()> {
         println!("not logged in");
     }
 
-    let pid_path = AppConfig::paths()?.pid_file;
-    if let Some(pid) = read_pid(&pid_path) {
-        if pid_running(pid) {
-            println!("daemon: running (pid {})", pid);
-        } else {
-            println!("daemon: stale pid file ({})", pid);
-        }
+    if host_core::service::is_service_running() {
+        println!("daemon: running (system service)");
     } else {
-        println!("daemon: stopped");
+        let pid_path = AppConfig::paths()?.pid_file;
+        if let Some(pid) = read_pid(&pid_path) {
+            if pid_running(pid) {
+                println!("daemon: running (pid {})", pid);
+            } else {
+                println!("daemon: stale pid file ({})", pid);
+            }
+        } else {
+            println!("daemon: stopped");
+        }
     }
 
     Ok(())
@@ -416,8 +475,12 @@ async fn daemon_cmd(config: AppConfig, command: DaemonCommands) -> Result<()> {
 }
 
 fn daemon_start() -> Result<()> {
+    // Check if already running via service or PID
+    if host_core::service::is_service_running() {
+        println!("daemon is running via system service");
+        return Ok(());
+    }
     let paths = AppConfig::paths()?;
-
     if let Some(pid) = read_pid(&paths.pid_file) {
         if pid_running(pid) {
             println!("daemon already running (pid {})", pid);
@@ -425,61 +488,58 @@ fn daemon_start() -> Result<()> {
         }
     }
 
-    fs::create_dir_all(&paths.state_dir)?;
+    // install_and_start tries service manager first, falls back to background process
+    match host_core::service::install_and_start() {
+        Ok(host_core::service::ServiceStatus::Installed) => {
+            let _ = write_audit_event(AuditEvent::new("daemon_start_command"));
+            println!("daemon started via system service (auto-starts on boot)");
+        }
+        Ok(host_core::service::ServiceStatus::AlreadyRunning) => {
+            println!("daemon is already running via system service");
+        }
+        Ok(host_core::service::ServiceStatus::StartedDaemon) => {
+            let _ = write_audit_event(AuditEvent::new("daemon_start_command"));
+            println!("daemon started in background");
+        }
+        Err(e) => {
+            return Err(anyhow!("failed to start daemon: {e}"));
+        }
+    }
 
-    let stdout = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&paths.log_file)
-        .context("opening daemon log file")?;
-
-    let stderr = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&paths.log_file)
-        .context("opening daemon log file")?;
-
-    let exe = std::env::current_exe().context("resolving current executable")?;
-    let child = Command::new(exe)
-        .arg("daemon")
-        .arg("run")
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(stderr))
-        .spawn()
-        .context("spawning daemon")?;
-
-    fs::write(&paths.pid_file, child.id().to_string()).context("writing pid file")?;
-
-    let _ = write_audit_event(AuditEvent::new("daemon_start_command"));
-
-    println!("daemon started (pid {})", child.id());
     Ok(())
 }
 
 fn daemon_stop() -> Result<()> {
-    let paths = AppConfig::paths()?;
-    let Some(pid) = read_pid(&paths.pid_file) else {
-        println!("daemon not running");
-        return Ok(());
-    };
+    let mut stopped = false;
 
-    kill(Pid::from_raw(pid), Signal::SIGTERM).context("sending SIGTERM")?;
-
-    for _ in 0..20 {
-        if !pid_running(pid) {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(100));
+    // Try stopping via service manager first (does not uninstall — keeps auto-start)
+    if host_core::service::is_service_running() {
+        host_core::service::uninstall()
+            .map_err(|e| anyhow!("failed to stop service: {e}"))?;
+        stopped = true;
     }
 
-    if paths.pid_file.exists() {
+    // Also check for PID-based daemon
+    let paths = AppConfig::paths()?;
+    if let Some(pid) = read_pid(&paths.pid_file) {
+        if pid_running(pid) {
+            let _ = kill(Pid::from_raw(pid), Signal::SIGTERM);
+            for _ in 0..20 {
+                if !pid_running(pid) { break; }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            stopped = true;
+        }
         let _ = fs::remove_file(&paths.pid_file);
     }
 
-    let _ = write_audit_event(AuditEvent::new("daemon_stop_command"));
+    if stopped {
+        let _ = write_audit_event(AuditEvent::new("daemon_stop_command"));
+        println!("daemon stopped");
+    } else {
+        println!("daemon not running");
+    }
 
-    println!("daemon stopped");
     Ok(())
 }
 

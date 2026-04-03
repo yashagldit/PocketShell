@@ -1,6 +1,6 @@
 use crate::error::{HostError, Result};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -45,7 +45,7 @@ struct PtySession {
     output_rx: mpsc::Receiver<Vec<u8>>,
     stop: Arc<AtomicBool>,
     child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
-    scrollback: Arc<Mutex<Vec<u8>>>,
+    scrollback: Arc<Mutex<VecDeque<u8>>>,
     /// Whether this session remains resumable after viewers detach.
     persistent: bool,
     /// Legacy tmux session name when persistence is delegated to tmux.
@@ -105,7 +105,7 @@ impl SessionManager {
             .scrollback
             .lock()
             .map_err(|_| HostError::Pty(format!("scrollback lock poisoned: {session_id}")))?;
-        Ok(scrollback.clone())
+        Ok(scrollback.iter().copied().collect())
     }
 
     /// Check if a session is persistent.
@@ -224,7 +224,7 @@ impl SessionManager {
             .map_err(|e| HostError::Pty(format!("open PTY {pty_path} for write: {e}")))?;
 
         let stop = Arc::new(AtomicBool::new(false));
-        let scrollback = Arc::new(Mutex::new(Vec::new()));
+        let scrollback = Arc::new(Mutex::new(VecDeque::new()));
         let (input_tx, input_rx) = mpsc::channel::<Vec<u8>>();
         let (resize_tx, _resize_rx) = mpsc::channel::<(u16, u16)>();
         let (output_tx, output_rx) = mpsc::sync_channel::<Vec<u8>>(1024);
@@ -234,11 +234,14 @@ impl SessionManager {
             let stop = Arc::clone(&stop);
             thread::spawn(move || {
                 while !stop.load(Ordering::Relaxed) {
-                    if let Ok(data) = input_rx.try_recv() {
-                        let _ = pty_write.write_all(&data);
-                        let _ = pty_write.flush();
+                    match input_rx.recv_timeout(Duration::from_millis(100)) {
+                        Ok(data) => {
+                            let _ = pty_write.write_all(&data);
+                            let _ = pty_write.flush();
+                        }
+                        Err(mpsc::RecvTimeoutError::Timeout) => {}
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     }
-                    thread::sleep(Duration::from_millis(8));
                 }
             });
         }
@@ -330,7 +333,7 @@ impl SessionManager {
             .map_err(|e| HostError::Pty(format!("spawn shell failed: {e}")))?;
 
         let child = Arc::new(Mutex::new(child));
-        let scrollback = Arc::new(Mutex::new(Vec::new()));
+        let scrollback = Arc::new(Mutex::new(VecDeque::new()));
         let mut reader = pair
             .master
             .try_clone_reader()
@@ -353,12 +356,21 @@ impl SessionManager {
             let master = Arc::clone(&master);
             thread::spawn(move || {
                 while !stop.load(Ordering::Relaxed) {
-                    if let Ok(data) = input_rx.try_recv() {
-                        let _ = writer.write_all(&data);
-                        let _ = writer.flush();
+                    match input_rx.recv_timeout(Duration::from_millis(100)) {
+                        Ok(data) => {
+                            let _ = writer.write_all(&data);
+                            let _ = writer.flush();
+                        }
+                        Err(mpsc::RecvTimeoutError::Timeout) => {}
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     }
 
-                    if let Ok((next_cols, next_rows)) = resize_rx.try_recv() {
+                    // Drain any pending resizes (apply the latest one)
+                    let mut last_resize = None;
+                    while let Ok(size) = resize_rx.try_recv() {
+                        last_resize = Some(size);
+                    }
+                    if let Some((next_cols, next_rows)) = last_resize {
                         if let Ok(m) = master.lock() {
                             let _ = m.resize(PtySize {
                                 rows: next_rows,
@@ -368,8 +380,6 @@ impl SessionManager {
                             });
                         }
                     }
-
-                    thread::sleep(Duration::from_millis(8));
                 }
             });
         }
@@ -550,27 +560,27 @@ impl SessionManager {
     }
 }
 
-fn append_scrollback(scrollback: &mut Vec<u8>, chunk: &[u8]) {
-    scrollback.extend_from_slice(chunk);
-    if scrollback.len() <= MAX_SCROLLBACK_BYTES {
-        return;
+fn append_scrollback(scrollback: &mut VecDeque<u8>, chunk: &[u8]) {
+    scrollback.extend(chunk.iter().copied());
+    if scrollback.len() > MAX_SCROLLBACK_BYTES {
+        let overflow = scrollback.len() - MAX_SCROLLBACK_BYTES;
+        drop(scrollback.drain(..overflow));
     }
-
-    let overflow = scrollback.len() - MAX_SCROLLBACK_BYTES;
-    scrollback.drain(..overflow);
 }
 
 #[cfg(test)]
 mod tests {
     use super::{append_scrollback, MAX_SCROLLBACK_BYTES};
+    use std::collections::VecDeque;
 
     #[test]
     fn scrollback_trims_oldest_bytes() {
-        let mut scrollback = vec![b'a'; MAX_SCROLLBACK_BYTES - 2];
+        let mut scrollback: VecDeque<u8> = VecDeque::from(vec![b'a'; MAX_SCROLLBACK_BYTES - 2]);
         append_scrollback(&mut scrollback, b"bcdef");
 
         assert_eq!(scrollback.len(), MAX_SCROLLBACK_BYTES);
-        assert_eq!(&scrollback[..4], b"aaaa");
-        assert_eq!(&scrollback[scrollback.len() - 4..], b"cdef");
+        let v: Vec<u8> = scrollback.iter().copied().collect();
+        assert_eq!(&v[..4], b"aaaa");
+        assert_eq!(&v[v.len() - 4..], b"cdef");
     }
 }
