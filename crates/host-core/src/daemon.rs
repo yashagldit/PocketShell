@@ -456,7 +456,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
 
         let mut heartbeat_tick = interval(Duration::from_secs(config.heartbeat_interval_secs));
         let mut stats_tick = interval(Duration::from_secs(config.stats_interval_secs));
-        let mut stats_bg_tick = interval(Duration::from_secs(30 * 60));
+        let mut stats_bg_tick = interval(Duration::from_secs(10 * 60));
         stats_bg_tick.tick().await; // skip immediate first tick
         let mut output_tick = interval(Duration::from_millis(50));
         let mut trusted_devices_tick = interval(Duration::from_secs(30));
@@ -470,6 +470,25 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
         let mut discovery_tick = interval(Duration::from_secs(15));
         let mut webrtc_poll_tick = interval(Duration::from_millis(50));
         let mut stats_stream_tick = interval(Duration::from_secs(2));
+
+        let mut shutdown = Box::pin(async {
+            #[cfg(unix)]
+            {
+                let mut sigterm = tokio::signal::unix::signal(
+                    tokio::signal::unix::SignalKind::terminate(),
+                )
+                .expect("failed to register SIGTERM handler");
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => "SIGINT",
+                    _ = sigterm.recv() => "SIGTERM",
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                tokio::signal::ctrl_c().await.ok();
+                "SIGINT"
+            }
+        });
 
         // Reconcile stale sessions: fetch active sessions from backend and end
         // any that no longer have a live PTY in this daemon.
@@ -545,6 +564,10 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                     match backend.send_heartbeat(&token, &payload).await {
                         Ok(HeartbeatAction::Kill) if HONOR_KILL_ACTION => {
                             info!("backend requested shutdown — stopping daemon");
+                            let _ = tokio::time::timeout(
+                                Duration::from_secs(3),
+                                backend.mark_offline(&token, &host_id),
+                            ).await;
                             sessions.close_all();
                             webrtc_mgr.close_all().await;
                             let _ = write_audit_event(AuditEvent {
@@ -1400,8 +1423,16 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                         }
                     }
                 }
-                _ = tokio::signal::ctrl_c() => {
-                    info!("daemon shutting down from signal");
+                sig = &mut shutdown => {
+                    info!("daemon shutting down from {}", sig);
+                    if let Ok(token) = store.access_token().map(|s| s.to_string()) {
+                        if let Err(e) = tokio::time::timeout(
+                            Duration::from_secs(3),
+                            backend.mark_offline(&token, &host_id),
+                        ).await {
+                            warn!("failed to mark host offline: {}", e);
+                        }
+                    }
                     sessions.close_all();
                     webrtc_mgr.close_all().await;
                     let _ = write_audit_event(AuditEvent {

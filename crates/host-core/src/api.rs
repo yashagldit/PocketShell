@@ -124,6 +124,28 @@ impl BackendClient {
         Ok(HeartbeatAction::None)
     }
 
+    pub async fn mark_offline(&self, token: &str, host_id: &str) -> Result<()> {
+        let url = format!(
+            "{}/api/v1/presence/hosts/{}/offline",
+            self.base_url, host_id
+        );
+        let res = self
+            .client
+            .post(&url)
+            .header(AUTHORIZATION, format!("Bearer {token}"))
+            .send()
+            .await
+            .map_err(|e| HostError::Backend(e.to_string()))?;
+
+        if !res.status().is_success() {
+            return Err(HostError::Backend(format!(
+                "mark offline failed: {}",
+                res.status()
+            )));
+        }
+        Ok(())
+    }
+
     pub async fn list_trusted_devices(
         &self,
         token: &str,
