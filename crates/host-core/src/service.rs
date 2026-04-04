@@ -27,14 +27,20 @@ pub fn install_and_start() -> Result<ServiceStatus> {
         match install_launchd() {
             Ok(status) => return Ok(status),
             Err(e) => {
-                warn!("launchd install failed: {} — falling back to daemon start", e);
+                warn!(
+                    "launchd install failed: {} — falling back to daemon start",
+                    e
+                );
             }
         }
     } else if cfg!(target_os = "linux") {
         match install_systemd() {
             Ok(status) => return Ok(status),
             Err(e) => {
-                warn!("systemd install failed: {} — falling back to daemon start", e);
+                warn!(
+                    "systemd install failed: {} — falling back to daemon start",
+                    e
+                );
             }
         }
     }
@@ -124,8 +130,7 @@ fn install_launchd() -> Result<ServiceStatus> {
             .map_err(|e| HostError::Config(format!("create LaunchAgents dir: {e}")))?;
     }
 
-    fs::write(&plist_path, &plist)
-        .map_err(|e| HostError::Config(format!("write plist: {e}")))?;
+    fs::write(&plist_path, &plist).map_err(|e| HostError::Config(format!("write plist: {e}")))?;
 
     info!("wrote launchd plist to {}", plist_path.display());
 
@@ -229,8 +234,7 @@ WantedBy=default.target
         .map_err(|e| HostError::Config(format!("create systemd user dir: {e}")))?;
 
     let unit_path = systemd_unit_path();
-    fs::write(&unit_path, &unit)
-        .map_err(|e| HostError::Config(format!("write unit file: {e}")))?;
+    fs::write(&unit_path, &unit).map_err(|e| HostError::Config(format!("write unit file: {e}")))?;
 
     info!("wrote systemd unit to {}", unit_path.display());
 
@@ -259,9 +263,7 @@ WantedBy=default.target
     }
 
     // Enable lingering so the user service survives logout
-    let _ = Command::new("loginctl")
-        .args(["enable-linger"])
-        .status();
+    let _ = Command::new("loginctl").args(["enable-linger"]).status();
 
     info!("systemd user service enabled and started");
     Ok(ServiceStatus::Installed)
@@ -310,8 +312,8 @@ fn start_daemon_process() -> Result<()> {
         .open(&paths.log_file)
         .map_err(|e| HostError::Config(format!("open log file: {e}")))?;
 
-    let exe = std::env::current_exe()
-        .map_err(|e| HostError::Config(format!("resolve binary: {e}")))?;
+    let exe =
+        std::env::current_exe().map_err(|e| HostError::Config(format!("resolve binary: {e}")))?;
 
     let child = Command::new(exe)
         .args(["daemon", "run"])

@@ -8,6 +8,7 @@ use tracing::warn;
 
 const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10 MB
 const MAX_READ_SIZE: u64 = 512 * 1024; // 512 KB per read_file call
+const MAX_LIST_DIR_PAGE_SIZE: usize = 250;
 
 #[derive(Serialize)]
 struct FileEntry {
@@ -37,7 +38,14 @@ pub async fn handle_files_action(payload: &serde_json::Value) -> Result<serde_js
     let payload = payload.clone();
 
     tokio::task::spawn_blocking(move || match action.as_str() {
-        "list_dir" => list_dir(&path_str),
+        "list_dir" => {
+            let offset = payload.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            let limit = payload
+                .get("limit")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(MAX_LIST_DIR_PAGE_SIZE as u64) as usize;
+            list_dir(&path_str, offset, limit)
+        }
         "read_file" => {
             let offset = payload.get("offset").and_then(|v| v.as_u64()).unwrap_or(0);
             let limit = payload
@@ -180,7 +188,7 @@ fn modified_iso(metadata: &fs::Metadata) -> Option<String> {
     })
 }
 
-fn list_dir(path_str: &str) -> Result<serde_json::Value> {
+fn list_dir(path_str: &str, offset: usize, limit: usize) -> Result<serde_json::Value> {
     let dir = resolve_path(path_str)?;
     let canonical = safe_canonicalize(&dir)?;
 
@@ -230,9 +238,24 @@ fn list_dir(path_str: &str) -> Result<serde_json::Value> {
             .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
 
+    let total = entries.len();
+    let capped_limit = limit.clamp(1, MAX_LIST_DIR_PAGE_SIZE);
+    let page_entries: Vec<FileEntry> = entries
+        .into_iter()
+        .skip(offset)
+        .take(capped_limit)
+        .collect();
+    let next_offset = offset.saturating_add(page_entries.len());
+    let has_more = next_offset < total;
+
     Ok(serde_json::json!({
-        "entries": entries,
+        "entries": page_entries,
         "cwd": canonical.to_string_lossy(),
+        "offset": offset,
+        "limit": capped_limit,
+        "next_offset": next_offset,
+        "has_more": has_more,
+        "total": total,
     }))
 }
 
@@ -815,4 +838,12 @@ fn mime_from_extension(path: &Path) -> &'static str {
         "tar" => "application/x-tar",
         _ => "application/octet-stream",
     }
+}
+
+pub fn resolve_file_path_for_transfer(path_str: &str) -> Result<PathBuf> {
+    resolve_path(path_str)
+}
+
+pub fn file_mime_type(path: &Path) -> &'static str {
+    mime_from_extension(path)
 }

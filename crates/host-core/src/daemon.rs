@@ -17,6 +17,9 @@ use crate::webrtc_manager::{WebRtcEvent, WebRtcManager};
 use base64::Engine;
 use chrono::Utc;
 use std::collections::HashMap;
+use std::fs::{File, OpenOptions};
+use std::io::{BufReader, Read, Write};
+use std::path::PathBuf;
 use tokio::time::{interval, sleep, Duration, Instant};
 use tracing::{debug, error, info, warn};
 
@@ -32,13 +35,213 @@ struct PendingFileTransfer {
     created_at: Instant,
 }
 
+struct PendingFilesChannelMessage {
+    expected_chunks: usize,
+    chunks: Vec<String>,
+    created_at: Instant,
+}
+
+struct PendingFilesBinaryUpload {
+    path: PathBuf,
+    file: File,
+    bytes_written: usize,
+    created_at: Instant,
+}
+
 /// File transfers older than this are expired to prevent memory leaks.
 const FILE_TRANSFER_TIMEOUT_SECS: u64 = 300;
+const FILES_MESSAGE_TIMEOUT_SECS: u64 = 300;
+const FILES_MESSAGE_CHUNK_SIZE: usize = 12 * 1024;
+const FILES_STREAM_CHUNK_SIZE: usize = 48 * 1024;
+
+struct DecodedFilesStreamFrame {
+    header: serde_json::Value,
+    payload: Vec<u8>,
+}
 
 enum FileTransferUpdate {
     Progress { request_id: String, progress: u8 },
     Complete { request_id: String, path: String },
     Error { request_id: String, message: String },
+}
+
+fn decode_framed_files_message(
+    messages: &mut HashMap<String, PendingFilesChannelMessage>,
+    mobile_device_id: &str,
+    data: &[u8],
+) -> Option<String> {
+    if !(data.len() > 5 && data[0] == 0x00 && &data[1..5] == b"PSFC") {
+        return std::str::from_utf8(data).ok().map(ToString::to_string);
+    }
+
+    let json_str = std::str::from_utf8(&data[5..]).ok()?;
+    let val = serde_json::from_str::<serde_json::Value>(json_str).ok()?;
+    let op = val.get("op").and_then(|v| v.as_str()).unwrap_or_default();
+    let id = val.get("id").and_then(|v| v.as_str()).unwrap_or_default();
+    if id.is_empty() {
+        return None;
+    }
+    let key = format!("{mobile_device_id}:{id}");
+
+    match op {
+        "start" => {
+            let chunks = val.get("chunks").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
+            messages.insert(
+                key,
+                PendingFilesChannelMessage {
+                    expected_chunks: chunks,
+                    chunks: vec![String::new(); chunks],
+                    created_at: Instant::now(),
+                },
+            );
+            None
+        }
+        "chunk" => {
+            let index = val.get("i").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            let data = val.get("d").and_then(|v| v.as_str()).unwrap_or_default();
+            if let Some(message) = messages.get_mut(&key) {
+                if index < message.expected_chunks {
+                    message.chunks[index] = data.to_string();
+                }
+            }
+            None
+        }
+        "end" => messages.remove(&key).map(|message| message.chunks.concat()),
+        _ => None,
+    }
+}
+
+fn decode_files_stream_frame(data: &[u8]) -> Option<DecodedFilesStreamFrame> {
+    if !(data.len() > 6 && data[0] == 0x00 && &data[1..5] == b"PSFB") {
+        return None;
+    }
+
+    let header_start = 5;
+    let newline_rel = data[header_start..].iter().position(|b| *b == b'\n')?;
+    let newline = header_start + newline_rel;
+    let header_str = std::str::from_utf8(&data[header_start..newline]).ok()?;
+    let header = serde_json::from_str::<serde_json::Value>(header_str).ok()?;
+    Some(DecodedFilesStreamFrame {
+        header,
+        payload: data[(newline + 1)..].to_vec(),
+    })
+}
+
+fn encode_files_stream_frame(header: &serde_json::Value, payload: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(5 + 256 + payload.len());
+    out.extend_from_slice(b"\x00PSFB");
+    out.extend_from_slice(serde_json::to_string(header).unwrap_or_default().as_bytes());
+    out.push(b'\n');
+    out.extend_from_slice(payload);
+    out
+}
+
+async fn send_files_stream_frame(
+    channel: std::sync::Arc<webrtc::data_channel::RTCDataChannel>,
+    header: &serde_json::Value,
+    payload: &[u8],
+) -> Result<()> {
+    let bytes = bytes::Bytes::from(encode_files_stream_frame(header, payload));
+    channel
+        .send(&bytes)
+        .await
+        .map_err(|e| HostError::Backend(format!("files stream send failed: {e}")))?;
+    Ok(())
+}
+
+async fn send_framed_files_response(
+    channel: std::sync::Arc<webrtc::data_channel::RTCDataChannel>,
+    response: &serde_json::Value,
+) -> Result<()> {
+    let json = serde_json::to_string(response)
+        .map_err(|e| HostError::Backend(format!("files response encode failed: {e}")))?;
+    let message_id = format!(
+        "fm_{}",
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    );
+    let total_chunks = std::cmp::max(1, json.len().div_ceil(FILES_MESSAGE_CHUNK_SIZE));
+    let response_to = response
+        .get("response_to")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    info!(
+        "files WebRTC frame send start response_to={} bytes={} chunks={}",
+        response_to,
+        json.len(),
+        total_chunks
+    );
+
+    let start = serde_json::json!({
+        "op": "start",
+        "id": message_id,
+        "chunks": total_chunks,
+    });
+    let start_bytes = bytes::Bytes::from(
+        [
+            &b"\x00PSFC"[..],
+            serde_json::to_string(&start).unwrap_or_default().as_bytes(),
+        ]
+        .concat(),
+    );
+    channel
+        .send(&start_bytes)
+        .await
+        .map_err(|e| HostError::Backend(format!("files response start send failed: {e}")))?;
+
+    for (index, chunk) in json.as_bytes().chunks(FILES_MESSAGE_CHUNK_SIZE).enumerate() {
+        let chunk_value = serde_json::json!({
+            "op": "chunk",
+            "id": message_id,
+            "i": index,
+            "d": String::from_utf8_lossy(chunk),
+        });
+        let chunk_bytes = bytes::Bytes::from(
+            [
+                &b"\x00PSFC"[..],
+                serde_json::to_string(&chunk_value)
+                    .unwrap_or_default()
+                    .as_bytes(),
+            ]
+            .concat(),
+        );
+        channel
+            .send(&chunk_bytes)
+            .await
+            .map_err(|e| HostError::Backend(format!("files response chunk send failed: {e}")))?;
+        if index == 0 || index + 1 == total_chunks {
+            info!(
+                "files WebRTC frame send chunk response_to={} chunk={}/{} bytes={}",
+                response_to,
+                index + 1,
+                total_chunks,
+                chunk.len()
+            );
+        }
+    }
+
+    let end = serde_json::json!({
+        "op": "end",
+        "id": message_id,
+    });
+    let end_bytes = bytes::Bytes::from(
+        [
+            &b"\x00PSFC"[..],
+            serde_json::to_string(&end).unwrap_or_default().as_bytes(),
+        ]
+        .concat(),
+    );
+    channel
+        .send(&end_bytes)
+        .await
+        .map_err(|e| HostError::Backend(format!("files response end send failed: {e}")))?;
+    info!(
+        "files WebRTC frame send end response_to={} chunks={}",
+        response_to,
+        total_chunks
+    );
+
+    Ok(())
 }
 
 /// Handle a file transfer protocol message (sentinel already stripped).
@@ -199,8 +402,14 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
     let shell = AppConfig::default_shell();
 
     let mut file_transfers: HashMap<String, PendingFileTransfer> = HashMap::new();
+    let mut files_channel_messages: HashMap<String, PendingFilesChannelMessage> = HashMap::new();
+    let mut files_binary_uploads: HashMap<String, PendingFilesBinaryUpload> = HashMap::new();
+    let (files_response_tx, mut files_response_rx) =
+        tokio::sync::mpsc::unbounded_channel::<SignalEnvelope>();
     let mut minute_stats_buffer: Vec<StatsSnapshot> = Vec::with_capacity(5);
     let mut peer_session_routes: HashMap<String, String> = HashMap::new();
+    let mut files_peer_hosts: HashMap<String, String> = HashMap::new();
+    let mut files_peer_offer_ids: HashMap<String, String> = HashMap::new();
 
     info!("daemon starting for host_id={}", host_id);
     let _ = write_audit_event(AuditEvent {
@@ -277,8 +486,13 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                 .transition_session(&token, session_id, SessionState::Ended, None)
                                 .await
                             {
-                                Ok(_) => info!("reconcile: session {} ended on backend", session_id),
-                                Err(e) => warn!("reconcile: failed to end session {} on backend: {}", session_id, e),
+                                Ok(_) => {
+                                    info!("reconcile: session {} ended on backend", session_id)
+                                }
+                                Err(e) => warn!(
+                                    "reconcile: failed to end session {} on backend: {}",
+                                    session_id, e
+                                ),
                             }
                         } else {
                             info!("reconcile: session {} has live PTY, keeping", session_id);
@@ -555,6 +769,17 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                     }
                 }
                 _ = discovery_tick.tick() => {
+                    let now = Instant::now();
+                    file_transfers.retain(|_, transfer| {
+                        now.duration_since(transfer.created_at).as_secs() < FILE_TRANSFER_TIMEOUT_SECS
+                    });
+                    files_channel_messages.retain(|_, message| {
+                        now.duration_since(message.created_at).as_secs() < FILES_MESSAGE_TIMEOUT_SECS
+                    });
+                    files_binary_uploads.retain(|_, upload| {
+                        now.duration_since(upload.created_at).as_secs() < FILES_MESSAGE_TIMEOUT_SECS
+                    });
+
                     let discovered = SessionDiscovery::discover();
                     debug!("discovery tick: found {} sessions", discovered.len());
                     let msg = SignalEnvelope {
@@ -580,6 +805,12 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                         if let Ok(json) = serde_json::to_vec(&snapshot) {
                             webrtc_mgr.send_stats(&json).await;
                         }
+                    }
+                }
+
+                Some(response) = files_response_rx.recv() => {
+                    if let Err(e) = send_signal(&mut ws, &response).await {
+                        warn!("files signaling response send failed: {}", e);
                     }
                 }
 
@@ -649,6 +880,347 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                             info!("stats WebRTC channel closed for host {}", host_id);
                             webrtc_mgr.prune_stats_channels();
                         }
+                        WebRtcEvent::FilesChannelOpened {
+                            mobile_device_id,
+                            channel,
+                        } => {
+                            info!("files WebRTC channel opened for mobile {}", mobile_device_id);
+                            let ready = serde_json::json!({
+                                "channel": "files",
+                                "event": "ready",
+                            });
+                            match serde_json::to_vec(&ready) {
+                                Ok(bytes) => {
+                                    if let Err(err) = channel.send(&bytes::Bytes::from(bytes)).await {
+                                        warn!(
+                                            "files WebRTC ready send failed for mobile {}: {}",
+                                            mobile_device_id, err
+                                        );
+                                    } else {
+                                        info!(
+                                            "files WebRTC ready sent for mobile {}",
+                                            mobile_device_id
+                                        );
+                                    }
+                                }
+                                Err(err) => warn!(
+                                    "files WebRTC ready encode failed for mobile {}: {}",
+                                    mobile_device_id, err
+                                ),
+                            }
+                        }
+                        WebRtcEvent::FilesChannelClosed { mobile_device_id } => {
+                            info!("files WebRTC channel closed for mobile {}", mobile_device_id);
+                            files_peer_offer_ids.remove(&format!("files:{mobile_device_id}"));
+                            webrtc_mgr.prune_files_channels();
+                        }
+                        WebRtcEvent::FilesMessage { mobile_device_id, data, channel } => {
+                            info!(
+                                "files WebRTC raw message mobile={} bytes={} prefix={:02X?}",
+                                mobile_device_id,
+                                data.len(),
+                                &data[..std::cmp::min(8, data.len())]
+                            );
+                            if let Some(frame) = decode_files_stream_frame(&data) {
+                                let op = frame
+                                    .header
+                                    .get("op")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or_default()
+                                    .to_string();
+                                let request_id = frame
+                                    .header
+                                    .get("id")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or_default()
+                                    .to_string();
+                                let upload_key = format!("{mobile_device_id}:{request_id}");
+
+                                match op.as_str() {
+                                    "upload_start" => {
+                                        let path = frame
+                                            .header
+                                            .get("path")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or_default();
+                                        match crate::files::resolve_file_path_for_transfer(path) {
+                                            Ok(file_path) => {
+                                                if let Some(parent) = file_path.parent() {
+                                                    std::fs::create_dir_all(parent).ok();
+                                                }
+                                                match OpenOptions::new()
+                                                    .create(true)
+                                                    .write(true)
+                                                    .truncate(true)
+                                                    .open(&file_path)
+                                                {
+                                                    Ok(file) => {
+                                                        files_binary_uploads.insert(
+                                                            upload_key,
+                                                            PendingFilesBinaryUpload {
+                                                                path: file_path,
+                                                                file,
+                                                                bytes_written: 0,
+                                                                created_at: Instant::now(),
+                                                            },
+                                                        );
+                                                    }
+                                                    Err(err) => {
+                                                        let response = serde_json::json!({
+                                                            "channel": "files",
+                                                            "response_to": request_id,
+                                                            "status": "error",
+                                                            "error": err.to_string(),
+                                                            "error_code": "upload_open_failed"
+                                                        });
+                                                        if let Err(e) = send_framed_files_response(channel, &response).await {
+                                                            warn!("files upload start error send failed: {}", e);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            Err(err) => {
+                                                let response = serde_json::json!({
+                                                    "channel": "files",
+                                                    "response_to": request_id,
+                                                    "status": "error",
+                                                    "error": err.to_string(),
+                                                    "error_code": "upload_path_failed"
+                                                });
+                                                if let Err(e) = send_framed_files_response(channel, &response).await {
+                                                    warn!("files upload path error send failed: {}", e);
+                                                }
+                                            }
+                                        }
+                                        continue;
+                                    }
+                                    "upload_chunk" => {
+                                        if let Some(upload) = files_binary_uploads.get_mut(&upload_key) {
+                                            if let Err(err) = upload.file.write_all(&frame.payload) {
+                                                let response = serde_json::json!({
+                                                    "channel": "files",
+                                                    "response_to": request_id,
+                                                    "status": "error",
+                                                    "error": err.to_string(),
+                                                    "error_code": "upload_write_failed"
+                                                });
+                                                if let Err(e) = send_framed_files_response(channel, &response).await {
+                                                    warn!("files upload write error send failed: {}", e);
+                                                }
+                                                files_binary_uploads.remove(&upload_key);
+                                            } else {
+                                                upload.bytes_written += frame.payload.len();
+                                                upload.created_at = Instant::now();
+                                            }
+                                        }
+                                        continue;
+                                    }
+                                    "upload_end" => {
+                                        let response = if let Some(mut upload) = files_binary_uploads.remove(&upload_key) {
+                                            let _ = upload.file.flush();
+                                            serde_json::json!({
+                                                "channel": "files",
+                                                "response_to": request_id,
+                                                "status": "ok",
+                                                "data": {
+                                                    "bytes_written": upload.bytes_written,
+                                                    "path": upload.path.to_string_lossy()
+                                                }
+                                            })
+                                        } else {
+                                            serde_json::json!({
+                                                "channel": "files",
+                                                "response_to": request_id,
+                                                "status": "error",
+                                                "error": "upload_state_missing",
+                                                "error_code": "upload_state_missing"
+                                            })
+                                        };
+                                        if let Err(e) = send_framed_files_response(channel, &response).await {
+                                            warn!("files upload end send failed: {}", e);
+                                        }
+                                        continue;
+                                    }
+                                    _ => {}
+                                }
+                            }
+
+                            if let Some(json_str) = decode_framed_files_message(
+                                &mut files_channel_messages,
+                                &mobile_device_id,
+                                &data,
+                            ) {
+                                info!(
+                                    "files WebRTC framed message mobile={} json_bytes={}",
+                                    mobile_device_id,
+                                    json_str.len()
+                                );
+                                if let Ok(payload) = serde_json::from_str::<serde_json::Value>(&json_str) {
+                                    let action = payload.get("action").and_then(|v| v.as_str()).unwrap_or("?").to_string();
+                                    let request_id = payload
+                                        .get("request_id")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or_default()
+                                        .to_string();
+                                    let path = payload.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+                                    info!("files WebRTC >> action={} req={} path={} mobile={}", action, request_id, path, mobile_device_id);
+
+                                    if action == "download_stream" {
+                                        let req_id_clone = request_id.clone();
+                                        let path_clone = path.clone();
+                                        tokio::spawn(async move {
+                                            let canonical = match crate::files::resolve_file_path_for_transfer(&path_clone) {
+                                                Ok(path) => path,
+                                                Err(err) => {
+                                                    let response = serde_json::json!({
+                                                        "channel": "files",
+                                                        "response_to": req_id_clone,
+                                                        "status": "error",
+                                                        "error": err.to_string(),
+                                                        "error_code": "download_path_failed"
+                                                    });
+                                                    let _ = send_framed_files_response(channel, &response).await;
+                                                    return;
+                                                }
+                                            };
+                                            let metadata = match std::fs::metadata(&canonical) {
+                                                Ok(meta) => meta,
+                                                Err(err) => {
+                                                    let response = serde_json::json!({
+                                                        "channel": "files",
+                                                        "response_to": req_id_clone,
+                                                        "status": "error",
+                                                        "error": err.to_string(),
+                                                        "error_code": "download_stat_failed"
+                                                    });
+                                                    let _ = send_framed_files_response(channel, &response).await;
+                                                    return;
+                                                }
+                                            };
+                                            if metadata.is_dir() {
+                                                let response = serde_json::json!({
+                                                    "channel": "files",
+                                                    "response_to": req_id_clone,
+                                                    "status": "error",
+                                                    "error": "cannot download a directory",
+                                                    "error_code": "download_is_directory"
+                                                });
+                                                let _ = send_framed_files_response(channel, &response).await;
+                                                return;
+                                            }
+
+                                            let name = canonical
+                                                .file_name()
+                                                .map(|n| n.to_string_lossy().to_string())
+                                                .unwrap_or_default();
+                                            let mime_type = crate::files::file_mime_type(&canonical);
+                                            let start = serde_json::json!({
+                                                "op": "download_start",
+                                                "id": req_id_clone,
+                                                "name": name,
+                                                "size": metadata.len(),
+                                                "mime_type": mime_type,
+                                            });
+                                            if let Err(e) = send_files_stream_frame(std::sync::Arc::clone(&channel), &start, &[]).await {
+                                                warn!("files download start send failed: {}", e);
+                                                return;
+                                            }
+
+                                            let file = match File::open(&canonical) {
+                                                Ok(file) => file,
+                                                Err(err) => {
+                                                    let response = serde_json::json!({
+                                                        "channel": "files",
+                                                        "response_to": req_id_clone,
+                                                        "status": "error",
+                                                        "error": err.to_string(),
+                                                        "error_code": "download_open_failed"
+                                                    });
+                                                    let _ = send_framed_files_response(channel, &response).await;
+                                                    return;
+                                                }
+                                            };
+                                            let mut reader = BufReader::new(file);
+                                            let mut buf = vec![0u8; FILES_STREAM_CHUNK_SIZE];
+                                            loop {
+                                                let read = match reader.read(&mut buf) {
+                                                    Ok(read) => read,
+                                                    Err(err) => {
+                                                        let response = serde_json::json!({
+                                                            "channel": "files",
+                                                            "response_to": req_id_clone,
+                                                            "status": "error",
+                                                            "error": err.to_string(),
+                                                            "error_code": "download_read_failed"
+                                                        });
+                                                        let _ = send_framed_files_response(channel, &response).await;
+                                                        return;
+                                                    }
+                                                };
+                                                if read == 0 {
+                                                    break;
+                                                }
+                                                let header = serde_json::json!({
+                                                    "op": "download_chunk",
+                                                    "id": req_id_clone,
+                                                });
+                                                if let Err(e) = send_files_stream_frame(std::sync::Arc::clone(&channel), &header, &buf[..read]).await {
+                                                    warn!("files download chunk send failed: {}", e);
+                                                    return;
+                                                }
+                                            }
+                                            let end = serde_json::json!({
+                                                "op": "download_end",
+                                                "id": req_id_clone,
+                                            });
+                                            let _ = send_files_stream_frame(channel, &end, &[]).await;
+                                        });
+                                        continue;
+                                    }
+
+                                    // Spawn so file I/O doesn't block the event loop
+                                    let action_clone = action.clone();
+                                    let req_id_clone = request_id.clone();
+                                    tokio::spawn(async move {
+                                        let start = std::time::Instant::now();
+                                        let result = crate::files::handle_files_action(&payload).await;
+                                        let elapsed = start.elapsed();
+
+                                        let (response, status) = match result {
+                                            Ok(resp_data) => {
+                                                let resp_size = serde_json::to_vec(&resp_data).map(|v| v.len()).unwrap_or(0);
+                                                info!("files WebRTC << action={} req={} status=ok elapsed={:?} resp_bytes={}", action_clone, req_id_clone, elapsed, resp_size);
+                                                (serde_json::json!({
+                                                    "channel": "files",
+                                                    "response_to": request_id,
+                                                    "status": "ok",
+                                                    "data": resp_data
+                                                }), "ok")
+                                            },
+                                            Err(err) => {
+                                                warn!("files WebRTC << action={} req={} status=error elapsed={:?} error={}", action_clone, req_id_clone, elapsed, err);
+                                                (serde_json::json!({
+                                                    "channel": "files",
+                                                    "response_to": request_id,
+                                                    "status": "error",
+                                                    "error": err.to_string(),
+                                                    "error_code": "operation_failed"
+                                                }), "error")
+                                            },
+                                        };
+
+                                        let response_size = serde_json::to_vec(&response).map(|v| v.len()).unwrap_or(0);
+                                        info!("files WebRTC send action={} req={} status={} bytes={}", action_clone, req_id_clone, status, response_size);
+                                        if let Err(e) = send_framed_files_response(channel, &response).await {
+                                            warn!("files WebRTC send FAILED action={} req={}: {}", action_clone, req_id_clone, e);
+                                        }
+                                    });
+                                } else {
+                                    warn!("files WebRTC message: invalid JSON from mobile, raw_len={}", data.len());
+                                }
+                            }
+                        }
                         WebRtcEvent::StatsMessage { data } => {
                             if let Ok(json_str) = std::str::from_utf8(&data) {
                                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str) {
@@ -680,13 +1252,65 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                         } else {
                                             warn!("kill_process message missing pid field");
                                         }
+                                    } else if msg_type == "reboot" {
+                                        info!("reboot request received from mobile");
+                                        // Try sudo -n reboot first (non-interactive); fall back to plain reboot
+                                        let sudo_ok = match std::process::Command::new("sudo")
+                                            .args(["-n", "reboot"])
+                                            .output()
+                                        {
+                                            Ok(output) if output.status.success() => true,
+                                            Ok(output) => {
+                                                let stderr = String::from_utf8_lossy(&output.stderr);
+                                                warn!("sudo reboot failed ({}), trying plain reboot: {}", output.status, stderr.trim());
+                                                false
+                                            }
+                                            Err(e) => {
+                                                warn!("sudo not available ({}), trying plain reboot", e);
+                                                false
+                                            }
+                                        };
+                                        if !sudo_ok {
+                                            match std::process::Command::new("reboot").output() {
+                                                Ok(output) => {
+                                                    if !output.status.success() {
+                                                        let stderr = String::from_utf8_lossy(&output.stderr);
+                                                        warn!("reboot command failed: {}", stderr.trim());
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    warn!("reboot command failed: {}", e);
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
                         }
-                        WebRtcEvent::IceCandidate { mobile_device_id, candidate_json } => {
+                        WebRtcEvent::IceCandidate { peer_key, mobile_device_id, candidate_json } => {
                             if let Ok(candidate_value) = serde_json::from_str::<serde_json::Value>(&candidate_json) {
-                                if let Some(session_id) = peer_session_routes.get(&mobile_device_id).cloned() {
+                                if peer_key.starts_with("files:") {
+                                    if let Some(host_id) = files_peer_hosts.get(&peer_key).cloned() {
+                                        let mut payload = candidate_value;
+                                        if let Some(offer_id) = files_peer_offer_ids.get(&peer_key).cloned() {
+                                            if let Some(map) = payload.as_object_mut() {
+                                                map.insert("offer_id".to_string(), serde_json::json!(offer_id));
+                                            }
+                                        }
+                                        let mut extra = std::collections::HashMap::new();
+                                        extra.insert("host_id".to_string(), serde_json::json!(host_id));
+                                        let ice_msg = SignalEnvelope {
+                                            message_type: "files_ice_candidate".to_string(),
+                                            session_id: None,
+                                            payload: Some(payload),
+                                            state: None,
+                                            accepted: None,
+                                            reason: None,
+                                            extra,
+                                        };
+                                        let _ = send_signal(&mut ws, &ice_msg).await;
+                                    }
+                                } else if let Some(session_id) = peer_session_routes.get(&mobile_device_id).cloned() {
                                     let mut extra = std::collections::HashMap::new();
                                     extra.insert(
                                         "target_mobile_device_id".to_string(),
@@ -760,6 +1384,9 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                 &mut webrtc_mgr,
                                 &mut file_transfers,
                                 &mut peer_session_routes,
+                                &mut files_peer_hosts,
+                                &mut files_peer_offer_ids,
+                                &files_response_tx,
                             ).await {
                                 error!("control message handling failed: {}", err);
                             }
@@ -872,6 +1499,9 @@ async fn handle_signal(
     webrtc_mgr: &mut WebRtcManager,
     file_transfers: &mut HashMap<String, PendingFileTransfer>,
     peer_session_routes: &mut HashMap<String, String>,
+    files_peer_hosts: &mut HashMap<String, String>,
+    files_peer_offer_ids: &mut HashMap<String, String>,
+    files_response_tx: &tokio::sync::mpsc::UnboundedSender<SignalEnvelope>,
 ) -> Result<()> {
     match msg.message_type.as_str() {
         "session_request" => {
@@ -968,7 +1598,12 @@ async fn handle_signal(
                         store.touch_session_state(&evicted_session_id, SessionState::Ended);
                         if let Ok(token) = store.access_token().map(|s| s.to_string()) {
                             let _ = backend
-                                .transition_session(&token, &evicted_session_id, SessionState::Ended, None)
+                                .transition_session(
+                                    &token,
+                                    &evicted_session_id,
+                                    SessionState::Ended,
+                                    None,
+                                )
                                 .await;
                         }
 
@@ -1267,40 +1902,73 @@ async fn handle_signal(
                         .unwrap_or_default()
                         .to_string();
 
-                    let result = crate::files::handle_files_action(&payload).await;
-                    let response_payload = match result {
-                        Ok(data) => serde_json::json!({
-                            "channel": "files",
-                            "response_to": request_id,
-                            "status": "ok",
-                            "data": data
-                        }),
-                        Err(err) => serde_json::json!({
-                            "channel": "files",
-                            "response_to": request_id,
-                            "status": "error",
-                            "error": err.to_string(),
-                            "error_code": "operation_failed"
-                        }),
-                    };
+                    let action = payload
+                        .get("action")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?")
+                        .to_string();
+                    let path = payload
+                        .get("path")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    info!(
+                        "files signaling >> action={} req={} path={}",
+                        action, request_id, path
+                    );
 
-                    let mut extra = std::collections::HashMap::new();
-                    if let Some(target) = target_mobile_device_id {
-                        extra.insert(
-                            "target_mobile_device_id".to_string(),
-                            serde_json::json!(target),
-                        );
-                    }
-                    let response = SignalEnvelope {
-                        message_type: "signal".to_string(),
-                        session_id: Some(session_id),
-                        payload: Some(response_payload),
-                        state: None,
-                        accepted: None,
-                        reason: None,
-                        extra,
-                    };
-                    send_signal(ws, &response).await?;
+                    // Spawn so file I/O doesn't block the event loop
+                    let tx = files_response_tx.clone();
+                    let action_clone = action.clone();
+                    let req_id_clone = request_id.clone();
+                    tokio::spawn(async move {
+                        let start = std::time::Instant::now();
+                        let result = crate::files::handle_files_action(&payload).await;
+                        let elapsed = start.elapsed();
+
+                        let response_payload = match result {
+                            Ok(data) => {
+                                info!(
+                                    "files signaling << action={} req={} status=ok elapsed={:?}",
+                                    action_clone, req_id_clone, elapsed
+                                );
+                                serde_json::json!({
+                                    "channel": "files",
+                                    "response_to": request_id,
+                                    "status": "ok",
+                                    "data": data
+                                })
+                            }
+                            Err(err) => {
+                                warn!("files signaling << action={} req={} status=error elapsed={:?} error={}", action_clone, req_id_clone, elapsed, err);
+                                serde_json::json!({
+                                    "channel": "files",
+                                    "response_to": request_id,
+                                    "status": "error",
+                                    "error": err.to_string(),
+                                    "error_code": "operation_failed"
+                                })
+                            }
+                        };
+
+                        let mut extra = std::collections::HashMap::new();
+                        if let Some(target) = target_mobile_device_id {
+                            extra.insert(
+                                "target_mobile_device_id".to_string(),
+                                serde_json::json!(target),
+                            );
+                        }
+                        let response = SignalEnvelope {
+                            message_type: "signal".to_string(),
+                            session_id: Some(session_id),
+                            payload: Some(response_payload),
+                            state: None,
+                            accepted: None,
+                            reason: None,
+                            extra,
+                        };
+                        let _ = tx.send(response);
+                    });
                 }
                 _ => {}
             }
@@ -1473,7 +2141,7 @@ async fn handle_signal(
                                 )
                                 .await
                             {
-                                Ok(answer_sdp) => {
+                                Ok(answer_sdp) if !answer_sdp.is_empty() => {
                                     let mut extra = std::collections::HashMap::new();
                                     extra.insert(
                                         "target_mobile_device_id".to_string(),
@@ -1489,6 +2157,9 @@ async fn handle_signal(
                                         extra,
                                     };
                                     let _ = send_signal(ws, &answer_msg).await;
+                                }
+                                Ok(_) => {
+                                    // Empty answer — peer is still connecting, skip
                                 }
                                 Err(e) => {
                                     warn!("webrtc handle_offer failed: {}", e);
@@ -1566,7 +2237,7 @@ async fn handle_signal(
                                 )
                                 .await
                             {
-                                Ok(answer_sdp) => {
+                                Ok(answer_sdp) if !answer_sdp.is_empty() => {
                                     let mut extra = std::collections::HashMap::new();
                                     extra.insert(
                                         "mobile_device_id".to_string(),
@@ -1583,6 +2254,9 @@ async fn handle_signal(
                                     };
                                     let _ = send_signal(ws, &answer_msg).await;
                                 }
+                                Ok(_) => {
+                                    // Empty answer — peer is still connecting, skip
+                                }
                                 Err(e) => {
                                     warn!("webrtc stats handle_offer failed: {}", e);
                                 }
@@ -1591,6 +2265,110 @@ async fn handle_signal(
                         Err(e) => {
                             warn!("failed to fetch TURN credentials for stats: {}", e);
                         }
+                    }
+                }
+            }
+        }
+        "files_offer" => {
+            let mobile_device_id = msg
+                .extra
+                .get("mobile_device_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let host_id = msg
+                .extra
+                .get("host_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+
+            if !store.is_trusted(&mobile_device_id) {
+                warn!(
+                    "files_offer rejected: device {} is not trusted",
+                    mobile_device_id
+                );
+                return Ok(());
+            }
+
+            let peer_key = format!("files:{mobile_device_id}");
+            files_peer_hosts.insert(peer_key.clone(), host_id.clone());
+            let offer_id = msg
+                .payload
+                .as_ref()
+                .and_then(|payload| payload.get("offer_id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            if !offer_id.is_empty() {
+                files_peer_offer_ids.insert(peer_key.clone(), offer_id.clone());
+            }
+
+            if let Some(payload) = &msg.payload {
+                if let Some(offer_sdp) = payload.get("sdp").and_then(|v| v.as_str()) {
+                    let token = store.access_token()?.to_string();
+                    match backend.turn_credentials(&token).await {
+                        Ok((username, credential, _ttl, uris)) => {
+                            match webrtc_mgr
+                                .handle_offer(
+                                    &peer_key, uris, username, credential, offer_sdp, true,
+                                )
+                                .await
+                            {
+                                Ok(answer_sdp) if !answer_sdp.is_empty() => {
+                                    let mut extra = std::collections::HashMap::new();
+                                    extra.insert("host_id".to_string(), serde_json::json!(host_id));
+                                    let answer_msg = SignalEnvelope {
+                                        message_type: "files_answer".to_string(),
+                                        session_id: None,
+                                        payload: Some(serde_json::json!({
+                                            "sdp": answer_sdp,
+                                            "offer_id": offer_id,
+                                        })),
+                                        state: None,
+                                        accepted: None,
+                                        reason: None,
+                                        extra,
+                                    };
+                                    let _ = send_signal(ws, &answer_msg).await;
+                                }
+                                Ok(_) => {}
+                                Err(e) => {
+                                    warn!("webrtc files handle_offer failed: {}", e);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!("failed to fetch TURN credentials for files: {}", e);
+                        }
+                    }
+                }
+            }
+        }
+        "files_ice_candidate" => {
+            let mobile_device_id = msg
+                .extra
+                .get("mobile_device_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+
+            if !store.is_trusted(&mobile_device_id) {
+                warn!(
+                    "files_ice_candidate rejected: device {} is not trusted",
+                    mobile_device_id
+                );
+                return Ok(());
+            }
+
+            if let Some(payload) = &msg.payload {
+                if let Ok(candidate) = serde_json::from_value::<
+                    webrtc::ice_transport::ice_candidate::RTCIceCandidateInit,
+                >(payload.clone())
+                {
+                    let peer_key = format!("files:{mobile_device_id}");
+                    if let Err(e) = webrtc_mgr.add_ice_candidate(&peer_key, candidate).await {
+                        warn!("webrtc files add_ice_candidate failed: {}", e);
                     }
                 }
             }

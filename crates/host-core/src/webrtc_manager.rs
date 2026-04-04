@@ -12,7 +12,6 @@ use webrtc::data_channel::RTCDataChannel;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 
-#[derive(Debug)]
 pub enum WebRtcEvent {
     Input {
         session_id: String,
@@ -26,6 +25,7 @@ pub enum WebRtcEvent {
         session_id: String,
     },
     IceCandidate {
+        peer_key: String,
         mobile_device_id: String,
         candidate_json: String,
     },
@@ -38,6 +38,83 @@ pub enum WebRtcEvent {
     StatsMessage {
         data: Vec<u8>,
     },
+    FilesChannelOpened {
+        mobile_device_id: String,
+        channel: Arc<RTCDataChannel>,
+    },
+    FilesChannelClosed {
+        mobile_device_id: String,
+    },
+    FilesMessage {
+        mobile_device_id: String,
+        data: Vec<u8>,
+        channel: Arc<RTCDataChannel>,
+    },
+}
+
+impl std::fmt::Debug for WebRtcEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Input {
+                session_id,
+                mobile_device_id,
+                data,
+            } => f
+                .debug_struct("Input")
+                .field("session_id", session_id)
+                .field("mobile_device_id", mobile_device_id)
+                .field("data_len", &data.len())
+                .finish(),
+            Self::ChannelOpened { session_id } => f
+                .debug_struct("ChannelOpened")
+                .field("session_id", session_id)
+                .finish(),
+            Self::ChannelClosed { session_id } => f
+                .debug_struct("ChannelClosed")
+                .field("session_id", session_id)
+                .finish(),
+            Self::IceCandidate {
+                peer_key,
+                mobile_device_id,
+                ..
+            } => f
+                .debug_struct("IceCandidate")
+                .field("peer_key", peer_key)
+                .field("mobile_device_id", mobile_device_id)
+                .finish(),
+            Self::StatsChannelOpened { host_id } => f
+                .debug_struct("StatsChannelOpened")
+                .field("host_id", host_id)
+                .finish(),
+            Self::StatsChannelClosed { host_id } => f
+                .debug_struct("StatsChannelClosed")
+                .field("host_id", host_id)
+                .finish(),
+            Self::StatsMessage { data } => f
+                .debug_struct("StatsMessage")
+                .field("data_len", &data.len())
+                .finish(),
+            Self::FilesChannelOpened {
+                mobile_device_id, ..
+            } => f
+                .debug_struct("FilesChannelOpened")
+                .field("mobile_device_id", mobile_device_id)
+                .finish(),
+            Self::FilesChannelClosed { mobile_device_id } => f
+                .debug_struct("FilesChannelClosed")
+                .field("mobile_device_id", mobile_device_id)
+                .finish(),
+            Self::FilesMessage {
+                mobile_device_id,
+                data,
+                ..
+            } => f
+                .debug_struct("FilesMessage")
+                .field("mobile_device_id", mobile_device_id)
+                .field("data_len", &data.len())
+                .finish(),
+        }
+    }
 }
 
 pub struct WebRtcManager {
@@ -46,10 +123,16 @@ pub struct WebRtcManager {
     session_channels: HashMap<String, Vec<Arc<RTCDataChannel>>>,
     /// Maps (session_id, mobile_device_id) to the index range of channels owned by that mobile.
     /// Used for cleanup when a specific mobile peer disconnects.
-    channel_owners: Vec<(String, String, Arc<RTCDataChannel>)>, // (session_id, mobile_device_id, channel)
+    channel_owners: Vec<(String, String, Arc<RTCDataChannel>)>, // (session_id, peer_key, channel)
     /// Stats channels tracked per mobile peer for proper cleanup.
-    stats_channel_owners: Vec<(String, Arc<RTCDataChannel>)>, // (mobile_device_id, channel)
+    stats_channel_owners: Vec<(String, Arc<RTCDataChannel>)>, // (peer_key, channel)
+    /// Files channels tracked per mobile peer for proper cleanup.
+    files_channel_owners: Vec<(String, Arc<RTCDataChannel>)>, // (peer_key, channel)
     event_tx: mpsc::UnboundedSender<WebRtcEvent>,
+}
+
+fn base_mobile_id(peer_key: &str) -> &str {
+    peer_key.strip_prefix("files:").unwrap_or(peer_key)
 }
 
 impl WebRtcManager {
@@ -59,25 +142,37 @@ impl WebRtcManager {
             session_channels: HashMap::new(),
             channel_owners: Vec::new(),
             stats_channel_owners: Vec::new(),
+            files_channel_owners: Vec::new(),
             event_tx,
         }
     }
 
     pub async fn handle_offer(
         &mut self,
-        mobile_device_id: &str,
+        peer_key: &str,
         turn_uris: Vec<String>,
         username: String,
         credential: String,
         offer_sdp: &str,
         force_new_peer: bool,
     ) -> Result<String> {
-        let should_create = match self.peers.get(mobile_device_id) {
+        let should_create = match self.peers.get(peer_key) {
             None => true,
             Some(peer) => {
+                let state = peer.connection_state();
+                // Don't replace a peer that is still connecting — TURN allocation
+                // can take several seconds and killing it mid-flight causes cascading
+                // failures.  Return empty answer so the mobile knows to wait.
+                if state == RTCPeerConnectionState::Connecting {
+                    warn!(
+                        "skipping offer for peer_key={} — peer still connecting",
+                        peer_key
+                    );
+                    return Ok(String::new());
+                }
                 force_new_peer
                     || matches!(
-                        peer.connection_state(),
+                        state,
                         RTCPeerConnectionState::Failed
                             | RTCPeerConnectionState::Closed
                             | RTCPeerConnectionState::Disconnected
@@ -85,69 +180,63 @@ impl WebRtcManager {
             }
         };
         if should_create {
-            if let Some(old) = self.peers.remove(mobile_device_id) {
+            if let Some(old) = self.peers.remove(peer_key) {
                 info!(
-                    "replacing WebRTC peer for mobile_device_id={} (state={:?}, forced={})",
-                    mobile_device_id,
+                    "replacing WebRTC peer for peer_key={} (state={:?}, forced={})",
+                    peer_key,
                     old.connection_state(),
                     force_new_peer
                 );
                 old.close().await;
             }
             let peer = WebRtcPeer::new(turn_uris, username, credential).await?;
-            self.peers.insert(mobile_device_id.to_string(), peer);
-            info!(
-                "created WebRTC peer for mobile_device_id={}",
-                mobile_device_id
-            );
+            self.peers.insert(peer_key.to_string(), peer);
+            info!("created WebRTC peer for peer_key={}", peer_key);
         }
 
         let peer = self
             .peers
-            .get(mobile_device_id)
+            .get(peer_key)
             .ok_or_else(|| HostError::Backend("peer not found after creation".into()))?;
 
         let answer_sdp = peer.apply_offer(offer_sdp).await?;
-        info!(
-            "applied offer, sending answer for mobile_device_id={}",
-            mobile_device_id
-        );
+        info!("applied offer, sending answer for peer_key={}", peer_key);
 
         Ok(answer_sdp)
     }
 
     pub async fn add_ice_candidate(
         &mut self,
-        mobile_device_id: &str,
+        peer_key: &str,
         candidate: RTCIceCandidateInit,
     ) -> Result<()> {
         let peer = self
             .peers
-            .get(mobile_device_id)
-            .ok_or_else(|| HostError::Backend(format!("no peer for mobile {mobile_device_id}")))?;
+            .get(peer_key)
+            .ok_or_else(|| HostError::Backend(format!("no peer for {peer_key}")))?;
         peer.add_ice_candidate(candidate).await
     }
 
     pub async fn poll_events(&mut self) {
-        let mobile_ids: Vec<String> = self.peers.keys().cloned().collect();
+        let peer_keys: Vec<String> = self.peers.keys().cloned().collect();
         let mut peers_to_close: Vec<String> = Vec::new();
 
-        for mobile_id in mobile_ids {
+        for peer_key in peer_keys {
             let mut dc_events: Vec<DataChannelEvent> = Vec::new();
             let mut ice_candidates: Vec<webrtc::ice_transport::ice_candidate::RTCIceCandidate> =
                 Vec::new();
 
-            if let Some(peer) = self.peers.get_mut(&mobile_id) {
+            if let Some(peer) = self.peers.get_mut(&peer_key) {
                 let state = peer.connection_state();
                 if matches!(
                     state,
                     RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed
                 ) {
                     warn!(
-                        "closing WebRTC peer for mobile_device_id={} due to peer state {:?}",
-                        mobile_id, state
+                        "closing WebRTC peer for peer_key={} due to peer state {:?}",
+                        peer_key, state
                     );
-                    peers_to_close.push(mobile_id.clone());
+                    peers_to_close.push(peer_key.clone());
                     continue;
                 }
                 while let Ok(dc_event) = peer.channel_rx.try_recv() {
@@ -159,22 +248,23 @@ impl WebRtcManager {
             }
 
             for dc_event in dc_events {
-                self.handle_new_channel(&mobile_id, dc_event).await;
+                self.handle_new_channel(&peer_key, dc_event).await;
             }
 
             for candidate in ice_candidates {
                 if let Ok(json) = candidate.to_json() {
                     let json_str = serde_json::to_string(&json).unwrap_or_default();
                     let _ = self.event_tx.send(WebRtcEvent::IceCandidate {
-                        mobile_device_id: mobile_id.clone(),
+                        peer_key: peer_key.clone(),
+                        mobile_device_id: base_mobile_id(&peer_key).to_string(),
                         candidate_json: json_str,
                     });
                 }
             }
         }
 
-        for mobile_id in peers_to_close {
-            self.close_peer(&mobile_id).await;
+        for peer_key in peers_to_close {
+            self.close_peer(&peer_key).await;
         }
     }
 
@@ -249,6 +339,13 @@ impl WebRtcManager {
         });
     }
 
+    /// Remove closed files channels (called when FilesChannelClosed event fires).
+    pub fn prune_files_channels(&mut self) {
+        self.files_channel_owners.retain(|(_, ch)| {
+            ch.ready_state() == webrtc::data_channel::data_channel_state::RTCDataChannelState::Open
+        });
+    }
+
     pub fn close_session(&mut self, session_id: &str) {
         if let Some(channels) = self.session_channels.remove(session_id) {
             for channel in channels {
@@ -260,16 +357,16 @@ impl WebRtcManager {
         self.channel_owners.retain(|(sid, _, _)| sid != session_id);
     }
 
-    pub async fn close_peer(&mut self, mobile_device_id: &str) {
-        if let Some(peer) = self.peers.remove(mobile_device_id) {
+    pub async fn close_peer(&mut self, peer_key: &str) {
+        if let Some(peer) = self.peers.remove(peer_key) {
             peer.close().await;
         }
 
-        // Close terminal channels owned by this mobile device
+        // Close terminal channels owned by this specific peer.
         let (to_close, remaining): (Vec<_>, Vec<_>) = self
             .channel_owners
             .drain(..)
-            .partition(|(_, mid, _)| mid == mobile_device_id);
+            .partition(|(_, owner_peer_key, _)| owner_peer_key == peer_key);
 
         self.channel_owners = remaining;
 
@@ -285,13 +382,25 @@ impl WebRtcManager {
             });
         }
 
-        // Close stats channels owned by this specific peer
+        // Close stats channels owned by this specific peer.
         let (stats_to_close, stats_remaining): (Vec<_>, Vec<_>) = self
             .stats_channel_owners
             .drain(..)
-            .partition(|(mid, _)| mid == mobile_device_id);
+            .partition(|(owner_peer_key, _)| owner_peer_key == peer_key);
         self.stats_channel_owners = stats_remaining;
         for (_, ch) in stats_to_close {
+            tokio::spawn(async move {
+                let _ = ch.close().await;
+            });
+        }
+
+        // Close files channels owned by this specific peer.
+        let (files_to_close, files_remaining): (Vec<_>, Vec<_>) = self
+            .files_channel_owners
+            .drain(..)
+            .partition(|(owner_peer_key, _)| owner_peer_key == peer_key);
+        self.files_channel_owners = files_remaining;
+        for (_, ch) in files_to_close {
             tokio::spawn(async move {
                 let _ = ch.close().await;
             });
@@ -305,17 +414,18 @@ impl WebRtcManager {
         }
     }
 
-    async fn handle_new_channel(&mut self, mobile_id: &str, dc_event: DataChannelEvent) {
+    async fn handle_new_channel(&mut self, peer_key: &str, dc_event: DataChannelEvent) {
+        let mobile_id = base_mobile_id(peer_key).to_string();
         let label = dc_event.label.clone();
         let channel = dc_event.channel;
 
         if let Some(host_id) = label.strip_prefix("stats-") {
             info!(
-                "stats data channel opened for host {} from mobile {}",
-                host_id, mobile_id
+                "stats data channel opened for host {} from mobile {} peer_key={}",
+                host_id, mobile_id, peer_key
             );
             self.stats_channel_owners
-                .push((mobile_id.to_string(), Arc::clone(&channel)));
+                .push((peer_key.to_string(), Arc::clone(&channel)));
 
             let event_tx_msg = self.event_tx.clone();
             channel.on_message(Box::new(move |msg: DataChannelMessage| {
@@ -343,6 +453,49 @@ impl WebRtcManager {
             return;
         }
 
+        if label.starts_with("files-") {
+            info!(
+                "files data channel opened from mobile {} peer_key={}",
+                mobile_id, peer_key
+            );
+            self.files_channel_owners
+                .push((peer_key.to_string(), Arc::clone(&channel)));
+
+            let event_tx_msg = self.event_tx.clone();
+            let mid = mobile_id.to_string();
+            let ch = Arc::clone(&channel);
+            channel.on_message(Box::new(move |msg: DataChannelMessage| {
+                let tx = event_tx_msg.clone();
+                let mobile = mid.clone();
+                let channel = Arc::clone(&ch);
+                Box::pin(async move {
+                    let _ = tx.send(WebRtcEvent::FilesMessage {
+                        mobile_device_id: mobile,
+                        data: msg.data.to_vec(),
+                        channel,
+                    });
+                })
+            }));
+
+            let event_tx = self.event_tx.clone();
+            let mid = mobile_id.to_string();
+            channel.on_close(Box::new(move || {
+                let tx = event_tx.clone();
+                let mobile = mid.clone();
+                Box::pin(async move {
+                    let _ = tx.send(WebRtcEvent::FilesChannelClosed {
+                        mobile_device_id: mobile,
+                    });
+                })
+            }));
+
+            let _ = self.event_tx.send(WebRtcEvent::FilesChannelOpened {
+                mobile_device_id: mobile_id.to_string(),
+                channel: Arc::clone(&channel),
+            });
+            return;
+        }
+
         let session_id = if let Some(sid) = label.strip_prefix("terminal-") {
             sid.to_string()
         } else {
@@ -361,7 +514,7 @@ impl WebRtcManager {
             .push(Arc::clone(&channel));
         self.channel_owners.push((
             session_id.clone(),
-            mobile_id.to_string(),
+            peer_key.to_string(),
             Arc::clone(&channel),
         ));
 

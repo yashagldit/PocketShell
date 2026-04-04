@@ -1,9 +1,9 @@
-use crate::models::{
-    CpuCoreInfo, DiskIOStats, LoggedInUser, NetworkConnection, NetworkIOStats,
-    OsInfo, ProcessInfo, StatsSnapshot, TaskCounts, TemperatureReading,
-};
 #[cfg(target_os = "linux")]
 use crate::models::CpuTimes;
+use crate::models::{
+    CpuCoreInfo, DiskIOStats, LoggedInUser, NetworkConnection, NetworkIOStats, OsInfo, ProcessInfo,
+    StatsSnapshot, TaskCounts, TemperatureReading,
+};
 use chrono::Utc;
 use std::collections::HashSet;
 use sysinfo::{Components, Disk, Disks, Networks, ProcessStatus, ProcessesToUpdate, System, Users};
@@ -301,11 +301,14 @@ impl StatsCollector {
             os_info,
             users,
             cached_battery: None,
-            battery_refreshed_at: Instant::now() - std::time::Duration::from_secs(BATTERY_REFRESH_INTERVAL_SECS + 1),
+            battery_refreshed_at: Instant::now()
+                - std::time::Duration::from_secs(BATTERY_REFRESH_INTERVAL_SECS + 1),
             cached_net_connections: None,
-            net_conn_refreshed_at: Instant::now() - std::time::Duration::from_secs(NET_CONN_REFRESH_INTERVAL_SECS + 1),
+            net_conn_refreshed_at: Instant::now()
+                - std::time::Duration::from_secs(NET_CONN_REFRESH_INTERVAL_SECS + 1),
             cached_logged_in_users: None,
-            users_refreshed_at: Instant::now() - std::time::Duration::from_secs(USERS_REFRESH_INTERVAL_SECS + 1),
+            users_refreshed_at: Instant::now()
+                - std::time::Duration::from_secs(USERS_REFRESH_INTERVAL_SECS + 1),
             #[cfg(target_os = "linux")]
             prev_cpu_jiffies: None,
         }
@@ -469,8 +472,14 @@ impl StatsCollector {
                         if cmd.is_empty() {
                             None
                         } else {
-                            let mut full = cmd.iter().map(|s| s.to_string_lossy()).collect::<Vec<_>>().join(" ");
-                            if full.len() > 120 { full.truncate(120); }
+                            let mut full = cmd
+                                .iter()
+                                .map(|s| s.to_string_lossy())
+                                .collect::<Vec<_>>()
+                                .join(" ");
+                            if full.len() > 120 {
+                                full.truncate(120);
+                            }
                             Some(full)
                         }
                     };
@@ -493,7 +502,16 @@ impl StatsCollector {
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
             procs.truncate(50);
-            (Some(procs), Some(TaskCounts { total, running, sleeping, stopped, zombie }))
+            (
+                Some(procs),
+                Some(TaskCounts {
+                    total,
+                    running,
+                    sleeping,
+                    stopped,
+                    zombie,
+                }),
+            )
         } else {
             (None, None)
         };
