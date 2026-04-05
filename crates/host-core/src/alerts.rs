@@ -37,6 +37,26 @@ impl AlertChecker {
                     (snapshot.disk_used_bytes as f64 / snapshot.disk_total_bytes as f64) * 100.0
                 }
                 "load" => snapshot.load_five,
+                "temperature" => {
+                    match &snapshot.temperatures {
+                        Some(temps) if !temps.is_empty() => {
+                            temps.iter().map(|t| t.temp_celsius as f64).fold(f64::NEG_INFINITY, f64::max)
+                        }
+                        _ => continue,
+                    }
+                }
+                "battery" => {
+                    match snapshot.battery_percent {
+                        Some(b) => b as f64,
+                        None => continue,
+                    }
+                }
+                "swap" => {
+                    if snapshot.swap_total_bytes == 0 {
+                        continue;
+                    }
+                    (snapshot.swap_used_bytes as f64 / snapshot.swap_total_bytes as f64) * 100.0
+                }
                 _ => continue,
             };
 
@@ -64,16 +84,21 @@ impl AlertChecker {
                 "memory" => "Memory usage",
                 "disk" => "Disk usage",
                 "load" => "Load average (5m)",
+                "temperature" => "Temperature",
+                "battery" => "Battery",
+                "swap" => "Swap usage",
                 _ => &threshold.metric,
             };
 
+            let unit = if threshold.metric == "temperature" { "°C" } else { "%" };
+            let direction = if threshold.comparison == "lt" { "below" } else { "exceeds" };
             alerts.push(AlertPayload {
                 metric: threshold.metric.clone(),
                 threshold_value: threshold.threshold_value,
                 actual_value: (actual_value * 10.0).round() / 10.0, // round to 1 decimal
                 message: format!(
-                    "{} {:.1}% exceeds threshold {:.1}%",
-                    label, actual_value, threshold.threshold_value
+                    "{} {:.1}{} {} threshold {:.1}{}",
+                    label, actual_value, unit, direction, threshold.threshold_value, unit
                 ),
             });
         }
