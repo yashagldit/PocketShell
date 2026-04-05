@@ -1,4 +1,5 @@
 pub mod alerts;
+pub mod local_attach;
 pub mod api;
 pub mod audit;
 pub mod config;

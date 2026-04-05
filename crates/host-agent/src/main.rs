@@ -15,7 +15,6 @@ use rand::rngs::OsRng;
 use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing_subscriber::EnvFilter;
@@ -91,9 +90,9 @@ enum DeviceCommands {
 
 #[derive(Subcommand, Debug)]
 enum SessionCommands {
-    /// Attach to a persistent tmux session locally on this host
+    /// Attach locally to an active terminal session on this host
     Attach {
-        /// Session ID (or prefix) to attach to
+        /// Session ID to attach to
         session_id: String,
     },
 }
@@ -574,7 +573,7 @@ async fn stats_cmd(watch: bool) -> Result<()> {
 
 async fn sessions_cmd(config: AppConfig, command: Option<SessionCommands>) -> Result<()> {
     match command {
-        Some(SessionCommands::Attach { session_id }) => sessions_attach(session_id),
+        Some(SessionCommands::Attach { session_id }) => sessions_attach(session_id).await,
         None => sessions_list(config).await,
     }
 }
@@ -645,65 +644,166 @@ async fn sessions_list(config: AppConfig) -> Result<()> {
         .filter(|s| s.session_type == "pocketshell")
         .collect();
     if !ps_sessions.is_empty() {
-        println!("Tip: PocketShell persistent sessions can be resumed from mobile.");
-        println!("Local CLI attach is still only available for tmux sessions.");
+        println!("Tip: Use `pocketshell sessions attach <session-id>` to attach locally.");
+        println!("     Sessions can also be resumed from the mobile app.");
     }
 
     Ok(())
 }
 
-fn sessions_attach(session_id: String) -> Result<()> {
-    let tmux_name = if session_id.starts_with("ps-") {
-        session_id.clone()
-    } else {
-        format!("ps-{session_id}")
-    };
+async fn sessions_attach(session_id: String) -> Result<()> {
+    use host_core::local_attach;
+    use nix::sys::termios;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::UnixStream;
 
-    // Check if the tmux session exists
-    if !SessionDiscovery::tmux_session_exists(&tmux_name) {
-        // Also try as a plain tmux session name (non-pocketshell)
-        if SessionDiscovery::tmux_session_exists(&session_id) {
-            println!("attaching to tmux session '{}'...", session_id);
-            let status = Command::new("tmux")
-                .args(["attach-session", "-t", &session_id])
-                .stdin(Stdio::inherit())
-                .stdout(Stdio::inherit())
-                .stderr(Stdio::inherit())
-                .status()
-                .context("failed to run tmux attach")?;
-            if !status.success() {
-                return Err(anyhow!("tmux attach exited with {}", status));
+    let sock_path = local_attach::socket_path()
+        .map_err(|e| anyhow!("failed to determine socket path: {e}"))?;
+
+    let stream = UnixStream::connect(&sock_path)
+        .await
+        .context("failed to connect to daemon — is it running? (`pocketshell daemon run`)")?;
+
+    let (mut reader, mut writer) = stream.into_split();
+
+    // Send ATTACH frame with session_id
+    let frame = local_attach::encode_frame(
+        local_attach::FRAME_ATTACH,
+        session_id.as_bytes(),
+    );
+    writer.write_all(&frame).await.context("failed to send attach request")?;
+
+    // Read response frame
+    let mut header = [0u8; 5];
+    reader.read_exact(&mut header).await.context("daemon closed connection")?;
+    let frame_type = header[0];
+    let len = u32::from_be_bytes([header[1], header[2], header[3], header[4]]) as usize;
+    if len > local_attach::MAX_FRAME_SIZE {
+        return Err(anyhow!("daemon sent oversized frame ({} bytes)", len));
+    }
+    let mut payload = vec![0u8; len];
+    if len > 0 {
+        reader.read_exact(&mut payload).await.context("daemon closed connection")?;
+    }
+
+    if frame_type == local_attach::FRAME_ERROR {
+        let msg = String::from_utf8_lossy(&payload);
+        return Err(anyhow!("{}", msg));
+    }
+    if frame_type != local_attach::FRAME_ATTACHED_OK {
+        return Err(anyhow!("unexpected response from daemon"));
+    }
+
+    // Put terminal in raw mode
+    let stdin_handle = std::io::stdin();
+    let original_termios = termios::tcgetattr(&stdin_handle).context("failed to get terminal attributes")?;
+    let mut raw = original_termios.clone();
+    termios::cfmakeraw(&mut raw);
+    termios::tcsetattr(&stdin_handle, termios::SetArg::TCSANOW, &raw)
+        .context("failed to set raw mode")?;
+
+    // Write scrollback (the payload of ATTACHED_OK) to stdout
+    if !payload.is_empty() {
+        let mut stdout = tokio::io::stdout();
+        let _ = stdout.write_all(&payload).await;
+        let _ = stdout.flush().await;
+    }
+
+    eprintln!("\r\x1b[2K[attached to session {}. Press Ctrl+\\ to detach]", session_id);
+
+    // Send initial terminal size
+    {
+        let (cols, rows) = term_size();
+        let mut resize_payload = [0u8; 4];
+        resize_payload[0..2].copy_from_slice(&cols.to_be_bytes());
+        resize_payload[2..4].copy_from_slice(&rows.to_be_bytes());
+        let frame = local_attach::encode_frame(local_attach::FRAME_RESIZE, &resize_payload);
+        let _ = writer.write_all(&frame).await;
+    }
+
+    // Set up SIGWINCH handler
+    let mut sigwinch = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::window_change())
+        .context("failed to register SIGWINCH handler")?;
+
+    let mut stdin = tokio::io::stdin();
+    let mut stdout = tokio::io::stdout();
+    let mut stdin_buf = vec![0u8; 4096];
+    let mut read_header = [0u8; 5];
+
+    let result: Result<()> = async {
+        loop {
+            tokio::select! {
+                // Read from daemon → write to stdout
+                res = reader.read_exact(&mut read_header) => {
+                    res.context("daemon disconnected")?;
+                    let ft = read_header[0];
+                    let plen = u32::from_be_bytes([read_header[1], read_header[2], read_header[3], read_header[4]]) as usize;
+                    if plen > local_attach::MAX_FRAME_SIZE {
+                        return Err(anyhow!("daemon sent oversized frame"));
+                    }
+                    let mut pbuf = vec![0u8; plen];
+                    if plen > 0 {
+                        reader.read_exact(&mut pbuf).await.context("daemon disconnected")?;
+                    }
+                    match ft {
+                        local_attach::FRAME_TERMINAL_DATA => {
+                            stdout.write_all(&pbuf).await?;
+                            stdout.flush().await?;
+                        }
+                        local_attach::FRAME_ERROR => {
+                            let msg = String::from_utf8_lossy(&pbuf);
+                            return Err(anyhow!("daemon error: {}", msg));
+                        }
+                        _ => {}
+                    }
+                }
+                // Read from stdin → send to daemon
+                res = stdin.read(&mut stdin_buf) => {
+                    let n = res.context("stdin read failed")?;
+                    if n == 0 { break; }
+                    let data = &stdin_buf[..n];
+
+                    // Check for Ctrl+\ (0x1c) to detach
+                    if data.contains(&0x1c) {
+                        let detach_frame = local_attach::encode_frame(local_attach::FRAME_DETACH, &[]);
+                        let _ = writer.write_all(&detach_frame).await;
+                        break;
+                    }
+
+                    let frame = local_attach::encode_frame(local_attach::FRAME_TERMINAL_DATA, data);
+                    writer.write_all(&frame).await.context("failed to send input to daemon")?;
+                }
+                // Handle SIGWINCH
+                _ = sigwinch.recv() => {
+                    let (cols, rows) = term_size();
+                    let mut resize_payload = [0u8; 4];
+                    resize_payload[0..2].copy_from_slice(&cols.to_be_bytes());
+                    resize_payload[2..4].copy_from_slice(&rows.to_be_bytes());
+                    let frame = local_attach::encode_frame(local_attach::FRAME_RESIZE, &resize_payload);
+                    let _ = writer.write_all(&frame).await;
+                }
             }
-            return Ok(());
         }
-        if SessionDiscovery::discover()
-            .iter()
-            .any(|s| s.session_type == "pocketshell" && s.name == session_id)
-        {
-            return Err(anyhow!(
-                "local attach is not implemented yet for native PocketShell sessions; resume it from the mobile app instead"
-            ));
+        Ok(())
+    }.await;
+
+    // Restore terminal
+    let _ = termios::tcsetattr(&stdin_handle, termios::SetArg::TCSANOW, &original_termios);
+    eprintln!("\r\n[detached from session {}]", session_id);
+
+    result
+}
+
+fn term_size() -> (u16, u16) {
+    use nix::libc;
+    unsafe {
+        let mut ws: libc::winsize = std::mem::zeroed();
+        if libc::ioctl(0, libc::TIOCGWINSZ, &mut ws) == 0 && ws.ws_col > 0 && ws.ws_row > 0 {
+            (ws.ws_col, ws.ws_row)
+        } else {
+            (80, 24)
         }
-        return Err(anyhow!(
-            "session '{}' not found. Run `pocketshell sessions` to see available sessions.",
-            session_id
-        ));
     }
-
-    println!("attaching to PocketShell session '{}'...", session_id);
-    let status = Command::new("tmux")
-        .args(["attach-session", "-t", &tmux_name])
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()
-        .context("failed to run tmux attach")?;
-
-    if !status.success() {
-        return Err(anyhow!("tmux attach exited with {}", status));
-    }
-
-    Ok(())
 }
 
 fn remote_cmd(name: String, _detached: bool, list: bool, remove: bool) -> Result<()> {

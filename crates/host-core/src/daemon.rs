@@ -3,6 +3,7 @@ use crate::audit::{write_audit_event, AuditEvent};
 use crate::config::AppConfig;
 use crate::discovery::SessionDiscovery;
 use crate::error::{HostError, Result};
+use crate::local_attach;
 use crate::models::StatsSnapshot;
 use crate::models::{
     AttachTarget, HeartbeatRequest, SessionRecord, SessionRequest, SessionState, SignalEnvelope,
@@ -13,6 +14,8 @@ use crate::session::accept_session;
 use crate::stats::StatsCollector;
 use crate::store::StateStore;
 use crate::transport::{connect_host_ws, recv_signal, send_signal};
+use futures_util::SinkExt;
+use tokio_tungstenite::tungstenite::protocol::Message;
 use crate::webrtc_manager::{WebRtcEvent, WebRtcManager};
 use base64::Engine;
 use chrono::Utc;
@@ -20,6 +23,7 @@ use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Read, Write};
 use std::path::PathBuf;
+use tokio::io::AsyncWriteExt;
 use tokio::time::{interval, sleep, Duration, Instant};
 use tracing::{debug, error, info, warn};
 
@@ -66,6 +70,81 @@ enum FileTransferUpdate {
     Progress { request_id: String, progress: u8 },
     Complete { request_id: String, path: String },
     Error { request_id: String, message: String },
+}
+
+/// Events from locally-attached CLI clients over the Unix socket.
+enum LocalClientEvent {
+    /// Client wants to attach to a session.
+    Attach {
+        client_id: u64,
+        session_id: String,
+    },
+    /// Terminal input from a local client.
+    Input {
+        session_id: String,
+        data: Vec<u8>,
+    },
+    /// Resize from a local client.
+    Resize {
+        session_id: String,
+        cols: u16,
+        rows: u16,
+    },
+    /// Client disconnected.
+    Disconnected {
+        client_id: u64,
+    },
+}
+
+/// Tracks write halves of locally attached clients, keyed by session_id.
+struct LocalAttachClients {
+    clients: HashMap<u64, (String, tokio::net::unix::OwnedWriteHalf)>,
+}
+
+impl LocalAttachClients {
+    fn new() -> Self {
+        Self {
+            clients: HashMap::new(),
+        }
+    }
+
+    fn add(&mut self, client_id: u64, session_id: String, writer: tokio::net::unix::OwnedWriteHalf) {
+        self.clients.insert(client_id, (session_id, writer));
+    }
+
+    fn remove(&mut self, client_id: u64) {
+        self.clients.remove(&client_id);
+    }
+
+    /// Send terminal output to all local clients attached to this session.
+    async fn send_output(&mut self, session_id: &str, data: &[u8]) {
+        let frame = local_attach::encode_frame(local_attach::FRAME_TERMINAL_DATA, data);
+        let mut dead = Vec::new();
+        for (id, (sid, writer)) in &mut self.clients {
+            if sid == session_id {
+                if writer.write_all(&frame).await.is_err() {
+                    dead.push(*id);
+                }
+            }
+        }
+        for id in dead {
+            self.clients.remove(&id);
+        }
+    }
+
+    /// Notify all clients attached to a session that it ended, then remove them.
+    async fn end_session(&mut self, session_id: &str) {
+        let frame = local_attach::encode_frame(
+            local_attach::FRAME_ERROR,
+            b"session ended",
+        );
+        for (_, (sid, writer)) in &mut self.clients {
+            if sid == session_id {
+                let _ = writer.write_all(&frame).await;
+            }
+        }
+        self.clients.retain(|_, (sid, _)| sid != session_id);
+    }
 }
 
 fn decode_framed_files_message(
@@ -416,6 +495,34 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
     // Cancellation signals for active download_stream tasks per mobile device
     let mut files_download_cancels: HashMap<String, tokio::sync::watch::Sender<bool>> = HashMap::new();
 
+    // Local attach via Unix socket
+    let (local_event_tx, mut local_event_rx) =
+        tokio::sync::mpsc::unbounded_channel::<LocalClientEvent>();
+    let mut local_clients = LocalAttachClients::new();
+    let mut local_pending_writers: HashMap<u64, tokio::net::unix::OwnedWriteHalf> = HashMap::new();
+    let mut local_client_counter: u64 = 0;
+
+    let local_sock_path = local_attach::socket_path()
+        .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/pocketshell-daemon.sock"));
+    // Remove stale socket file from previous run
+    let _ = std::fs::remove_file(&local_sock_path);
+    let local_listener = match tokio::net::UnixListener::bind(&local_sock_path) {
+        Ok(l) => {
+            info!("local attach socket listening at {}", local_sock_path.display());
+            // Make socket accessible only to current user
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&local_sock_path, std::fs::Permissions::from_mode(0o600));
+            }
+            Some(l)
+        }
+        Err(e) => {
+            warn!("failed to bind local attach socket: {} — local attach will be unavailable", e);
+            None
+        }
+    };
+
     info!("daemon starting for host_id={}", host_id);
     let _ = write_audit_event(AuditEvent {
         event_type: "daemon_started".to_string(),
@@ -460,6 +567,8 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
         };
 
         let mut heartbeat_tick = interval(Duration::from_secs(config.heartbeat_interval_secs));
+        let mut consecutive_heartbeat_failures: u32 = 0;
+        let mut ws_ping_tick = interval(Duration::from_secs(30));
         let mut stats_tick = interval(Duration::from_secs(config.stats_interval_secs));
         let mut stats_bg_tick = interval(Duration::from_secs(10 * 60));
         stats_bg_tick.tick().await; // skip immediate first tick
@@ -583,9 +692,16 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                             let _ = store.save();
                             return Ok(());
                         }
-                        Ok(_) => {}
+                        Ok(_) => {
+                            consecutive_heartbeat_failures = 0;
+                        }
                         Err(err) => {
-                            warn!("heartbeat failed: {}", err);
+                            consecutive_heartbeat_failures += 1;
+                            warn!("heartbeat failed ({}/3): {}", consecutive_heartbeat_failures, err);
+                            if consecutive_heartbeat_failures >= 3 {
+                                warn!("3 consecutive heartbeat failures — forcing reconnect");
+                                break;
+                            }
                         }
                     }
 
@@ -710,9 +826,65 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                         debug!("sent stats_minute_batch with {} snapshots", batch.len());
                     }
                 }
+                // Accept new local attach connections
+                result = async {
+                    match local_listener.as_ref() {
+                        Some(l) => l.accept().await.map(Some),
+                        None => { std::future::pending::<()>().await; unreachable!() }
+                    }
+                } => {
+                    if let Ok(Some((stream, _addr))) = result {
+                        local_client_counter += 1;
+                        let client_id = local_client_counter;
+                        let tx = local_event_tx.clone();
+                        let (read_half, write_half) = stream.into_split();
+                        tokio::spawn(local_attach_reader(client_id, read_half, tx));
+                        local_pending_writers.insert(client_id, write_half);
+                    }
+                }
+                // Handle local client events (attach, input, resize, disconnect)
+                Some(event) = local_event_rx.recv() => {
+                    match event {
+                        LocalClientEvent::Attach { client_id, session_id } => {
+                            if let Some(mut writer) = local_pending_writers.remove(&client_id) {
+                                if sessions.is_active(&session_id) {
+                                    let scrollback = sessions.capture_scrollback(&session_id).unwrap_or_default();
+                                    let frame = local_attach::encode_frame(
+                                        local_attach::FRAME_ATTACHED_OK,
+                                        &scrollback,
+                                    );
+                                    if writer.write_all(&frame).await.is_ok() {
+                                        info!("local attach: client {} attached to session {}", client_id, session_id);
+                                        local_clients.add(client_id, session_id, writer);
+                                    }
+                                } else {
+                                    let err_msg = format!("session {} not active", session_id);
+                                    let frame = local_attach::encode_frame(
+                                        local_attach::FRAME_ERROR,
+                                        err_msg.as_bytes(),
+                                    );
+                                    let _ = writer.write_all(&frame).await;
+                                }
+                            }
+                        }
+                        LocalClientEvent::Input { session_id, data } => {
+                            let _ = sessions.write_input(&session_id, data);
+                        }
+                        LocalClientEvent::Resize { session_id, cols, rows } => {
+                            let _ = sessions.resize(&session_id, cols, rows);
+                        }
+                        LocalClientEvent::Disconnected { client_id } => {
+                            info!("local attach: client {} disconnected", client_id);
+                            local_clients.remove(client_id);
+                        }
+                    }
+                }
                 _ = output_tick.tick() => {
                     let mut ws_failed = false;
                     for chunk in sessions.drain_output() {
+                        // Fan out to locally attached CLI clients
+                        local_clients.send_output(&chunk.session_id, &chunk.bytes).await;
+
                         // Always emit the signaling copy as well. WebRTC-connected
                         // viewers ignore signaling terminal output on the mobile side,
                         // but fallback viewers still need this path even when another
@@ -756,6 +928,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                         for session_id in ended_sessions {
                             peer_session_routes.retain(|_, sid| sid != &session_id);
                             webrtc_mgr.close_session(&session_id);
+                            local_clients.end_session(&session_id).await;
                             store.touch_session_state(&session_id, SessionState::Ended);
 
                             let ended_event = SignalEnvelope {
@@ -1450,6 +1623,27 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                     }
                 }
 
+                _ = ws_ping_tick.tick() => {
+                    // Send a WS ping to detect dead connections early.
+                    // If the TCP send buffer is full (dead connection), this
+                    // will time out and we force a reconnect.
+                    let ping_result = tokio::time::timeout(
+                        Duration::from_secs(10),
+                        ws.send(Message::Ping(vec![].into())),
+                    ).await;
+                    match ping_result {
+                        Ok(Ok(_)) => {}
+                        Ok(Err(e)) => {
+                            warn!("ws ping send failed: {} — forcing reconnect", e);
+                            break;
+                        }
+                        Err(_) => {
+                            warn!("ws ping timed out (send blocked >10s) — forcing reconnect");
+                            break;
+                        }
+                    }
+                }
+
                 incoming = recv_signal(&mut ws) => {
                     match incoming {
                         Ok(Some(msg)) => {
@@ -1516,6 +1710,8 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                     }
                     sessions.close_all();
                     webrtc_mgr.close_all().await;
+                    drop(local_clients);
+                    let _ = std::fs::remove_file(&local_sock_path);
                     let _ = write_audit_event(AuditEvent {
                         event_type: "daemon_stopped".to_string(),
                         host_id: Some(host_id.clone()),
@@ -2532,6 +2728,94 @@ async fn handle_signal(
     }
 
     Ok(())
+}
+
+/// Reads framed messages from a local attach client and sends events to the daemon loop.
+async fn local_attach_reader(
+    client_id: u64,
+    mut reader: tokio::net::unix::OwnedReadHalf,
+    tx: tokio::sync::mpsc::UnboundedSender<LocalClientEvent>,
+) {
+    use tokio::io::AsyncReadExt;
+
+    let mut session_id = String::new();
+    let mut header = [0u8; 5]; // type(1) + len(4)
+
+    loop {
+        // Read frame header with idle timeout to detect crashed clients
+        let read_result = tokio::time::timeout(
+            Duration::from_secs(300),
+            reader.read_exact(&mut header),
+        )
+        .await;
+        match read_result {
+            Ok(Ok(_)) => {}
+            _ => break, // timeout, EOF, or error
+        }
+        let frame_type = header[0];
+        let len = u32::from_be_bytes([header[1], header[2], header[3], header[4]]) as usize;
+
+        // Reject oversized frames to prevent OOM
+        if len > local_attach::MAX_FRAME_SIZE {
+            warn!(
+                "local attach: client {} sent oversized frame ({} bytes), disconnecting",
+                client_id, len
+            );
+            break;
+        }
+
+        // Read payload
+        let mut payload = vec![0u8; len];
+        if len > 0 && reader.read_exact(&mut payload).await.is_err() {
+            break;
+        }
+
+        match frame_type {
+            local_attach::FRAME_ATTACH => {
+                // Validate session_id: must be valid UTF-8 and reasonable length
+                match String::from_utf8(payload) {
+                    Ok(sid) if !sid.is_empty() && sid.len() <= 256 => {
+                        session_id = sid;
+                        let _ = tx.send(LocalClientEvent::Attach {
+                            client_id,
+                            session_id: session_id.clone(),
+                        });
+                    }
+                    _ => {
+                        warn!("local attach: client {} sent invalid session_id", client_id);
+                        break;
+                    }
+                }
+            }
+            local_attach::FRAME_TERMINAL_DATA => {
+                let _ = tx.send(LocalClientEvent::Input {
+                    session_id: session_id.clone(),
+                    data: payload,
+                });
+            }
+            local_attach::FRAME_RESIZE => {
+                if payload.len() == 4 {
+                    let cols = u16::from_be_bytes([payload[0], payload[1]]);
+                    let rows = u16::from_be_bytes([payload[2], payload[3]]);
+                    if cols > 0 && rows > 0 {
+                        let _ = tx.send(LocalClientEvent::Resize {
+                            session_id: session_id.clone(),
+                            cols,
+                            rows,
+                        });
+                    }
+                }
+            }
+            local_attach::FRAME_DETACH => {
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    let _ = tx.send(LocalClientEvent::Disconnected {
+        client_id,
+    });
 }
 
 fn version_gte(current: &str, required: &str) -> bool {
