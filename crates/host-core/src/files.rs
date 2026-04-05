@@ -6,7 +6,7 @@ use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use tracing::warn;
 
-const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10 MB
+const MAX_FILE_SIZE: u64 = 100 * 1024 * 1024; // 100 MB
 const MAX_READ_SIZE: u64 = 512 * 1024; // 512 KB per read_file call
 const MAX_LIST_DIR_PAGE_SIZE: usize = 250;
 

@@ -42,7 +42,8 @@ struct PendingFilesChannelMessage {
 }
 
 struct PendingFilesBinaryUpload {
-    path: PathBuf,
+    final_path: PathBuf,
+    tmp_path: PathBuf,
     file: File,
     bytes_written: usize,
     created_at: Instant,
@@ -53,6 +54,8 @@ const FILE_TRANSFER_TIMEOUT_SECS: u64 = 300;
 const FILES_MESSAGE_TIMEOUT_SECS: u64 = 300;
 const FILES_MESSAGE_CHUNK_SIZE: usize = 12 * 1024;
 const FILES_STREAM_CHUNK_SIZE: usize = 48 * 1024;
+/// Per-send timeout for streaming downloads to detect dead channels.
+const DOWNLOAD_SEND_TIMEOUT: Duration = Duration::from_secs(10);
 
 struct DecodedFilesStreamFrame {
     header: serde_json::Value,
@@ -410,6 +413,8 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
     let mut peer_session_routes: HashMap<String, String> = HashMap::new();
     let mut files_peer_hosts: HashMap<String, String> = HashMap::new();
     let mut files_peer_offer_ids: HashMap<String, String> = HashMap::new();
+    // Cancellation signals for active download_stream tasks per mobile device
+    let mut files_download_cancels: HashMap<String, tokio::sync::watch::Sender<bool>> = HashMap::new();
 
     info!("daemon starting for host_id={}", host_id);
     let _ = write_audit_event(AuditEvent {
@@ -799,8 +804,16 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                     files_channel_messages.retain(|_, message| {
                         now.duration_since(message.created_at).as_secs() < FILES_MESSAGE_TIMEOUT_SECS
                     });
-                    files_binary_uploads.retain(|_, upload| {
-                        now.duration_since(upload.created_at).as_secs() < FILES_MESSAGE_TIMEOUT_SECS
+                    files_binary_uploads.retain(|key, upload| {
+                        if now.duration_since(upload.created_at).as_secs() >= FILES_MESSAGE_TIMEOUT_SECS {
+                            warn!("expiring stale upload {}: {}", key, upload.tmp_path.display());
+                            // Temp file will be cleaned up when entry is dropped;
+                            // also proactively delete it now in case the File handle outlives.
+                            let _ = std::fs::remove_file(&upload.tmp_path);
+                            false
+                        } else {
+                            true
+                        }
                     });
 
                     let discovered = SessionDiscovery::discover();
@@ -936,6 +949,26 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                             info!("files WebRTC channel closed for mobile {}", mobile_device_id);
                             files_peer_offer_ids.remove(&format!("files:{mobile_device_id}"));
                             webrtc_mgr.prune_files_channels();
+                            // Cancel any active download_stream tasks for this device
+                            if let Some(cancel_tx) = files_download_cancels.remove(&mobile_device_id) {
+                                let _ = cancel_tx.send(true);
+                            }
+                            // Clean up pending uploads and their temp files
+                            let prefix = format!("{mobile_device_id}:");
+                            let stale_keys: Vec<String> = files_binary_uploads
+                                .keys()
+                                .filter(|k| k.starts_with(&prefix))
+                                .cloned()
+                                .collect();
+                            for key in stale_keys {
+                                if let Some(upload) = files_binary_uploads.remove(&key) {
+                                    drop(upload.file);
+                                    if upload.tmp_path.exists() {
+                                        let _ = std::fs::remove_file(&upload.tmp_path);
+                                        info!("cleaned up partial upload tmp file: {}", upload.tmp_path.display());
+                                    }
+                                }
+                            }
                         }
                         WebRtcEvent::FilesMessage { mobile_device_id, data, channel } => {
                             info!(
@@ -971,17 +1004,23 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                                 if let Some(parent) = file_path.parent() {
                                                     std::fs::create_dir_all(parent).ok();
                                                 }
+                                                // Write to temp file; rename to final path on upload_end
+                                                let tmp_path = match file_path.extension() {
+                                                    Some(ext) => file_path.with_extension(format!("{}.pstmp", ext.to_string_lossy())),
+                                                    None => file_path.with_extension("pstmp"),
+                                                };
                                                 match OpenOptions::new()
                                                     .create(true)
                                                     .write(true)
                                                     .truncate(true)
-                                                    .open(&file_path)
+                                                    .open(&tmp_path)
                                                 {
                                                     Ok(file) => {
                                                         files_binary_uploads.insert(
                                                             upload_key,
                                                             PendingFilesBinaryUpload {
-                                                                path: file_path,
+                                                                final_path: file_path,
+                                                                tmp_path,
                                                                 file,
                                                                 bytes_written: 0,
                                                                 created_at: Instant::now(),
@@ -1030,7 +1069,10 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                                 if let Err(e) = send_framed_files_response(channel, &response).await {
                                                     warn!("files upload write error send failed: {}", e);
                                                 }
-                                                files_binary_uploads.remove(&upload_key);
+                                                if let Some(failed) = files_binary_uploads.remove(&upload_key) {
+                                                    drop(failed.file);
+                                                    let _ = std::fs::remove_file(&failed.tmp_path);
+                                                }
                                             } else {
                                                 upload.bytes_written += frame.payload.len();
                                                 upload.created_at = Instant::now();
@@ -1041,15 +1083,32 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                     "upload_end" => {
                                         let response = if let Some(mut upload) = files_binary_uploads.remove(&upload_key) {
                                             let _ = upload.file.flush();
-                                            serde_json::json!({
-                                                "channel": "files",
-                                                "response_to": request_id,
-                                                "status": "ok",
-                                                "data": {
-                                                    "bytes_written": upload.bytes_written,
-                                                    "path": upload.path.to_string_lossy()
+                                            drop(upload.file);
+                                            // Atomically move temp file to final path
+                                            match std::fs::rename(&upload.tmp_path, &upload.final_path) {
+                                                Ok(()) => {
+                                                    serde_json::json!({
+                                                        "channel": "files",
+                                                        "response_to": request_id,
+                                                        "status": "ok",
+                                                        "data": {
+                                                            "bytes_written": upload.bytes_written,
+                                                            "path": upload.final_path.to_string_lossy()
+                                                        }
+                                                    })
                                                 }
-                                            })
+                                                Err(err) => {
+                                                    // Clean up temp file on rename failure
+                                                    let _ = std::fs::remove_file(&upload.tmp_path);
+                                                    serde_json::json!({
+                                                        "channel": "files",
+                                                        "response_to": request_id,
+                                                        "status": "error",
+                                                        "error": format!("failed to finalize upload: {}", err),
+                                                        "error_code": "upload_rename_failed"
+                                                    })
+                                                }
+                                            }
                                         } else {
                                             serde_json::json!({
                                                 "channel": "files",
@@ -1092,6 +1151,9 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                     if action == "download_stream" {
                                         let req_id_clone = request_id.clone();
                                         let path_clone = path.clone();
+                                        // Create cancellation signal; replaces any previous one for this device
+                                        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+                                        files_download_cancels.insert(mobile_device_id.clone(), cancel_tx);
                                         tokio::spawn(async move {
                                             let canonical = match crate::files::resolve_file_path_for_transfer(&path_clone) {
                                                 Ok(path) => path,
@@ -1167,6 +1229,11 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                             let mut reader = BufReader::new(file);
                                             let mut buf = vec![0u8; FILES_STREAM_CHUNK_SIZE];
                                             loop {
+                                                // Check cancellation (mobile disconnected)
+                                                if *cancel_rx.borrow() {
+                                                    warn!("files download_stream cancelled (mobile disconnected) req={}", req_id_clone);
+                                                    return;
+                                                }
                                                 let read = match reader.read(&mut buf) {
                                                     Ok(read) => read,
                                                     Err(err) => {
@@ -1188,16 +1255,30 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                                     "op": "download_chunk",
                                                     "id": req_id_clone,
                                                 });
-                                                if let Err(e) = send_files_stream_frame(std::sync::Arc::clone(&channel), &header, &buf[..read]).await {
-                                                    warn!("files download chunk send failed: {}", e);
-                                                    return;
+                                                // Timeout each send to detect dead channels
+                                                match tokio::time::timeout(
+                                                    DOWNLOAD_SEND_TIMEOUT,
+                                                    send_files_stream_frame(std::sync::Arc::clone(&channel), &header, &buf[..read]),
+                                                ).await {
+                                                    Ok(Ok(())) => {}
+                                                    Ok(Err(e)) => {
+                                                        warn!("files download chunk send failed: {}", e);
+                                                        return;
+                                                    }
+                                                    Err(_) => {
+                                                        warn!("files download chunk send timed out (channel likely dead) req={}", req_id_clone);
+                                                        return;
+                                                    }
                                                 }
                                             }
                                             let end = serde_json::json!({
                                                 "op": "download_end",
                                                 "id": req_id_clone,
                                             });
-                                            let _ = send_files_stream_frame(channel, &end, &[]).await;
+                                            let _ = tokio::time::timeout(
+                                                DOWNLOAD_SEND_TIMEOUT,
+                                                send_files_stream_frame(channel, &end, &[]),
+                                            ).await;
                                         });
                                         continue;
                                     }
