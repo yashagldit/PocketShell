@@ -31,12 +31,17 @@ pub enum WebRtcEvent {
     },
     StatsChannelOpened {
         host_id: String,
+        mobile_device_id: String,
+        channel: Arc<RTCDataChannel>,
     },
     StatsChannelClosed {
         host_id: String,
+        mobile_device_id: String,
     },
     StatsMessage {
+        mobile_device_id: String,
         data: Vec<u8>,
+        channel: Arc<RTCDataChannel>,
     },
     FilesChannelOpened {
         mobile_device_id: String,
@@ -82,16 +87,19 @@ impl std::fmt::Debug for WebRtcEvent {
                 .field("peer_key", peer_key)
                 .field("mobile_device_id", mobile_device_id)
                 .finish(),
-            Self::StatsChannelOpened { host_id } => f
+            Self::StatsChannelOpened { host_id, mobile_device_id, .. } => f
                 .debug_struct("StatsChannelOpened")
                 .field("host_id", host_id)
+                .field("mobile_device_id", mobile_device_id)
                 .finish(),
-            Self::StatsChannelClosed { host_id } => f
+            Self::StatsChannelClosed { host_id, mobile_device_id } => f
                 .debug_struct("StatsChannelClosed")
                 .field("host_id", host_id)
+                .field("mobile_device_id", mobile_device_id)
                 .finish(),
-            Self::StatsMessage { data } => f
+            Self::StatsMessage { mobile_device_id, data, .. } => f
                 .debug_struct("StatsMessage")
+                .field("mobile_device_id", mobile_device_id)
                 .field("data_len", &data.len())
                 .finish(),
             Self::FilesChannelOpened {
@@ -442,27 +450,40 @@ impl WebRtcManager {
                 .push((peer_key.to_string(), Arc::clone(&channel)));
 
             let event_tx_msg = self.event_tx.clone();
+            let mid_msg = mobile_id.clone();
+            let ch_msg = Arc::clone(&channel);
             channel.on_message(Box::new(move |msg: DataChannelMessage| {
                 let tx = event_tx_msg.clone();
+                let mobile = mid_msg.clone();
+                let ch = Arc::clone(&ch_msg);
                 Box::pin(async move {
                     let _ = tx.send(WebRtcEvent::StatsMessage {
+                        mobile_device_id: mobile,
                         data: msg.data.to_vec(),
+                        channel: ch,
                     });
                 })
             }));
 
             let event_tx = self.event_tx.clone();
             let hid = host_id.to_string();
+            let mid_close = mobile_id.clone();
             channel.on_close(Box::new(move || {
                 let tx = event_tx.clone();
                 let host = hid.clone();
+                let mobile = mid_close.clone();
                 Box::pin(async move {
-                    let _ = tx.send(WebRtcEvent::StatsChannelClosed { host_id: host });
+                    let _ = tx.send(WebRtcEvent::StatsChannelClosed {
+                        host_id: host,
+                        mobile_device_id: mobile,
+                    });
                 })
             }));
 
             let _ = self.event_tx.send(WebRtcEvent::StatsChannelOpened {
                 host_id: host_id.to_string(),
+                mobile_device_id: mobile_id.to_string(),
+                channel: Arc::clone(&channel),
             });
             return;
         }

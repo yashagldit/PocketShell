@@ -29,8 +29,8 @@ use tokio::io::AsyncWriteExt;
 use tokio::time::{interval, sleep, Duration, Instant};
 use tracing::{debug, error, info, warn};
 
-/// Whether the backend kill-action is honored. Set to false during testing.
-const HONOR_KILL_ACTION: bool = false;
+/// Whether the backend kill-action is honored.
+const HONOR_KILL_ACTION: bool = true;
 
 /// In-progress file transfer from a mobile device.
 struct PendingFileTransfer {
@@ -1061,13 +1061,10 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                         }
                                     }
                                 }
+                            } else if !authenticated_channels.contains(&session_id) {
+                                warn!("dropping unauthenticated input on session {} from device {}", session_id, mobile_device_id);
                             } else {
-                                // Resolve auth gate: allow if authenticated OR legacy device (no stored key)
-                                let allowed = authenticated_channels.contains(&session_id)
-                                    || store.get_device_public_key(&mobile_device_id).is_none();
-                                if !allowed {
-                                    warn!("dropping unauthenticated input on session {} from device {}", session_id, mobile_device_id);
-                                } else if data.len() > 5 && data[0] == 0x00 && &data[1..5] == b"PSFT" {
+                                if data.len() > 5 && data[0] == 0x00 && &data[1..5] == b"PSFT" {
                                     if let Ok(json_str) = std::str::from_utf8(&data[5..]) {
                                         if let Some(update) =
                                             handle_file_transfer_msg(&mut file_transfers, &session_id, json_str, &mut sessions)
@@ -1141,13 +1138,28 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                             authenticated_channels.remove(&session_id);
                             pending_auth.remove(&session_id);
                         }
-                        WebRtcEvent::StatsChannelOpened { host_id } => {
-                            info!("stats WebRTC channel opened for host {}", host_id);
-                            // TODO: Add challenge-response auth for stats channels.
-                            // SECURITY: kill_process in StatsMessage is ungated until this is implemented.
+                        WebRtcEvent::StatsChannelOpened { host_id, mobile_device_id, channel } => {
+                            info!("stats WebRTC channel opened for host {} from device {}", host_id, mobile_device_id);
+                            let stats_channel_key = format!("stats:{mobile_device_id}");
+                            let mut nonce_bytes = [0u8; 32];
+                            rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
+                            let nonce_b64 = base64::engine::general_purpose::STANDARD.encode(&nonce_bytes);
+                            pending_auth.insert(stats_channel_key.clone(), (nonce_b64.clone(), mobile_device_id.clone()));
+                            let challenge = build_auth_message(&serde_json::json!({
+                                "type": "auth_challenge",
+                                "nonce": nonce_b64,
+                            }));
+                            if let Err(err) = channel.send(&bytes::Bytes::from(challenge)).await {
+                                warn!("stats auth challenge send failed for device {}: {}", mobile_device_id, err);
+                            } else {
+                                info!("sent stats auth challenge for device {}", mobile_device_id);
+                            }
                         }
-                        WebRtcEvent::StatsChannelClosed { host_id } => {
+                        WebRtcEvent::StatsChannelClosed { host_id, mobile_device_id } => {
                             info!("stats WebRTC channel closed for host {}", host_id);
+                            let stats_channel_key = format!("stats:{mobile_device_id}");
+                            authenticated_channels.remove(&stats_channel_key);
+                            pending_auth.remove(&stats_channel_key);
                             webrtc_mgr.prune_stats_channels();
                         }
                         WebRtcEvent::FilesChannelOpened {
@@ -1253,13 +1265,9 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                         }
                                     }
                                 }
+                            } else if !authenticated_channels.contains(&files_channel_key) {
+                                warn!("dropping unauthenticated files message from device {}", mobile_device_id);
                             } else {
-                                // Resolve auth gate: allow if authenticated OR legacy device (no stored key)
-                                let allowed = authenticated_channels.contains(&files_channel_key)
-                                    || store.get_device_public_key(&mobile_device_id).is_none();
-                                if !allowed {
-                                    warn!("dropping unauthenticated files message from device {}", mobile_device_id);
-                                } else {
                             info!(
                                 "files WebRTC raw message mobile={} bytes={} prefix={:02X?}",
                                 mobile_device_id,
@@ -1625,11 +1633,40 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                     warn!("files WebRTC message: invalid JSON from mobile, raw_len={}", data.len());
                                 }
                             } // end files processing
-                                } // end allowed else
                             } // end auth gate
                         }
-                        WebRtcEvent::StatsMessage { data } => {
-                            if let Ok(json_str) = std::str::from_utf8(&data) {
+                        WebRtcEvent::StatsMessage { mobile_device_id, data, channel } => {
+                            let stats_channel_key = format!("stats:{mobile_device_id}");
+                            // Handle auth protocol messages
+                            if data.len() > 5 && data[0] == 0x00 && &data[1..5] == b"PSAU" {
+                                if let Ok(json_str) = std::str::from_utf8(&data[5..]) {
+                                    if let Ok(msg) = serde_json::from_str::<serde_json::Value>(json_str) {
+                                        let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                                        if msg_type == "auth_response" {
+                                            let result = verify_device_auth(
+                                                &msg, &stats_channel_key, &mobile_device_id,
+                                                &mut pending_auth, &store,
+                                            );
+                                            let response = build_auth_message(&serde_json::json!({
+                                                "type": "auth_result",
+                                                "ok": result.is_ok(),
+                                                "reason": result.as_ref().err(),
+                                            }));
+                                            if let Err(err) = channel.send(&bytes::Bytes::from(response)).await {
+                                                warn!("stats auth result send failed for device {}: {}", mobile_device_id, err);
+                                            }
+                                            if result.is_ok() {
+                                                authenticated_channels.insert(stats_channel_key.clone());
+                                                info!("device {} authenticated for stats channel", mobile_device_id);
+                                            } else {
+                                                warn!("stats auth failed for device {}: {:?}", mobile_device_id, result.err());
+                                            }
+                                        }
+                                    }
+                                }
+                            } else if !authenticated_channels.contains(&stats_channel_key) {
+                                warn!("dropping unauthenticated stats message from device {}", mobile_device_id);
+                            } else if let Ok(json_str) = std::str::from_utf8(&data) {
                                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str) {
                                     let msg_type = val.get("type").and_then(|v| v.as_str()).unwrap_or_default();
                                     if msg_type == "kill_process" {
