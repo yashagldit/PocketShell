@@ -19,9 +19,11 @@ use tokio_tungstenite::tungstenite::protocol::Message;
 use crate::webrtc_manager::{WebRtcEvent, WebRtcManager};
 use base64::Engine;
 use chrono::Utc;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Read, Write};
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use rand::RngCore;
 use std::path::PathBuf;
 use tokio::io::AsyncWriteExt;
 use tokio::time::{interval, sleep, Duration, Instant};
@@ -58,6 +60,9 @@ const FILE_TRANSFER_TIMEOUT_SECS: u64 = 300;
 const FILES_MESSAGE_TIMEOUT_SECS: u64 = 300;
 const FILES_MESSAGE_CHUNK_SIZE: usize = 12 * 1024;
 const FILES_STREAM_CHUNK_SIZE: usize = 48 * 1024;
+
+/// Sentinel prefix for challenge-response authentication messages on WebRTC channels.
+const AUTH_SENTINEL: &[u8] = b"\x00PSAU";
 /// Per-send timeout for streaming downloads to detect dead channels.
 const DOWNLOAD_SEND_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -494,6 +499,11 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
     let mut files_peer_offer_ids: HashMap<String, String> = HashMap::new();
     // Cancellation signals for active download_stream tasks per mobile device
     let mut files_download_cancels: HashMap<String, tokio::sync::watch::Sender<bool>> = HashMap::new();
+
+    // Challenge-response auth state for WebRTC channels
+    let mut authenticated_channels: HashSet<String> = HashSet::new();
+    // Maps channel_key -> (nonce_base64, expected_mobile_device_id)
+    let mut pending_auth: HashMap<String, (String, String)> = HashMap::new();
 
     // Local attach via Unix socket
     let (local_event_tx, mut local_event_rx) =
@@ -1026,65 +1036,115 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                 Some(webrtc_event) = webrtc_event_rx.recv() => {
                     match webrtc_event {
                         WebRtcEvent::Input { session_id, mobile_device_id, data } => {
-                            // Check for file transfer sentinel: \x00PSFT
-                            if data.len() > 5 && data[0] == 0x00 && &data[1..5] == b"PSFT" {
+                            // Handle auth protocol messages (consumed, never passed to PTY)
+                            if data.len() > 5 && data[0] == 0x00 && &data[1..5] == b"PSAU" {
                                 if let Ok(json_str) = std::str::from_utf8(&data[5..]) {
-                                    if let Some(update) =
-                                        handle_file_transfer_msg(&mut file_transfers, &session_id, json_str, &mut sessions)
-                                    {
-                                        let mut extra = std::collections::HashMap::new();
-                                        extra.insert(
-                                            "target_mobile_device_id".to_string(),
-                                            serde_json::json!(mobile_device_id),
-                                        );
-
-                                        let payload = match update {
-                                            FileTransferUpdate::Progress { request_id, progress } => serde_json::json!({
-                                                "channel": "files",
-                                                "response_to": request_id,
-                                                "status": "progress",
-                                                "progress": progress,
-                                            }),
-                                            FileTransferUpdate::Complete { request_id, path } => serde_json::json!({
-                                                "channel": "files",
-                                                "response_to": request_id,
-                                                "status": "ok",
-                                                "path": path,
-                                            }),
-                                            FileTransferUpdate::Error { request_id, message } => serde_json::json!({
-                                                "channel": "files",
-                                                "response_to": request_id,
-                                                "status": "error",
-                                                "error": message,
-                                                "error_code": "transfer_failed",
-                                            }),
-                                        };
-
-                                        let response = SignalEnvelope {
-                                            message_type: "signal".to_string(),
-                                            session_id: Some(session_id.clone()),
-                                            payload: Some(payload),
-                                            state: None,
-                                            accepted: None,
-                                            reason: None,
-                                            extra,
-                                        };
-                                        let _ = send_signal(&mut ws, &response).await;
+                                    if let Ok(msg) = serde_json::from_str::<serde_json::Value>(json_str) {
+                                        let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                                        if msg_type == "auth_response" {
+                                            let result = verify_device_auth(
+                                                &msg, &session_id, &mobile_device_id,
+                                                &mut pending_auth, &store,
+                                            );
+                                            let response = build_auth_message(&serde_json::json!({
+                                                "type": "auth_result",
+                                                "ok": result.is_ok(),
+                                                "reason": result.as_ref().err(),
+                                            }));
+                                            webrtc_mgr.send_output(&session_id, &response).await;
+                                            if result.is_ok() {
+                                                authenticated_channels.insert(session_id.clone());
+                                                info!("device {} authenticated for session {}", mobile_device_id, session_id);
+                                            } else {
+                                                warn!("auth failed for device {} session {}: {:?}", mobile_device_id, session_id, result.err());
+                                            }
+                                        }
                                     }
                                 }
-                            } else if let Err(e) = sessions.write_input(&session_id, data) {
-                                warn!("webrtc input write failed: {}", e);
+                            } else {
+                                // Resolve auth gate: allow if authenticated OR legacy device (no stored key)
+                                let allowed = authenticated_channels.contains(&session_id)
+                                    || store.get_device_public_key(&mobile_device_id).is_none();
+                                if !allowed {
+                                    warn!("dropping unauthenticated input on session {} from device {}", session_id, mobile_device_id);
+                                } else if data.len() > 5 && data[0] == 0x00 && &data[1..5] == b"PSFT" {
+                                    if let Ok(json_str) = std::str::from_utf8(&data[5..]) {
+                                        if let Some(update) =
+                                            handle_file_transfer_msg(&mut file_transfers, &session_id, json_str, &mut sessions)
+                                        {
+                                            let mut extra = std::collections::HashMap::new();
+                                            extra.insert(
+                                                "target_mobile_device_id".to_string(),
+                                                serde_json::json!(mobile_device_id),
+                                            );
+                                            let payload = match update {
+                                                FileTransferUpdate::Progress { request_id, progress } => serde_json::json!({
+                                                    "channel": "files",
+                                                    "response_to": request_id,
+                                                    "status": "progress",
+                                                    "progress": progress,
+                                                }),
+                                                FileTransferUpdate::Complete { request_id, path } => serde_json::json!({
+                                                    "channel": "files",
+                                                    "response_to": request_id,
+                                                    "status": "ok",
+                                                    "path": path,
+                                                }),
+                                                FileTransferUpdate::Error { request_id, message } => serde_json::json!({
+                                                    "channel": "files",
+                                                    "response_to": request_id,
+                                                    "status": "error",
+                                                    "error": message,
+                                                    "error_code": "transfer_failed",
+                                                }),
+                                            };
+                                            let response = SignalEnvelope {
+                                                message_type: "signal".to_string(),
+                                                session_id: Some(session_id.clone()),
+                                                payload: Some(payload),
+                                                state: None,
+                                                accepted: None,
+                                                reason: None,
+                                                extra,
+                                            };
+                                            let _ = send_signal(&mut ws, &response).await;
+                                        }
+                                    }
+                                } else if let Err(e) = sessions.write_input(&session_id, data) {
+                                    warn!("webrtc input write failed: {}", e);
+                                }
                             }
                         }
                         WebRtcEvent::ChannelOpened { session_id } => {
                             info!("webrtc data channel opened for session {}", session_id);
+                            // Send auth challenge to the mobile device
+                            let mobile_device_id = store.state.sessions.iter()
+                                .find(|s| s.session_id == session_id)
+                                .map(|s| s.mobile_device_id.clone())
+                                .unwrap_or_default();
+                            if !mobile_device_id.is_empty() {
+                                let mut nonce_bytes = [0u8; 32];
+                                rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
+                                let nonce_b64 = base64::engine::general_purpose::STANDARD.encode(&nonce_bytes);
+                                pending_auth.insert(session_id.clone(), (nonce_b64.clone(), mobile_device_id.clone()));
+                                let challenge = build_auth_message(&serde_json::json!({
+                                    "type": "auth_challenge",
+                                    "nonce": nonce_b64,
+                                }));
+                                webrtc_mgr.send_output(&session_id, &challenge).await;
+                                info!("sent auth challenge for session {} to device {}", session_id, mobile_device_id);
+                            }
                         }
                         WebRtcEvent::ChannelClosed { session_id } => {
                             info!("webrtc data channel closed for session {}", session_id);
                             webrtc_mgr.prune_session_channels(&session_id);
+                            authenticated_channels.remove(&session_id);
+                            pending_auth.remove(&session_id);
                         }
                         WebRtcEvent::StatsChannelOpened { host_id } => {
                             info!("stats WebRTC channel opened for host {}", host_id);
+                            // TODO: Add challenge-response auth for stats channels.
+                            // SECURITY: kill_process in StatsMessage is ungated until this is implemented.
                         }
                         WebRtcEvent::StatsChannelClosed { host_id } => {
                             info!("stats WebRTC channel closed for host {}", host_id);
@@ -1095,6 +1155,23 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                             channel,
                         } => {
                             info!("files WebRTC channel opened for mobile {}", mobile_device_id);
+                            // Send auth challenge on files channel
+                            let files_channel_key = format!("files:{mobile_device_id}");
+                            let mut nonce_bytes = [0u8; 32];
+                            rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
+                            let nonce_b64 = base64::engine::general_purpose::STANDARD.encode(&nonce_bytes);
+                            pending_auth.insert(files_channel_key.clone(), (nonce_b64.clone(), mobile_device_id.clone()));
+                            let challenge = build_auth_message(&serde_json::json!({
+                                "type": "auth_challenge",
+                                "nonce": nonce_b64,
+                            }));
+                            if let Err(err) = channel.send(&bytes::Bytes::from(challenge)).await {
+                                warn!("files auth challenge send failed for mobile {}: {}", mobile_device_id, err);
+                            } else {
+                                info!("sent files auth challenge for mobile {}", mobile_device_id);
+                            }
+
+                            // Also send the ready message so the mobile knows the channel is open
                             let ready = serde_json::json!({
                                 "channel": "files",
                                 "event": "ready",
@@ -1121,7 +1198,10 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                         }
                         WebRtcEvent::FilesChannelClosed { mobile_device_id } => {
                             info!("files WebRTC channel closed for mobile {}", mobile_device_id);
-                            files_peer_offer_ids.remove(&format!("files:{mobile_device_id}"));
+                            let files_channel_key = format!("files:{mobile_device_id}");
+                            authenticated_channels.remove(&files_channel_key);
+                            pending_auth.remove(&files_channel_key);
+                            files_peer_offer_ids.remove(&files_channel_key);
                             webrtc_mgr.prune_files_channels();
                             // Cancel any active download_stream tasks for this device
                             if let Some(cancel_tx) = files_download_cancels.remove(&mobile_device_id) {
@@ -1145,6 +1225,41 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                             }
                         }
                         WebRtcEvent::FilesMessage { mobile_device_id, data, channel } => {
+                            let files_channel_key = format!("files:{mobile_device_id}");
+                            // Handle auth protocol messages
+                            if data.len() > 5 && data[0] == 0x00 && &data[1..5] == b"PSAU" {
+                                if let Ok(json_str) = std::str::from_utf8(&data[5..]) {
+                                    if let Ok(msg) = serde_json::from_str::<serde_json::Value>(json_str) {
+                                        let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                                        if msg_type == "auth_response" {
+                                            let result = verify_device_auth(
+                                                &msg, &files_channel_key, &mobile_device_id,
+                                                &mut pending_auth, &store,
+                                            );
+                                            let response = build_auth_message(&serde_json::json!({
+                                                "type": "auth_result",
+                                                "ok": result.is_ok(),
+                                                "reason": result.as_ref().err(),
+                                            }));
+                                            if let Err(err) = channel.send(&bytes::Bytes::from(response)).await {
+                                                warn!("files auth result send failed for mobile {}: {}", mobile_device_id, err);
+                                            }
+                                            if result.is_ok() {
+                                                authenticated_channels.insert(files_channel_key.clone());
+                                                info!("device {} authenticated for files channel", mobile_device_id);
+                                            } else {
+                                                warn!("files auth failed for device {}: {:?}", mobile_device_id, result.err());
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
+                                // Resolve auth gate: allow if authenticated OR legacy device (no stored key)
+                                let allowed = authenticated_channels.contains(&files_channel_key)
+                                    || store.get_device_public_key(&mobile_device_id).is_none();
+                                if !allowed {
+                                    warn!("dropping unauthenticated files message from device {}", mobile_device_id);
+                                } else {
                             info!(
                                 "files WebRTC raw message mobile={} bytes={} prefix={:02X?}",
                                 mobile_device_id,
@@ -1509,7 +1624,9 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                 } else {
                                     warn!("files WebRTC message: invalid JSON from mobile, raw_len={}", data.len());
                                 }
-                            }
+                            } // end files processing
+                                } // end allowed else
+                            } // end auth gate
                         }
                         WebRtcEvent::StatsMessage { data } => {
                             if let Ok(json_str) = std::str::from_utf8(&data) {
@@ -2829,6 +2946,82 @@ async fn local_attach_reader(
     let _ = tx.send(LocalClientEvent::Disconnected {
         client_id,
     });
+}
+
+/// Build a WebRTC auth protocol message with the \x00PSAU sentinel prefix.
+fn build_auth_message(json: &serde_json::Value) -> Vec<u8> {
+    let json_bytes = serde_json::to_vec(json).unwrap_or_default();
+    let mut msg = Vec::with_capacity(AUTH_SENTINEL.len() + json_bytes.len());
+    msg.extend_from_slice(AUTH_SENTINEL);
+    msg.extend_from_slice(&json_bytes);
+    msg
+}
+
+/// Verify an auth_response message from a mobile device.
+///
+/// The mobile signs `nonce_bytes || session_id_bytes || mobile_device_id_bytes`
+/// with its Ed25519 private key. We verify using the stored public key.
+fn verify_device_auth(
+    msg: &serde_json::Value,
+    channel_key: &str,
+    mobile_device_id: &str,
+    pending_auth: &mut HashMap<String, (String, String)>,
+    store: &StateStore,
+) -> std::result::Result<(), String> {
+    use base64::engine::general_purpose::STANDARD;
+
+    // Get the pending nonce
+    let (nonce_b64, expected_device) = pending_auth
+        .remove(channel_key)
+        .ok_or_else(|| "no pending auth challenge".to_string())?;
+
+    if mobile_device_id != expected_device {
+        return Err(format!(
+            "device mismatch: expected {expected_device}, got {mobile_device_id}"
+        ));
+    }
+
+    // Get stored public key
+    let pub_key_b64 = store
+        .get_device_public_key(mobile_device_id)
+        .ok_or_else(|| "no device public key stored".to_string())?;
+
+    // Decode public key
+    let pub_key_bytes = STANDARD
+        .decode(pub_key_b64)
+        .map_err(|e| format!("invalid public key base64: {e}"))?;
+    let pub_key_bytes: [u8; 32] = pub_key_bytes
+        .try_into()
+        .map_err(|_| "public key must be 32 bytes".to_string())?;
+    let verifying_key = VerifyingKey::from_bytes(&pub_key_bytes)
+        .map_err(|e| format!("invalid ed25519 public key: {e}"))?;
+
+    // Decode signature
+    let sig_b64 = msg
+        .get("signature")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "missing signature".to_string())?;
+    let sig_bytes = STANDARD
+        .decode(sig_b64)
+        .map_err(|e| format!("invalid signature base64: {e}"))?;
+    let signature = Signature::from_slice(&sig_bytes)
+        .map_err(|e| format!("invalid ed25519 signature: {e}"))?;
+
+    // Reconstruct signed payload: nonce || session_id || mobile_device_id
+    let nonce_bytes = STANDARD
+        .decode(&nonce_b64)
+        .map_err(|e| format!("invalid nonce base64: {e}"))?;
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&nonce_bytes);
+    payload.extend_from_slice(channel_key.as_bytes());
+    payload.extend_from_slice(mobile_device_id.as_bytes());
+
+    // Verify
+    verifying_key
+        .verify(&payload, &signature)
+        .map_err(|e| format!("signature verification failed: {e}"))?;
+
+    Ok(())
 }
 
 fn version_gte(current: &str, required: &str) -> bool {

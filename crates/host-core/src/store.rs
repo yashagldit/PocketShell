@@ -153,6 +153,14 @@ impl StateStore {
         (native_detached_to_close, all_expired)
     }
 
+    pub fn get_device_public_key(&self, mobile_device_id: &str) -> Option<&str> {
+        self.state
+            .trusted_devices
+            .iter()
+            .find(|d| d.mobile_device_id == mobile_device_id)
+            .and_then(|d| d.device_public_key.as_deref())
+    }
+
     pub fn host_id(&self) -> Result<String> {
         Ok(self
             .state

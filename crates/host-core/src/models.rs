@@ -87,6 +87,8 @@ pub struct TrustedDeviceRecord {
     pub approved_at: Option<DateTime<Utc>>,
     pub revoked_at: Option<DateTime<Utc>>,
     pub permissions_json: Option<HashMap<String, serde_json::Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_public_key: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
