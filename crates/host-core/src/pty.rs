@@ -122,6 +122,25 @@ impl SessionManager {
             .and_then(|s| s.tmux_session_name.clone())
     }
 
+    /// Validate a tmux/screen session name — reject shell metacharacters.
+    fn validate_session_name(name: &str) -> Result<()> {
+        if name.is_empty() || name.len() > 256 {
+            return Err(HostError::Pty("invalid session name length".to_string()));
+        }
+        // Allow alphanumeric, hyphen, underscore, dot, colon (tmux target separator),
+        // forward slash (screen socket paths), plus, at, comma.
+        // Reject shell metacharacters: ; | & $ ` ' " \ ( ) { } < > ! ? * ~ # space newline etc.
+        if !name
+            .chars()
+            .all(|c| c.is_alphanumeric() || "-_.:/@+,".contains(c))
+        {
+            return Err(HostError::Pty(
+                "session name contains invalid characters".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Create a session that attaches to an existing tmux/screen session.
     pub fn create_attached_session(
         &mut self,
@@ -131,6 +150,9 @@ impl SessionManager {
         cols: u16,
         rows: u16,
     ) -> Result<()> {
+        if session_type == "tmux" || session_type == "screen" {
+            Self::validate_session_name(target_name)?;
+        }
         match session_type {
             "tmux" => self.create_session_with_command(
                 session_id,
@@ -170,6 +192,9 @@ impl SessionManager {
         cols: u16,
         rows: u16,
     ) -> Result<()> {
+        if session_type == "tmux" || session_type == "screen" {
+            Self::validate_session_name(target_name)?;
+        }
         match session_type {
             "tmux" => self.create_session_with_command(
                 session_id,
@@ -214,14 +239,36 @@ impl SessionManager {
             ));
         }
 
+        // Canonicalize and validate the PTY path before opening
+        let canonical = std::fs::canonicalize(pty_path)
+            .map_err(|e| HostError::Pty(format!("cannot resolve PTY path {pty_path}: {e}")))?;
+        let canonical_str = canonical
+            .to_str()
+            .ok_or_else(|| HostError::Pty("PTY path is not valid UTF-8".to_string()))?;
+
+        // Enforce /dev/ prefix — only real device nodes
+        if !canonical_str.starts_with("/dev/") {
+            return Err(HostError::Pty(format!(
+                "PTY path must be under /dev/, got: {canonical_str}"
+            )));
+        }
+
         let pty_read = OpenOptions::new()
             .read(true)
-            .open(pty_path)
-            .map_err(|e| HostError::Pty(format!("open PTY {pty_path} for read: {e}")))?;
+            .open(canonical_str)
+            .map_err(|e| HostError::Pty(format!("open PTY {canonical_str} for read: {e}")))?;
+
+        // Verify it's actually a TTY device
+        if !nix::unistd::isatty(&pty_read).unwrap_or(false) {
+            return Err(HostError::Pty(format!(
+                "path is not a TTY device: {canonical_str}"
+            )));
+        }
+
         let mut pty_write = OpenOptions::new()
             .write(true)
-            .open(pty_path)
-            .map_err(|e| HostError::Pty(format!("open PTY {pty_path} for write: {e}")))?;
+            .open(canonical_str)
+            .map_err(|e| HostError::Pty(format!("open PTY {canonical_str} for write: {e}")))?;
 
         let stop = Arc::new(AtomicBool::new(false));
         let scrollback = Arc::new(Mutex::new(VecDeque::new()));
