@@ -217,7 +217,7 @@ async fn pair(config: AppConfig, code: Option<String>, reset: bool) -> Result<()
 
         let _ = write_audit_event(AuditEvent {
             event_type: "device_approved".to_string(),
-            host_id: Some(response.host.id),
+            host_id: Some(response.host.id.clone()),
             ..AuditEvent::new("device_approved")
         });
     } else {
@@ -236,7 +236,7 @@ async fn pair(config: AppConfig, code: Option<String>, reset: bool) -> Result<()
 
         let _ = write_audit_event(AuditEvent {
             event_type: "login_success".to_string(),
-            host_id: Some(response.host.id),
+            host_id: Some(response.host.id.clone()),
             ..AuditEvent::new("login_success")
         });
 
@@ -244,6 +244,24 @@ async fn pair(config: AppConfig, code: Option<String>, reset: bool) -> Result<()
             "login successful — host registered as {}",
             response.host.hostname
         );
+    }
+
+    // Sync trusted devices and pin the device public key from this pairing.
+    // The key is only accepted here (pair command) — the daemon's periodic sync
+    // will never overwrite a pinned key, preventing backend compromise from
+    // substituting a different key.
+    let host_id = response.host.id.clone();
+    let token = response.access_token.clone();
+    if let Ok(mut devices) = backend.list_trusted_devices(&token, &host_id).await {
+        if let Some(ref device_key) = response.device_public_key {
+            for d in &mut devices {
+                if d.device_public_key.is_none() || d.device_public_key.as_deref() == Some(device_key) {
+                    d.device_public_key = Some(device_key.clone());
+                }
+            }
+        }
+        store.set_trusted_devices(devices);
+        store.save().context("persisting trusted devices with pinned key")?;
     }
 
     // Ensure daemon is running as a system service

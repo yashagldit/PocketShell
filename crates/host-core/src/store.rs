@@ -2,6 +2,7 @@ use crate::config::AppConfig;
 use crate::error::{HostError, Result};
 use crate::models::{AgentState, SessionRecord, TrustedDeviceRecord};
 use chrono::Utc;
+use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
@@ -59,6 +60,18 @@ impl StateStore {
     }
 
     pub fn set_trusted_devices(&mut self, devices: Vec<TrustedDeviceRecord>) {
+        // Build a map of locally pinned device keys (set during pairing, never overwritten from backend)
+        let pinned_keys: HashMap<String, String> = self
+            .state
+            .trusted_devices
+            .iter()
+            .filter_map(|d| {
+                d.device_public_key
+                    .as_ref()
+                    .map(|k| (d.mobile_device_id.clone(), k.clone()))
+            })
+            .collect();
+
         self.state.pending_devices = devices
             .iter()
             .filter(|d| d.approved_at.is_none() && d.revoked_at.is_none())
@@ -67,6 +80,17 @@ impl StateStore {
         self.state.trusted_devices = devices
             .into_iter()
             .filter(|d| d.approved_at.is_some() && d.revoked_at.is_none())
+            .map(|mut d| {
+                // Preserve locally pinned key — ignore whatever the backend sends
+                if let Some(pinned) = pinned_keys.get(&d.mobile_device_id) {
+                    d.device_public_key = Some(pinned.clone());
+                } else {
+                    // No local key yet — clear backend-provided key so it can only
+                    // be set via the pair command
+                    d.device_public_key = None;
+                }
+                d
+            })
             .collect();
     }
 

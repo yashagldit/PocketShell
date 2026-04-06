@@ -77,6 +77,9 @@ pub struct PairingValidateResponse {
     /// True when a device was added to an already-registered host (device-add flow).
     #[serde(default)]
     pub already_paired: bool,
+    /// The mobile device's Ed25519 public key (base64), set during pairing.
+    #[serde(default)]
+    pub device_public_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
