@@ -1,8 +1,6 @@
-#[cfg(target_os = "linux")]
-use crate::models::CpuTimes;
 use crate::models::{
-    CpuCoreInfo, DiskIOStats, LoggedInUser, NetworkConnection, NetworkIOStats, OsInfo, ProcessInfo,
-    StatsSnapshot, TaskCounts, TemperatureReading,
+    CpuCoreInfo, CpuTimes, DiskIOStats, LoggedInUser, NetworkConnection, NetworkIOStats, OsInfo,
+    ProcessInfo, StatsSnapshot, TaskCounts, TemperatureReading,
 };
 use chrono::Utc;
 use std::collections::HashSet;
@@ -546,7 +544,18 @@ impl StatsCollector {
             }
             #[cfg(not(target_os = "linux"))]
             {
-                None
+                // Derive cpu_times from sysinfo per-core data.
+                // sysinfo doesn't expose user/system/iowait breakdown on macOS,
+                // so we approximate: usage → user+system split evenly, remainder → idle.
+                let global_usage = self.system.global_cpu_usage();
+                let used = global_usage as f32;
+                let idle = (100.0 - used).max(0.0);
+                Some(CpuTimes {
+                    user_percent: used * 0.6,
+                    system_percent: used * 0.4,
+                    idle_percent: idle,
+                    iowait_percent: 0.0,
+                })
             }
         } else {
             None

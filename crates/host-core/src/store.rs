@@ -2,7 +2,6 @@ use crate::config::AppConfig;
 use crate::error::{HostError, Result};
 use crate::models::{AgentState, SessionRecord, TrustedDeviceRecord};
 use chrono::Utc;
-use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
@@ -59,39 +58,43 @@ impl StateStore {
         self.state.pending_devices.push(device);
     }
 
-    pub fn set_trusted_devices(&mut self, devices: Vec<TrustedDeviceRecord>) {
-        // Build a map of locally pinned device keys (set during pairing, never overwritten from backend)
-        let pinned_keys: HashMap<String, String> = self
-            .state
-            .trusted_devices
+    /// Revocation-only sync: remove locally trusted devices that the backend
+    /// reports as revoked.  Never adds new devices — those only arrive via
+    /// `pocketshell pair`.  Returns the list of revoked mobile_device_ids that
+    /// were actually removed.
+    pub fn apply_revocations(&mut self, backend_devices: &[TrustedDeviceRecord]) -> Vec<String> {
+        let revoked_ids: std::collections::HashSet<String> = backend_devices
             .iter()
-            .filter_map(|d| {
-                d.device_public_key
-                    .as_ref()
-                    .map(|k| (d.mobile_device_id.clone(), k.clone()))
-            })
+            .filter(|d| d.revoked_at.is_some())
+            .map(|d| d.mobile_device_id.clone())
             .collect();
 
-        self.state.pending_devices = devices
-            .iter()
-            .filter(|d| d.approved_at.is_none() && d.revoked_at.is_none())
-            .cloned()
-            .collect();
-        self.state.trusted_devices = devices
-            .into_iter()
-            .filter(|d| d.approved_at.is_some() && d.revoked_at.is_none())
-            .map(|mut d| {
-                // Preserve locally pinned key — ignore whatever the backend sends
-                if let Some(pinned) = pinned_keys.get(&d.mobile_device_id) {
-                    d.device_public_key = Some(pinned.clone());
-                } else {
-                    // No local key yet — clear backend-provided key so it can only
-                    // be set via the pair command
-                    d.device_public_key = None;
-                }
-                d
-            })
-            .collect();
+        let mut removed = Vec::new();
+        self.state.trusted_devices.retain(|d| {
+            if revoked_ids.contains(&d.mobile_device_id) {
+                removed.push(d.mobile_device_id.clone());
+                false
+            } else {
+                true
+            }
+        });
+        // Also clear any pending devices that were revoked
+        self.state
+            .pending_devices
+            .retain(|d| !revoked_ids.contains(&d.mobile_device_id));
+        removed
+    }
+
+    /// Add a single trusted device (called only from the `pair` command).
+    pub fn add_trusted_device(&mut self, device: TrustedDeviceRecord) {
+        // Remove any existing entry for this mobile_device_id, then add
+        self.state
+            .trusted_devices
+            .retain(|d| d.mobile_device_id != device.mobile_device_id);
+        self.state
+            .pending_devices
+            .retain(|d| d.mobile_device_id != device.mobile_device_id);
+        self.state.trusted_devices.push(device);
     }
 
     pub fn remove_trusted_device(&mut self, mobile_device_id: &str) {

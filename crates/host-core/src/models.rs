@@ -80,6 +80,9 @@ pub struct PairingValidateResponse {
     /// The mobile device's Ed25519 public key (base64), set during pairing.
     #[serde(default)]
     pub device_public_key: Option<String>,
+    /// The mobile device ID that was paired.
+    #[serde(default)]
+    pub mobile_device_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

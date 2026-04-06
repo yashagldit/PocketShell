@@ -246,22 +246,26 @@ async fn pair(config: AppConfig, code: Option<String>, reset: bool) -> Result<()
         );
     }
 
-    // Sync trusted devices and pin the device public key from this pairing.
-    // The key is only accepted here (pair command) — the daemon's periodic sync
-    // will never overwrite a pinned key, preventing backend compromise from
-    // substituting a different key.
+    // Add ONLY the device from this pairing to the local trust store.
+    // This is the sole path for adding trusted devices — the daemon's periodic
+    // sync only handles revocations, never adds new devices.
     let host_id = response.host.id.clone();
     let token = response.access_token.clone();
-    if let Ok(mut devices) = backend.list_trusted_devices(&token, &host_id).await {
-        if let Some(ref device_key) = response.device_public_key {
-            for d in &mut devices {
-                if d.device_public_key.is_none() || d.device_public_key.as_deref() == Some(device_key) {
-                    d.device_public_key = Some(device_key.clone());
-                }
+    if let (Some(ref device_key), Some(ref mid)) =
+        (&response.device_public_key, &response.mobile_device_id)
+    {
+        if let Ok(devices) = backend.list_trusted_devices(&token, &host_id).await {
+            // Find the exact device record that was just paired
+            if let Some(mut paired_device) = devices.into_iter().find(|d| {
+                d.mobile_device_id == *mid
+                    && d.approved_at.is_some()
+                    && d.revoked_at.is_none()
+            }) {
+                paired_device.device_public_key = Some(device_key.clone());
+                store.add_trusted_device(paired_device);
+                store.save().context("persisting paired device with pinned key")?;
             }
         }
-        store.set_trusted_devices(devices);
-        store.save().context("persisting trusted devices with pinned key")?;
     }
 
     // Ensure daemon is running as a system service
@@ -400,63 +404,47 @@ async fn devices(config: AppConfig, command: DeviceCommands) -> Result<()> {
 
     match command {
         DeviceCommands::List => {
-            let trusted = backend
-                .list_trusted_devices(&token, &host_id)
-                .await
-                .context("fetching trusted devices")?;
-            store.set_trusted_devices(trusted);
-            store.save().context("saving state")?;
-
+            // Show locally trusted devices (only devices paired via `pocketshell pair`)
             if store.state.trusted_devices.is_empty() {
                 println!("no trusted devices");
             } else {
                 for d in &store.state.trusted_devices {
+                    let has_key = if d.device_public_key.is_some() {
+                        "key=yes"
+                    } else {
+                        "key=no"
+                    };
                     println!(
-                        "{}\tapproved={}\tcreated={} ",
-                        d.mobile_device_id,
-                        d.approved_at.is_some(),
-                        d.created_at
+                        "{}\t{}\tcreated={}",
+                        d.mobile_device_id, has_key, d.created_at
                     );
                 }
             }
         }
         DeviceCommands::ListPending => {
+            // Pending devices on backend — these must be paired via `pocketshell pair`
             let all = backend
                 .list_trusted_devices(&token, &host_id)
                 .await
-                .context("fetching pending devices")?;
-            store.set_trusted_devices(all);
-            store.save().context("saving state")?;
+                .context("fetching devices from backend")?;
+            let pending: Vec<_> = all
+                .iter()
+                .filter(|d| d.approved_at.is_none() && d.revoked_at.is_none())
+                .collect();
 
-            if store.state.pending_devices.is_empty() {
+            if pending.is_empty() {
                 println!("no pending devices");
             } else {
-                for d in &store.state.pending_devices {
+                for d in &pending {
                     println!("{}\tpending_since={}", d.mobile_device_id, d.created_at);
                 }
             }
         }
-        DeviceCommands::Approve { device_id } => {
-            let approved = backend
-                .approve_device(&token, &host_id, &device_id)
-                .await
-                .context("syncing approval with backend")?;
-
-            let all = backend
-                .list_trusted_devices(&token, &host_id)
-                .await
-                .context("refreshing trusted devices")?;
-            store.set_trusted_devices(all);
-            store.save().context("saving state")?;
-
-            let _ = write_audit_event(AuditEvent {
-                event_type: "device_approved".to_string(),
-                mobile_device_id: Some(approved.mobile_device_id.clone()),
-                host_id: Some(host_id.clone()),
-                ..AuditEvent::new("device_approved")
-            });
-
-            println!("approved device {}", approved.mobile_device_id);
+        DeviceCommands::Approve { device_id: _ } => {
+            // In the new security model, devices can only be approved via `pocketshell pair`.
+            // The approve command is kept for backward compatibility but now instructs the user.
+            println!("device approval is now done via `pocketshell pair <CODE>`");
+            println!("have the mobile user generate a new pairing code, then run pair on this host");
         }
         DeviceCommands::Revoke { device_id } => {
             let revoked = backend

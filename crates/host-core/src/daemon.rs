@@ -731,21 +731,23 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                     let _ = store.save();
                 }
                 _ = trusted_devices_tick.tick() => {
+                    // Revocation-only sync: check backend for revoked devices,
+                    // remove them locally, and kill their sessions.
+                    // New devices are NEVER added here — only via `pocketshell pair`.
                     if let Ok(token) = store.access_token().map(|s| s.to_string()) {
                         if let Ok(devices) = backend.list_trusted_devices(&token, &host_id).await {
-                            let revoked_ids = devices
-                                .iter()
-                                .filter(|d| d.revoked_at.is_some())
-                                .map(|d| d.mobile_device_id.clone())
-                                .collect::<Vec<_>>();
+                            let removed = store.apply_revocations(&devices);
+                            for revoked_id in &removed {
+                                info!("device {} revoked via backend sync — closing sessions", revoked_id);
+                                // Also remove from authenticated channels
+                                authenticated_channels.retain(|k| !k.contains(revoked_id));
+                                pending_auth.retain(|k, _| !k.contains(revoked_id));
 
-                            store.set_trusted_devices(devices);
-                            for revoked_id in revoked_ids {
                                 let affected_sessions = store
                                     .state
                                     .sessions
                                     .iter()
-                                    .filter(|s| s.mobile_device_id == revoked_id)
+                                    .filter(|s| s.mobile_device_id == *revoked_id)
                                     .map(|s| s.session_id.clone())
                                     .collect::<Vec<_>>();
                                 for session_id in affected_sessions {
@@ -757,7 +759,9 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                         .await;
                                 }
                             }
-                            let _ = store.save();
+                            if !removed.is_empty() {
+                                let _ = store.save();
+                            }
                         }
                     }
                 }
@@ -2194,6 +2198,15 @@ async fn handle_signal(
             if !store.is_trusted(&mobile_device_id) {
                 warn!(
                     "signal rejected: device {} is not trusted",
+                    mobile_device_id
+                );
+                return Ok(());
+            }
+            // Require device key — devices without a pinned key (not paired via
+            // `pocketshell pair`) cannot use the signaling relay either.
+            if store.get_device_public_key(&mobile_device_id).is_none() {
+                warn!(
+                    "signal rejected: device {} has no pinned public key",
                     mobile_device_id
                 );
                 return Ok(());
