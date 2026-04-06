@@ -36,9 +36,15 @@ impl WebRtcPeer {
             .map_err(|e| HostError::Backend(format!("webrtc codec registration failed: {e}")))?;
 
         let api = APIBuilder::new().with_media_engine(media).build();
+        // webrtc-rs doesn't support turns: (TURN-over-TLS) or transport=tcp;
+        // filter to URIs this library can handle.
+        let supported_uris: Vec<String> = turn_uris
+            .into_iter()
+            .filter(|u| !u.starts_with("turns:") && !u.contains("transport=tcp"))
+            .collect();
         let config = RTCConfiguration {
             ice_servers: vec![RTCIceServer {
-                urls: turn_uris,
+                urls: supported_uris,
                 username,
                 credential,
                 ..Default::default()

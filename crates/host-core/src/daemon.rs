@@ -1081,6 +1081,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                         }
                         WebRtcEvent::ChannelClosed { session_id } => {
                             info!("webrtc data channel closed for session {}", session_id);
+                            webrtc_mgr.prune_session_channels(&session_id);
                         }
                         WebRtcEvent::StatsChannelOpened { host_id } => {
                             info!("stats WebRTC channel opened for host {}", host_id);
@@ -1249,6 +1250,18 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                             } else {
                                                 upload.bytes_written += frame.payload.len();
                                                 upload.created_at = Instant::now();
+                                            }
+                                        } else {
+                                            warn!("upload_chunk for unknown upload key: {}", upload_key);
+                                            let response = serde_json::json!({
+                                                "channel": "files",
+                                                "response_to": request_id,
+                                                "status": "error",
+                                                "error": "no active upload for this key; upload may have expired or was never started",
+                                                "error_code": "upload_not_found"
+                                            });
+                                            if let Err(e) = send_framed_files_response(channel, &response).await {
+                                                warn!("files upload_not_found send failed: {}", e);
                                             }
                                         }
                                         continue;

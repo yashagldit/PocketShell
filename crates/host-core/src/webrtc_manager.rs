@@ -332,6 +332,20 @@ impl WebRtcManager {
         !self.stats_channel_owners.is_empty()
     }
 
+    /// Remove closed terminal channels for a session (called when ChannelClosed event fires).
+    pub fn prune_session_channels(&mut self, session_id: &str) {
+        use webrtc::data_channel::data_channel_state::RTCDataChannelState;
+        if let Some(channels) = self.session_channels.get_mut(session_id) {
+            channels.retain(|ch| ch.ready_state() == RTCDataChannelState::Open);
+            if channels.is_empty() {
+                self.session_channels.remove(session_id);
+            }
+        }
+        self.channel_owners.retain(|(sid, _, ch)| {
+            sid != session_id || ch.ready_state() == RTCDataChannelState::Open
+        });
+    }
+
     /// Remove closed stats channels (called when StatsChannelClosed event fires).
     pub fn prune_stats_channels(&mut self) {
         self.stats_channel_owners.retain(|(_, ch)| {
