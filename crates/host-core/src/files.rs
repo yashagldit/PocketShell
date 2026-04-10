@@ -141,6 +141,46 @@ fn safe_canonicalize(path: &Path) -> Result<PathBuf> {
         .map_err(|e| HostError::Backend(format!("path not found: {}: {}", path.display(), e)))
 }
 
+/// Canonicalize a destination path that may not exist yet.
+/// Resolves the closest existing ancestor to eliminate `..` traversal,
+/// then appends the remaining unresolved components (which must not contain `..`).
+fn safe_resolve_dest(raw: &str) -> Result<PathBuf> {
+    let expanded = resolve_path(raw)?;
+
+    // Walk up from the expanded path to find the deepest existing ancestor
+    let mut existing = expanded.as_path();
+    let mut tail_components: Vec<&std::ffi::OsStr> = Vec::new();
+    loop {
+        if existing.exists() {
+            break;
+        }
+        if let Some(name) = existing.file_name() {
+            tail_components.push(name);
+            existing = existing
+                .parent()
+                .unwrap_or_else(|| Path::new("/"));
+        } else {
+            // Reached root or something unexpected — just use expanded as-is
+            break;
+        }
+    }
+
+    let canonical_ancestor = safe_canonicalize(existing)?;
+    tail_components.reverse();
+    let mut result = canonical_ancestor;
+    for component in &tail_components {
+        let s = component.to_string_lossy();
+        if s == ".." {
+            return Err(HostError::Backend(
+                "path traversal not allowed in destination".to_string(),
+            ));
+        }
+        result = result.join(component);
+    }
+
+    Ok(result)
+}
+
 #[cfg(unix)]
 fn format_permissions(mode: u32) -> String {
     let flags = [
@@ -335,7 +375,7 @@ fn stat_path(path_str: &str) -> Result<serde_json::Value> {
 }
 
 fn mkdir(path_str: &str) -> Result<serde_json::Value> {
-    let dir = resolve_path(path_str)?;
+    let dir = safe_resolve_dest(path_str)?;
     fs::create_dir_all(&dir).map_err(|e| {
         HostError::Backend(format!("cannot create directory {}: {}", dir.display(), e))
     })?;
@@ -370,7 +410,7 @@ fn rename_path(path_str: &str, new_path: &str) -> Result<serde_json::Value> {
         return Err(HostError::Backend("new_path is required".to_string()));
     }
     let src = resolve_path(path_str)?;
-    let dst = resolve_path(new_path)?;
+    let dst = safe_resolve_dest(new_path)?;
     let canonical_src = safe_canonicalize(&src)?;
 
     fs::rename(&canonical_src, &dst).map_err(|e| {
@@ -390,7 +430,7 @@ fn copy_path(path_str: &str, destination: &str, overwrite: bool) -> Result<serde
         return Err(HostError::Backend("destination is required".to_string()));
     }
     let src = resolve_path(path_str)?;
-    let dst = resolve_path(destination)?;
+    let dst = safe_resolve_dest(destination)?;
     let canonical_src = safe_canonicalize(&src)?;
 
     if dst.exists() {
@@ -506,7 +546,7 @@ fn move_path(path_str: &str, destination: &str, overwrite: bool) -> Result<serde
         return Err(HostError::Backend("destination is required".to_string()));
     }
     let src = resolve_path(path_str)?;
-    let dst = resolve_path(destination)?;
+    let dst = safe_resolve_dest(destination)?;
     let canonical_src = safe_canonicalize(&src)?;
 
     if dst.exists() {
@@ -587,7 +627,7 @@ fn move_path(path_str: &str, destination: &str, overwrite: bool) -> Result<serde
 }
 
 fn write_file(path_str: &str, data_b64: &str, append: bool) -> Result<serde_json::Value> {
-    let file_path = resolve_path(path_str)?;
+    let file_path = safe_resolve_dest(path_str)?;
     let data = base64::engine::general_purpose::STANDARD
         .decode(data_b64)
         .map_err(|e| HostError::Backend(format!("invalid base64 payload: {e}")))?;

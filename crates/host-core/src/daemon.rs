@@ -1186,31 +1186,6 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                             } else {
                                 info!("sent files auth challenge for mobile {}", mobile_device_id);
                             }
-
-                            // Also send the ready message so the mobile knows the channel is open
-                            let ready = serde_json::json!({
-                                "channel": "files",
-                                "event": "ready",
-                            });
-                            match serde_json::to_vec(&ready) {
-                                Ok(bytes) => {
-                                    if let Err(err) = channel.send(&bytes::Bytes::from(bytes)).await {
-                                        warn!(
-                                            "files WebRTC ready send failed for mobile {}: {}",
-                                            mobile_device_id, err
-                                        );
-                                    } else {
-                                        info!(
-                                            "files WebRTC ready sent for mobile {}",
-                                            mobile_device_id
-                                        );
-                                    }
-                                }
-                                Err(err) => warn!(
-                                    "files WebRTC ready encode failed for mobile {}: {}",
-                                    mobile_device_id, err
-                                ),
-                            }
                         }
                         WebRtcEvent::FilesChannelClosed { mobile_device_id } => {
                             info!("files WebRTC channel closed for mobile {}", mobile_device_id);
@@ -1263,6 +1238,21 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                             if result.is_ok() {
                                                 authenticated_channels.insert(files_channel_key.clone());
                                                 info!("device {} authenticated for files channel", mobile_device_id);
+                                                // Send ready after auth so the mobile doesn't drop it
+                                                let ready = serde_json::json!({
+                                                    "channel": "files",
+                                                    "event": "ready",
+                                                });
+                                                match serde_json::to_vec(&ready) {
+                                                    Ok(bytes) => {
+                                                        if let Err(err) = channel.send(&bytes::Bytes::from(bytes)).await {
+                                                            warn!("files WebRTC ready send failed for mobile {}: {}", mobile_device_id, err);
+                                                        } else {
+                                                            info!("files WebRTC ready sent for mobile {}", mobile_device_id);
+                                                        }
+                                                    }
+                                                    Err(err) => warn!("files WebRTC ready encode failed for mobile {}: {}", mobile_device_id, err),
+                                                }
                                             } else {
                                                 warn!("files auth failed for device {}: {:?}", mobile_device_id, result.err());
                                             }
@@ -1677,24 +1667,30 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                         let pid = val.get("pid").and_then(|v| v.as_i64());
                                         let signal = val.get("signal").and_then(|v| v.as_str()).unwrap_or("TERM");
                                         if let Some(pid) = pid {
-                                            let sig_num = match signal {
-                                                "KILL" | "9" => "9",
-                                                _ => "15",
-                                            };
-                                            info!("kill_process request: pid={} signal={}", pid, sig_num);
-                                            match std::process::Command::new("kill")
-                                                .arg(format!("-{}", sig_num))
-                                                .arg(pid.to_string())
-                                                .output()
-                                            {
-                                                Ok(output) => {
-                                                    if !output.status.success() {
-                                                        let stderr = String::from_utf8_lossy(&output.stderr);
-                                                        warn!("kill_process failed for pid {}: {}", pid, stderr.trim());
+                                            if pid <= 0 {
+                                                warn!("kill_process rejected: invalid pid {} (non-positive PIDs target process groups)", pid);
+                                            } else if pid == 1 {
+                                                warn!("kill_process rejected: refusing to signal pid 1 (init/systemd)");
+                                            } else {
+                                                let sig_num = match signal {
+                                                    "KILL" | "9" => "9",
+                                                    _ => "15",
+                                                };
+                                                info!("kill_process request: pid={} signal={}", pid, sig_num);
+                                                match std::process::Command::new("kill")
+                                                    .arg(format!("-{}", sig_num))
+                                                    .arg(pid.to_string())
+                                                    .output()
+                                                {
+                                                    Ok(output) => {
+                                                        if !output.status.success() {
+                                                            let stderr = String::from_utf8_lossy(&output.stderr);
+                                                            warn!("kill_process failed for pid {}: {}", pid, stderr.trim());
+                                                        }
                                                     }
-                                                }
-                                                Err(e) => {
-                                                    warn!("kill_process command failed: {}", e);
+                                                    Err(e) => {
+                                                        warn!("kill_process command failed: {}", e);
+                                                    }
                                                 }
                                             }
                                         } else {
@@ -2149,10 +2145,9 @@ async fn handle_signal(
 
             let token = store.access_token()?.to_string();
             if accept {
-                backend
-                    .transition_session(&token, &session_id, SessionState::Connected, None)
-                    .await?;
-
+                // Upsert session record BEFORE the async backend call so that
+                // ChannelOpened (which looks up mobile_device_id from the store)
+                // can find it even if the backend transition_session call is slow.
                 let is_persistent = sessions.is_persistent(&session_id);
                 let tmux_name = sessions.tmux_session_name(&session_id);
                 store.upsert_session(SessionRecord {
@@ -2163,6 +2158,12 @@ async fn handle_signal(
                     persistent: is_persistent,
                     tmux_session_name: tmux_name,
                 });
+                store.save()?;
+
+                backend
+                    .transition_session(&token, &session_id, SessionState::Connected, None)
+                    .await?;
+
                 let _ = write_audit_event(AuditEvent {
                     event_type: "session_started".to_string(),
                     mobile_device_id: Some(mobile_device_id),
@@ -2566,11 +2567,9 @@ async fn handle_signal(
                     }
                 }
 
-                let token = store.access_token()?.to_string();
-                let _ = backend
-                    .transition_session(&token, &session_id, SessionState::Connected, None)
-                    .await;
-
+                // Upsert session record BEFORE the async backend call so that
+                // ChannelOpened (which looks up mobile_device_id from the store)
+                // can find it even if the backend transition_session call is slow.
                 store.upsert_session(SessionRecord {
                     session_id: session_id.clone(),
                     mobile_device_id: mobile_device_id.clone(),
@@ -2580,6 +2579,11 @@ async fn handle_signal(
                     tmux_session_name: sessions.tmux_session_name(&session_id),
                 });
                 store.save()?;
+
+                let token = store.access_token()?.to_string();
+                let _ = backend
+                    .transition_session(&token, &session_id, SessionState::Connected, None)
+                    .await;
             }
         }
         "session_event" => {
