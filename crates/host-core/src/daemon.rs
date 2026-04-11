@@ -10,10 +10,12 @@ use crate::models::{
 };
 use crate::pty::SessionManager;
 use crate::secure::{require_refresh_token, token_is_expiring};
+use crate::signaling_crypto::{self, EphemeralKeypair, SessionCipher};
 use crate::session::accept_session;
 use crate::stats::StatsCollector;
 use crate::store::StateStore;
 use crate::transport::{connect_host_ws, recv_signal, send_signal};
+use crate::webrtc_peer::WebRtcPeer;
 use futures_util::SinkExt;
 use tokio_tungstenite::tungstenite::protocol::Message;
 use crate::webrtc_manager::{WebRtcEvent, WebRtcManager};
@@ -25,9 +27,13 @@ use std::io::{BufReader, Read, Write};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use rand::RngCore;
 use std::path::PathBuf;
+use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
 use tokio::io::AsyncWriteExt;
+use tokio::sync::oneshot;
 use tokio::time::{interval, sleep, Duration, Instant};
 use tracing::{debug, error, info, warn};
+use webrtc::data_channel::RTCDataChannel;
+use webrtc::data_channel::data_channel_message::DataChannelMessage;
 
 /// Whether the backend kill-action is honored.
 const HONOR_KILL_ACTION: bool = true;
@@ -55,6 +61,44 @@ struct PendingFilesBinaryUpload {
     created_at: Instant,
 }
 
+struct OutboundHostTransfer {
+    peer: WebRtcPeer,
+    target_host_id: String,
+    mobile_device_id: String,
+    offer_id: String,
+    created_at: Instant,
+}
+
+struct InboundHostTransfer {
+    peer: WebRtcPeer,
+    source_host_id: String,
+    mobile_device_id: String,
+    offer_id: String,
+    created_at: Instant,
+}
+
+enum DirectHostTransferEvent {
+    Progress {
+        transfer_id: String,
+        mobile_device_id: String,
+        bytes_transferred: u64,
+        total_bytes: u64,
+    },
+    Result {
+        transfer_id: String,
+        mobile_device_id: String,
+        ok: bool,
+        bytes_written: u64,
+        error: Option<String>,
+    },
+    CleanupOutbound {
+        transfer_id: String,
+    },
+    CleanupInbound {
+        transfer_id: String,
+    },
+}
+
 /// File transfers older than this are expired to prevent memory leaks.
 const FILE_TRANSFER_TIMEOUT_SECS: u64 = 300;
 const FILES_MESSAGE_TIMEOUT_SECS: u64 = 300;
@@ -65,6 +109,8 @@ const FILES_STREAM_CHUNK_SIZE: usize = 48 * 1024;
 const AUTH_SENTINEL: &[u8] = b"\x00PSAU";
 /// Per-send timeout for streaming downloads to detect dead channels.
 const DOWNLOAD_SEND_TIMEOUT: Duration = Duration::from_secs(10);
+const DIRECT_TRANSFER_BUFFER_HIGH_WATER: usize = 256 * 1024;
+const DIRECT_TRANSFER_BUFFER_POLL: Duration = Duration::from_millis(10);
 
 struct DecodedFilesStreamFrame {
     header: serde_json::Value,
@@ -331,6 +377,510 @@ async fn send_framed_files_response(
     Ok(())
 }
 
+async fn send_direct_transfer_result(
+    channel: Arc<RTCDataChannel>,
+    transfer_id: &str,
+    ok: bool,
+    bytes_written: u64,
+    error: Option<String>,
+) {
+    let payload = if ok {
+        serde_json::json!({
+            "transfer_id": transfer_id,
+            "status": "ok",
+            "bytes_written": bytes_written,
+        })
+    } else {
+        serde_json::json!({
+            "transfer_id": transfer_id,
+            "status": "error",
+            "error": error.unwrap_or_else(|| "direct transfer failed".to_string()),
+        })
+    };
+
+    if let Ok(bytes) = serde_json::to_vec(&payload) {
+        let _ = channel.send(&bytes::Bytes::from(bytes)).await;
+    }
+}
+
+fn bind_inbound_host_transfer_channel(
+    transfer_id: String,
+    channel: Arc<RTCDataChannel>,
+    event_tx: tokio::sync::mpsc::UnboundedSender<DirectHostTransferEvent>,
+) {
+    let upload_state = Arc::new(tokio::sync::Mutex::new(None::<PendingFilesBinaryUpload>));
+
+    {
+        let transfer_id = transfer_id.clone();
+        let message_channel = Arc::clone(&channel);
+        let upload_state = Arc::clone(&upload_state);
+        let event_tx = event_tx.clone();
+        channel.on_message(Box::new(move |msg: DataChannelMessage| {
+            let transfer_id = transfer_id.clone();
+            let channel = Arc::clone(&message_channel);
+            let upload_state = Arc::clone(&upload_state);
+            let event_tx = event_tx.clone();
+            Box::pin(async move {
+                let data = msg.data.to_vec();
+                let Some(frame) = decode_files_stream_frame(&data) else {
+                    return;
+                };
+
+                let op = frame
+                    .header
+                    .get("op")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+
+                match op.as_str() {
+                    "upload_start" => {
+                        let path = frame
+                            .header
+                            .get("path")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default();
+                        match crate::files::resolve_file_path_for_transfer(path) {
+                            Ok(file_path) => {
+                                if let Some(parent) = file_path.parent() {
+                                    std::fs::create_dir_all(parent).ok();
+                                }
+                                let tmp_path = match file_path.extension() {
+                                    Some(ext) => file_path.with_extension(format!(
+                                        "{}.pstmp",
+                                        ext.to_string_lossy()
+                                    )),
+                                    None => file_path.with_extension("pstmp"),
+                                };
+                                match OpenOptions::new()
+                                    .create(true)
+                                    .write(true)
+                                    .truncate(true)
+                                    .open(&tmp_path)
+                                {
+                                    Ok(file) => {
+                                        *upload_state.lock().await = Some(PendingFilesBinaryUpload {
+                                            final_path: file_path,
+                                            tmp_path,
+                                            file,
+                                            bytes_written: 0,
+                                            created_at: Instant::now(),
+                                        });
+                                    }
+                                    Err(err) => {
+                                        send_direct_transfer_result(
+                                            Arc::clone(&channel),
+                                            &transfer_id,
+                                            false,
+                                            0,
+                                            Some(err.to_string()),
+                                        )
+                                        .await;
+                                        let _ = event_tx.send(DirectHostTransferEvent::CleanupInbound {
+                                            transfer_id: transfer_id.clone(),
+                                        });
+                                    }
+                                }
+                            }
+                            Err(err) => {
+                                send_direct_transfer_result(
+                                    Arc::clone(&channel),
+                                    &transfer_id,
+                                    false,
+                                    0,
+                                    Some(err.to_string()),
+                                )
+                                .await;
+                                let _ = event_tx.send(DirectHostTransferEvent::CleanupInbound {
+                                    transfer_id: transfer_id.clone(),
+                                });
+                            }
+                        }
+                    }
+                    "upload_chunk" => {
+                        let mut guard = upload_state.lock().await;
+                        if let Some(upload) = guard.as_mut() {
+                            if let Err(err) = upload.file.write_all(&frame.payload) {
+                                drop(guard);
+                                send_direct_transfer_result(
+                                    Arc::clone(&channel),
+                                    &transfer_id,
+                                    false,
+                                    0,
+                                    Some(err.to_string()),
+                                )
+                                .await;
+                                let mut guard = upload_state.lock().await;
+                                if let Some(upload) = guard.take() {
+                                    drop(upload.file);
+                                    let _ = std::fs::remove_file(&upload.tmp_path);
+                                }
+                                let _ = event_tx.send(DirectHostTransferEvent::CleanupInbound {
+                                    transfer_id: transfer_id.clone(),
+                                });
+                            } else {
+                                upload.bytes_written += frame.payload.len();
+                                upload.created_at = Instant::now();
+                            }
+                        }
+                    }
+                    "upload_end" => {
+                        let maybe_upload = upload_state.lock().await.take();
+                        match maybe_upload {
+                            Some(mut upload) => {
+                                let _ = upload.file.flush();
+                                let bytes_written = upload.bytes_written as u64;
+                                drop(upload.file);
+                                match std::fs::rename(&upload.tmp_path, &upload.final_path) {
+                                    Ok(()) => {
+                                        send_direct_transfer_result(
+                                            Arc::clone(&channel),
+                                            &transfer_id,
+                                            true,
+                                            bytes_written,
+                                            None,
+                                        )
+                                        .await;
+                                    }
+                                    Err(err) => {
+                                        let _ = std::fs::remove_file(&upload.tmp_path);
+                                        send_direct_transfer_result(
+                                            Arc::clone(&channel),
+                                            &transfer_id,
+                                            false,
+                                            0,
+                                            Some(format!("failed to finalize upload: {}", err)),
+                                        )
+                                        .await;
+                                        let _ = event_tx.send(DirectHostTransferEvent::CleanupInbound {
+                                            transfer_id: transfer_id.clone(),
+                                        });
+                                    }
+                                }
+                            }
+                            None => {
+                                send_direct_transfer_result(
+                                    Arc::clone(&channel),
+                                    &transfer_id,
+                                    false,
+                                    0,
+                                    Some("upload_state_missing".to_string()),
+                                )
+                                .await;
+                                let _ = event_tx.send(DirectHostTransferEvent::CleanupInbound {
+                                    transfer_id: transfer_id.clone(),
+                                });
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            })
+        }));
+    }
+
+    channel.on_close(Box::new(move || {
+        let transfer_id = transfer_id.clone();
+        let upload_state = Arc::clone(&upload_state);
+        let event_tx = event_tx.clone();
+        Box::pin(async move {
+            if let Some(upload) = upload_state.lock().await.take() {
+                drop(upload.file);
+                let _ = std::fs::remove_file(&upload.tmp_path);
+            }
+            let _ = event_tx.send(DirectHostTransferEvent::CleanupInbound {
+                transfer_id,
+            });
+        })
+    }));
+}
+
+fn bind_outbound_host_transfer_channel(
+    transfer_id: String,
+    mobile_device_id: String,
+    source_path: String,
+    destination_path: String,
+    total_size: u64,
+    channel: Arc<RTCDataChannel>,
+    event_tx: tokio::sync::mpsc::UnboundedSender<DirectHostTransferEvent>,
+) {
+    let started = Arc::new(AtomicBool::new(false));
+    let (result_tx, result_rx) = oneshot::channel::<std::result::Result<u64, String>>();
+    let result_tx = Arc::new(std::sync::Mutex::new(Some(result_tx)));
+
+    {
+        let result_tx = Arc::clone(&result_tx);
+        channel.on_message(Box::new(move |msg: DataChannelMessage| {
+            let result_tx = Arc::clone(&result_tx);
+            Box::pin(async move {
+                let Ok(val) = serde_json::from_slice::<serde_json::Value>(&msg.data) else {
+                    return;
+                };
+                let status = val.get("status").and_then(|v| v.as_str()).unwrap_or_default();
+                let mut guard = result_tx.lock().expect("poisoned result sender");
+                if let Some(sender) = guard.take() {
+                    let _ = sender.send(if status == "ok" {
+                        Ok(val
+                            .get("bytes_written")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or_default())
+                    } else {
+                        Err(val
+                            .get("error")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("direct transfer failed")
+                            .to_string())
+                    });
+                }
+            })
+        }));
+    }
+
+    {
+        let transfer_id = transfer_id.clone();
+        let result_tx = Arc::clone(&result_tx);
+        let event_tx = event_tx.clone();
+        channel.on_close(Box::new(move || {
+            let transfer_id = transfer_id.clone();
+            let result_tx = Arc::clone(&result_tx);
+            let event_tx = event_tx.clone();
+            Box::pin(async move {
+                let mut guard = result_tx.lock().expect("poisoned result sender");
+                if let Some(sender) = guard.take() {
+                    let _ = sender.send(Err("direct transfer channel closed".to_string()));
+                }
+                let _ = event_tx.send(DirectHostTransferEvent::CleanupOutbound {
+                    transfer_id,
+                });
+            })
+        }));
+    }
+
+    let open_channel = Arc::clone(&channel);
+    channel.on_open(Box::new(move || {
+        let channel = Arc::clone(&open_channel);
+        let transfer_id = transfer_id.clone();
+        let mobile_device_id = mobile_device_id.clone();
+        let source_path = source_path.clone();
+        let destination_path = destination_path.clone();
+        let event_tx = event_tx.clone();
+        let started = Arc::clone(&started);
+        Box::pin(async move {
+            if started.swap(true, Ordering::SeqCst) {
+                return;
+            }
+
+            let timeout_ms =
+                std::cmp::max(120_000_u64, 120_000_u64 + ((total_size / (1024 * 1024)) * 1_000));
+
+            let source_file = match crate::files::resolve_file_path_for_transfer(&source_path) {
+                Ok(path) => path,
+                Err(err) => {
+                    let _ = event_tx.send(DirectHostTransferEvent::Result {
+                        transfer_id: transfer_id.clone(),
+                        mobile_device_id: mobile_device_id.clone(),
+                        ok: false,
+                        bytes_written: 0,
+                        error: Some(err.to_string()),
+                    });
+                    let _ = event_tx.send(DirectHostTransferEvent::CleanupOutbound {
+                        transfer_id: transfer_id.clone(),
+                    });
+                    return;
+                }
+            };
+
+            let file = match File::open(&source_file) {
+                Ok(file) => file,
+                Err(err) => {
+                    let _ = event_tx.send(DirectHostTransferEvent::Result {
+                        transfer_id: transfer_id.clone(),
+                        mobile_device_id: mobile_device_id.clone(),
+                        ok: false,
+                        bytes_written: 0,
+                        error: Some(err.to_string()),
+                    });
+                    let _ = event_tx.send(DirectHostTransferEvent::CleanupOutbound {
+                        transfer_id: transfer_id.clone(),
+                    });
+                    return;
+                }
+            };
+
+            if let Err(err) = send_files_stream_frame(
+                Arc::clone(&channel),
+                &serde_json::json!({
+                    "op": "upload_start",
+                    "id": transfer_id,
+                    "path": destination_path,
+                    "size": total_size,
+                }),
+                &[],
+            )
+            .await
+            {
+                let _ = event_tx.send(DirectHostTransferEvent::Result {
+                    transfer_id: transfer_id.clone(),
+                    mobile_device_id: mobile_device_id.clone(),
+                    ok: false,
+                    bytes_written: 0,
+                    error: Some(err.to_string()),
+                });
+                let _ = event_tx.send(DirectHostTransferEvent::CleanupOutbound {
+                    transfer_id: transfer_id.clone(),
+                });
+                return;
+            }
+
+            let mut reader = BufReader::new(file);
+            let mut buf = vec![0u8; FILES_STREAM_CHUNK_SIZE];
+            let mut bytes_sent = 0_u64;
+            let mut last_emit = Instant::now();
+
+            loop {
+                let read = match reader.read(&mut buf) {
+                    Ok(read) => read,
+                    Err(err) => {
+                        let _ = event_tx.send(DirectHostTransferEvent::Result {
+                            transfer_id: transfer_id.clone(),
+                            mobile_device_id: mobile_device_id.clone(),
+                            ok: false,
+                            bytes_written: 0,
+                            error: Some(err.to_string()),
+                        });
+                        let _ = event_tx.send(DirectHostTransferEvent::CleanupOutbound {
+                            transfer_id: transfer_id.clone(),
+                        });
+                        return;
+                    }
+                };
+
+                if read == 0 {
+                    break;
+                }
+
+                while channel.buffered_amount().await > DIRECT_TRANSFER_BUFFER_HIGH_WATER {
+                    tokio::time::sleep(DIRECT_TRANSFER_BUFFER_POLL).await;
+                }
+
+                let header = serde_json::json!({
+                    "op": "upload_chunk",
+                    "id": transfer_id,
+                    "i": bytes_sent,
+                });
+                match tokio::time::timeout(
+                    DOWNLOAD_SEND_TIMEOUT,
+                    send_files_stream_frame(Arc::clone(&channel), &header, &buf[..read]),
+                )
+                .await
+                {
+                    Ok(Ok(())) => {}
+                    Ok(Err(err)) => {
+                        let _ = event_tx.send(DirectHostTransferEvent::Result {
+                            transfer_id: transfer_id.clone(),
+                            mobile_device_id: mobile_device_id.clone(),
+                            ok: false,
+                            bytes_written: 0,
+                            error: Some(err.to_string()),
+                        });
+                        let _ = event_tx.send(DirectHostTransferEvent::CleanupOutbound {
+                            transfer_id: transfer_id.clone(),
+                        });
+                        return;
+                    }
+                    Err(_) => {
+                        let _ = event_tx.send(DirectHostTransferEvent::Result {
+                            transfer_id: transfer_id.clone(),
+                            mobile_device_id: mobile_device_id.clone(),
+                            ok: false,
+                            bytes_written: 0,
+                            error: Some("direct transfer send timed out".to_string()),
+                        });
+                        let _ = event_tx.send(DirectHostTransferEvent::CleanupOutbound {
+                            transfer_id: transfer_id.clone(),
+                        });
+                        return;
+                    }
+                }
+
+                bytes_sent += read as u64;
+                if last_emit.elapsed() >= Duration::from_millis(200) || bytes_sent == total_size {
+                    let _ = event_tx.send(DirectHostTransferEvent::Progress {
+                        transfer_id: transfer_id.clone(),
+                        mobile_device_id: mobile_device_id.clone(),
+                        bytes_transferred: bytes_sent,
+                        total_bytes: total_size,
+                    });
+                    last_emit = Instant::now();
+                }
+            }
+
+            if let Err(err) = send_files_stream_frame(
+                Arc::clone(&channel),
+                &serde_json::json!({
+                    "op": "upload_end",
+                    "id": transfer_id,
+                }),
+                &[],
+            )
+            .await
+            {
+                let _ = event_tx.send(DirectHostTransferEvent::Result {
+                    transfer_id: transfer_id.clone(),
+                    mobile_device_id: mobile_device_id.clone(),
+                    ok: false,
+                    bytes_written: 0,
+                    error: Some(err.to_string()),
+                });
+                let _ = event_tx.send(DirectHostTransferEvent::CleanupOutbound {
+                    transfer_id: transfer_id.clone(),
+                });
+                return;
+            }
+
+            match tokio::time::timeout(Duration::from_millis(timeout_ms), result_rx).await {
+                Ok(Ok(Ok(bytes_written))) => {
+                    let _ = event_tx.send(DirectHostTransferEvent::Progress {
+                        transfer_id: transfer_id.clone(),
+                        mobile_device_id: mobile_device_id.clone(),
+                        bytes_transferred: total_size,
+                        total_bytes: total_size,
+                    });
+                    let _ = event_tx.send(DirectHostTransferEvent::Result {
+                        transfer_id: transfer_id.clone(),
+                        mobile_device_id: mobile_device_id.clone(),
+                        ok: true,
+                        bytes_written,
+                        error: None,
+                    });
+                }
+                Ok(Ok(Err(err))) => {
+                    let _ = event_tx.send(DirectHostTransferEvent::Result {
+                        transfer_id: transfer_id.clone(),
+                        mobile_device_id: mobile_device_id.clone(),
+                        ok: false,
+                        bytes_written: 0,
+                        error: Some(err),
+                    });
+                }
+                Ok(Err(_)) | Err(_) => {
+                    let _ = event_tx.send(DirectHostTransferEvent::Result {
+                        transfer_id: transfer_id.clone(),
+                        mobile_device_id: mobile_device_id.clone(),
+                        ok: false,
+                        bytes_written: 0,
+                        error: Some("direct transfer acknowledgement timed out".to_string()),
+                    });
+                }
+            }
+
+            let _ = event_tx.send(DirectHostTransferEvent::CleanupOutbound {
+                transfer_id: transfer_id.clone(),
+            });
+        })
+    }));
+}
+
 /// Handle a file transfer protocol message (sentinel already stripped).
 fn handle_file_transfer_msg(
     transfers: &mut HashMap<String, PendingFileTransfer>,
@@ -497,6 +1047,12 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
     let mut peer_session_routes: HashMap<String, String> = HashMap::new();
     let mut files_peer_hosts: HashMap<String, String> = HashMap::new();
     let mut files_peer_offer_ids: HashMap<String, String> = HashMap::new();
+    let (direct_transfer_event_tx, mut direct_transfer_event_rx) =
+        tokio::sync::mpsc::unbounded_channel::<DirectHostTransferEvent>();
+    let mut outbound_host_transfers: HashMap<String, OutboundHostTransfer> = HashMap::new();
+    let mut inbound_host_transfers: HashMap<String, InboundHostTransfer> = HashMap::new();
+    // Per-session E2E encryption ciphers for signaling-based file operations
+    let mut session_ciphers: HashMap<String, SessionCipher> = HashMap::new();
     // Cancellation signals for active download_stream tasks per mobile device
     let mut files_download_cancels: HashMap<String, tokio::sync::watch::Sender<bool>> = HashMap::new();
 
@@ -943,6 +1499,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                             peer_session_routes.retain(|_, sid| sid != &session_id);
                             webrtc_mgr.close_session(&session_id);
                             local_clients.end_session(&session_id).await;
+                            session_ciphers.remove(&session_id);
                             store.touch_session_state(&session_id, SessionState::Ended);
 
                             let ended_event = SignalEnvelope {
@@ -1002,6 +1559,12 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                             true
                         }
                     });
+                    outbound_host_transfers.retain(|_, transfer| {
+                        now.duration_since(transfer.created_at).as_secs() < FILE_TRANSFER_TIMEOUT_SECS
+                    });
+                    inbound_host_transfers.retain(|_, transfer| {
+                        now.duration_since(transfer.created_at).as_secs() < FILE_TRANSFER_TIMEOUT_SECS
+                    });
 
                     let discovered = SessionDiscovery::discover();
                     debug!("discovery tick: found {} sessions", discovered.len());
@@ -1021,6 +1584,68 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                 }
                 _ = webrtc_poll_tick.tick() => {
                     webrtc_mgr.poll_events().await;
+                    for (transfer_id, transfer) in &mut outbound_host_transfers {
+                        while let Ok(candidate) = transfer.peer.ice_tx.try_recv() {
+                            if let Ok(json) = candidate.to_json() {
+                                if let Ok(mut payload) = serde_json::to_value(json) {
+                                    if let Some(map) = payload.as_object_mut() {
+                                        map.insert("transfer_id".to_string(), serde_json::json!(transfer_id));
+                                        map.insert("offer_id".to_string(), serde_json::json!(transfer.offer_id));
+                                    }
+                                    let mut extra = std::collections::HashMap::new();
+                                    extra.insert(
+                                        "target_host_id".to_string(),
+                                        serde_json::json!(transfer.target_host_id),
+                                    );
+                                    extra.insert(
+                                        "mobile_device_id".to_string(),
+                                        serde_json::json!(transfer.mobile_device_id),
+                                    );
+                                    let ice_msg = SignalEnvelope {
+                                        message_type: "host_transfer_ice_candidate".to_string(),
+                                        session_id: None,
+                                        payload: Some(payload),
+                                        state: None,
+                                        accepted: None,
+                                        reason: None,
+                                        extra,
+                                    };
+                                    let _ = send_signal(&mut ws, &ice_msg).await;
+                                }
+                            }
+                        }
+                    }
+                    for (transfer_id, transfer) in &mut inbound_host_transfers {
+                        while let Ok(candidate) = transfer.peer.ice_tx.try_recv() {
+                            if let Ok(json) = candidate.to_json() {
+                                if let Ok(mut payload) = serde_json::to_value(json) {
+                                    if let Some(map) = payload.as_object_mut() {
+                                        map.insert("transfer_id".to_string(), serde_json::json!(transfer_id));
+                                        map.insert("offer_id".to_string(), serde_json::json!(transfer.offer_id));
+                                    }
+                                    let mut extra = std::collections::HashMap::new();
+                                    extra.insert(
+                                        "target_host_id".to_string(),
+                                        serde_json::json!(transfer.source_host_id),
+                                    );
+                                    extra.insert(
+                                        "mobile_device_id".to_string(),
+                                        serde_json::json!(transfer.mobile_device_id),
+                                    );
+                                    let ice_msg = SignalEnvelope {
+                                        message_type: "host_transfer_ice_candidate".to_string(),
+                                        session_id: None,
+                                        payload: Some(payload),
+                                        state: None,
+                                        accepted: None,
+                                        reason: None,
+                                        extra,
+                                    };
+                                    let _ = send_signal(&mut ws, &ice_msg).await;
+                                }
+                            }
+                        }
+                    }
                 }
                 _ = stats_stream_tick.tick() => {
                     if webrtc_mgr.has_stats_channel() {
@@ -1034,6 +1659,82 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                 Some(response) = files_response_rx.recv() => {
                     if let Err(e) = send_signal(&mut ws, &response).await {
                         warn!("files signaling response send failed: {}", e);
+                    }
+                }
+
+                Some(event) = direct_transfer_event_rx.recv() => {
+                    match event {
+                        DirectHostTransferEvent::Progress {
+                            transfer_id,
+                            mobile_device_id,
+                            bytes_transferred,
+                            total_bytes,
+                        } => {
+                            let mut extra = std::collections::HashMap::new();
+                            extra.insert(
+                                "target_mobile_device_id".to_string(),
+                                serde_json::json!(mobile_device_id),
+                            );
+                            let msg = SignalEnvelope {
+                                message_type: "host_transfer_progress".to_string(),
+                                session_id: None,
+                                payload: Some(serde_json::json!({
+                                    "transfer_id": transfer_id,
+                                    "bytes_transferred": bytes_transferred,
+                                    "total_bytes": total_bytes,
+                                })),
+                                state: None,
+                                accepted: None,
+                                reason: None,
+                                extra,
+                            };
+                            let _ = send_signal(&mut ws, &msg).await;
+                        }
+                        DirectHostTransferEvent::Result {
+                            transfer_id,
+                            mobile_device_id,
+                            ok,
+                            bytes_written,
+                            error,
+                        } => {
+                            let mut extra = std::collections::HashMap::new();
+                            extra.insert(
+                                "target_mobile_device_id".to_string(),
+                                serde_json::json!(mobile_device_id),
+                            );
+                            let msg = SignalEnvelope {
+                                message_type: "host_transfer_result".to_string(),
+                                session_id: None,
+                                payload: Some(if ok {
+                                    serde_json::json!({
+                                        "transfer_id": transfer_id,
+                                        "status": "ok",
+                                        "bytes_written": bytes_written,
+                                    })
+                                } else {
+                                    serde_json::json!({
+                                        "transfer_id": transfer_id,
+                                        "status": "error",
+                                        "error": error.unwrap_or_else(|| "direct transfer failed".to_string()),
+                                    })
+                                }),
+                                state: None,
+                                accepted: None,
+                                reason: None,
+                                extra,
+                            };
+                            let _ = send_signal(&mut ws, &msg).await;
+                        }
+                        DirectHostTransferEvent::CleanupOutbound { transfer_id } => {
+                            if let Some(transfer) = outbound_host_transfers.remove(&transfer_id) {
+                                transfer.peer.close().await;
+                            }
+                        }
+                        DirectHostTransferEvent::CleanupInbound { transfer_id } => {
+                            if let Some(transfer) = inbound_host_transfers.remove(&transfer_id) {
+                                transfer.peer.close().await;
+                            }
+                        }
                     }
                 }
 
@@ -1851,7 +2552,11 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                 &mut peer_session_routes,
                                 &mut files_peer_hosts,
                                 &mut files_peer_offer_ids,
+                                &mut outbound_host_transfers,
+                                &mut inbound_host_transfers,
                                 &files_response_tx,
+                                &direct_transfer_event_tx,
+                                &mut session_ciphers,
                             ).await {
                                 error!("control message handling failed: {}", err);
                             }
@@ -1904,6 +2609,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
         // Persistent sessions survive; their PTYs stay alive for later rejoin.
         let detached_ids = sessions.detach_all();
         webrtc_mgr.close_all().await;
+        session_ciphers.clear();
         for session in &mut store.state.sessions {
             if matches!(session.state, SessionState::Ended | SessionState::Failed) {
                 continue;
@@ -1976,9 +2682,405 @@ async fn handle_signal(
     peer_session_routes: &mut HashMap<String, String>,
     files_peer_hosts: &mut HashMap<String, String>,
     files_peer_offer_ids: &mut HashMap<String, String>,
+    outbound_host_transfers: &mut HashMap<String, OutboundHostTransfer>,
+    inbound_host_transfers: &mut HashMap<String, InboundHostTransfer>,
     files_response_tx: &tokio::sync::mpsc::UnboundedSender<SignalEnvelope>,
+    direct_transfer_event_tx: &tokio::sync::mpsc::UnboundedSender<DirectHostTransferEvent>,
+    session_ciphers: &mut HashMap<String, SessionCipher>,
 ) -> Result<()> {
     match msg.message_type.as_str() {
+        "host_transfer_request" => {
+            let mobile_device_id = msg
+                .extra
+                .get("mobile_device_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let Some(payload) = &msg.payload else {
+                return Ok(());
+            };
+            if mobile_device_id.is_empty() || !store.is_trusted(&mobile_device_id) {
+                let _ = direct_transfer_event_tx.send(DirectHostTransferEvent::Result {
+                    transfer_id: payload
+                        .get("transfer_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    mobile_device_id,
+                    ok: false,
+                    bytes_written: 0,
+                    error: Some("device is not trusted on source host".to_string()),
+                });
+                return Ok(());
+            }
+            let transfer_id = payload
+                .get("transfer_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let dst_host_id = payload
+                .get("dst_host_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let src_path = payload
+                .get("src_path")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let dst_path = payload
+                .get("dst_path")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+
+            if transfer_id.is_empty() || dst_host_id.is_empty() || src_path.is_empty() || dst_path.is_empty() {
+                let _ = direct_transfer_event_tx.send(DirectHostTransferEvent::Result {
+                    transfer_id,
+                    mobile_device_id,
+                    ok: false,
+                    bytes_written: 0,
+                    error: Some("invalid direct transfer request".to_string()),
+                });
+                return Ok(());
+            }
+
+            let source_file = match crate::files::resolve_file_path_for_transfer(&src_path) {
+                Ok(path) => path,
+                Err(err) => {
+                    let _ = direct_transfer_event_tx.send(DirectHostTransferEvent::Result {
+                        transfer_id,
+                        mobile_device_id,
+                        ok: false,
+                        bytes_written: 0,
+                        error: Some(err.to_string()),
+                    });
+                    return Ok(());
+                }
+            };
+            let metadata = match std::fs::metadata(&source_file) {
+                Ok(meta) => meta,
+                Err(err) => {
+                    let _ = direct_transfer_event_tx.send(DirectHostTransferEvent::Result {
+                        transfer_id,
+                        mobile_device_id,
+                        ok: false,
+                        bytes_written: 0,
+                        error: Some(err.to_string()),
+                    });
+                    return Ok(());
+                }
+            };
+            if metadata.is_dir() {
+                let _ = direct_transfer_event_tx.send(DirectHostTransferEvent::Result {
+                    transfer_id,
+                    mobile_device_id,
+                    ok: false,
+                    bytes_written: 0,
+                    error: Some("cannot transfer a directory directly".to_string()),
+                });
+                return Ok(());
+            }
+
+            let token = store.access_token()?.to_string();
+            let (username, credential, _ttl, uris) = match backend.turn_credentials(&token).await {
+                Ok(creds) => creds,
+                Err(err) => {
+                    let _ = direct_transfer_event_tx.send(DirectHostTransferEvent::Result {
+                        transfer_id,
+                        mobile_device_id,
+                        ok: false,
+                        bytes_written: 0,
+                        error: Some(format!("failed to fetch TURN credentials: {}", err)),
+                    });
+                    return Ok(());
+                }
+            };
+
+            let peer = match WebRtcPeer::new(uris, username, credential).await {
+                Ok(peer) => peer,
+                Err(err) => {
+                    let _ = direct_transfer_event_tx.send(DirectHostTransferEvent::Result {
+                        transfer_id,
+                        mobile_device_id,
+                        ok: false,
+                        bytes_written: 0,
+                        error: Some(err.to_string()),
+                    });
+                    return Ok(());
+                }
+            };
+
+            let offer_id = format!(
+                "hto_{}_{}",
+                transfer_id,
+                chrono::Utc::now().timestamp_millis()
+            );
+            let label = format!("host-transfer-{}", transfer_id);
+            let (channel, offer_sdp) = match peer.create_offer_with_data_channel(&label).await {
+                Ok(result) => result,
+                Err(err) => {
+                    let _ = direct_transfer_event_tx.send(DirectHostTransferEvent::Result {
+                        transfer_id,
+                        mobile_device_id,
+                        ok: false,
+                        bytes_written: 0,
+                        error: Some(err.to_string()),
+                    });
+                    return Ok(());
+                }
+            };
+
+            let total_size = metadata.len();
+            bind_outbound_host_transfer_channel(
+                transfer_id.clone(),
+                mobile_device_id.clone(),
+                src_path,
+                dst_path.clone(),
+                total_size,
+                channel,
+                direct_transfer_event_tx.clone(),
+            );
+
+            outbound_host_transfers.insert(
+                transfer_id.clone(),
+                OutboundHostTransfer {
+                    peer,
+                    target_host_id: dst_host_id.clone(),
+                    mobile_device_id: mobile_device_id.clone(),
+                    offer_id: offer_id.clone(),
+                    created_at: Instant::now(),
+                },
+            );
+
+            let mut extra = std::collections::HashMap::new();
+            extra.insert("target_host_id".to_string(), serde_json::json!(dst_host_id));
+            extra.insert(
+                "mobile_device_id".to_string(),
+                serde_json::json!(mobile_device_id),
+            );
+            let offer_msg = SignalEnvelope {
+                message_type: "host_transfer_offer".to_string(),
+                session_id: None,
+                payload: Some(serde_json::json!({
+                    "transfer_id": transfer_id,
+                    "offer_id": offer_id,
+                    "sdp": offer_sdp,
+                    "dst_path": dst_path,
+                    "total_size": total_size,
+                })),
+                state: None,
+                accepted: None,
+                reason: None,
+                extra,
+            };
+            let _ = send_signal(ws, &offer_msg).await;
+        }
+        "host_transfer_offer" => {
+            let source_host_id = msg
+                .extra
+                .get("host_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let mobile_device_id = msg
+                .extra
+                .get("mobile_device_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let Some(payload) = &msg.payload else {
+                return Ok(());
+            };
+            let transfer_id = payload
+                .get("transfer_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let offer_id = payload
+                .get("offer_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let offer_sdp = payload
+                .get("sdp")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+
+            if transfer_id.is_empty() || source_host_id.is_empty() || offer_sdp.is_empty() {
+                return Ok(());
+            }
+            if mobile_device_id.is_empty() || !store.is_trusted(&mobile_device_id) {
+                let mut extra = std::collections::HashMap::new();
+                extra.insert(
+                    "target_mobile_device_id".to_string(),
+                    serde_json::json!(mobile_device_id),
+                );
+                let reject_msg = SignalEnvelope {
+                    message_type: "host_transfer_result".to_string(),
+                    session_id: None,
+                    payload: Some(serde_json::json!({
+                        "transfer_id": transfer_id,
+                        "status": "error",
+                        "error": "device is not trusted on destination host",
+                    })),
+                    state: None,
+                    accepted: None,
+                    reason: None,
+                    extra,
+                };
+                let _ = send_signal(ws, &reject_msg).await;
+                return Ok(());
+            }
+
+            let token = store.access_token()?.to_string();
+            let (username, credential, _ttl, uris) = backend.turn_credentials(&token).await?;
+            let peer = WebRtcPeer::new(uris, username, credential).await?;
+            {
+                let transfer_id = transfer_id.clone();
+                let event_tx = direct_transfer_event_tx.clone();
+                peer.peer.on_data_channel(Box::new(move |channel: Arc<RTCDataChannel>| {
+                    let transfer_id = transfer_id.clone();
+                    let event_tx = event_tx.clone();
+                    Box::pin(async move {
+                        bind_inbound_host_transfer_channel(transfer_id, channel, event_tx);
+                    })
+                }));
+            }
+
+            let answer_sdp = peer.apply_offer(&offer_sdp).await?;
+            inbound_host_transfers.insert(
+                transfer_id.clone(),
+                InboundHostTransfer {
+                    peer,
+                    source_host_id: source_host_id.clone(),
+                    mobile_device_id: mobile_device_id.clone(),
+                    offer_id: offer_id.clone(),
+                    created_at: Instant::now(),
+                },
+            );
+
+            let mut extra = std::collections::HashMap::new();
+            extra.insert("target_host_id".to_string(), serde_json::json!(source_host_id));
+            extra.insert(
+                "mobile_device_id".to_string(),
+                serde_json::json!(mobile_device_id),
+            );
+            let answer_msg = SignalEnvelope {
+                message_type: "host_transfer_answer".to_string(),
+                session_id: None,
+                payload: Some(serde_json::json!({
+                    "transfer_id": transfer_id,
+                    "offer_id": offer_id,
+                    "sdp": answer_sdp,
+                })),
+                state: None,
+                accepted: None,
+                reason: None,
+                extra,
+            };
+            let _ = send_signal(ws, &answer_msg).await;
+        }
+        "host_transfer_answer" => {
+            let Some(payload) = &msg.payload else {
+                return Ok(());
+            };
+            let transfer_id = payload
+                .get("transfer_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let offer_id = payload
+                .get("offer_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let answer_sdp = payload
+                .get("sdp")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            if let Some(transfer) = outbound_host_transfers.get(&transfer_id) {
+                if !offer_id.is_empty() && transfer.offer_id != offer_id {
+                    return Ok(());
+                }
+                if let Some(mobile_device_id) = msg.extra.get("mobile_device_id").and_then(|v| v.as_str()) {
+                    if transfer.mobile_device_id != mobile_device_id {
+                        return Ok(());
+                    }
+                }
+                transfer.peer.apply_answer(&answer_sdp).await?;
+            }
+        }
+        "host_transfer_ice_candidate" => {
+            let Some(payload) = &msg.payload else {
+                return Ok(());
+            };
+            let transfer_id = payload
+                .get("transfer_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            if transfer_id.is_empty() {
+                return Ok(());
+            }
+            if let Ok(candidate) = serde_json::from_value::<
+                webrtc::ice_transport::ice_candidate::RTCIceCandidateInit,
+            >(payload.clone())
+            {
+                if let Some(transfer) = outbound_host_transfers.get(&transfer_id) {
+                    if let Some(mobile_device_id) = msg.extra.get("mobile_device_id").and_then(|v| v.as_str()) {
+                        if transfer.mobile_device_id != mobile_device_id {
+                            return Ok(());
+                        }
+                    }
+                    let _ = transfer.peer.add_ice_candidate(candidate.clone()).await;
+                } else if let Some(transfer) = inbound_host_transfers.get(&transfer_id) {
+                    if let Some(mobile_device_id) = msg.extra.get("mobile_device_id").and_then(|v| v.as_str()) {
+                        if transfer.mobile_device_id != mobile_device_id {
+                            return Ok(());
+                        }
+                    }
+                    let _ = transfer.peer.add_ice_candidate(candidate).await;
+                }
+            }
+        }
+        "host_transfer_cancel" => {
+            let transfer_id = msg
+                .payload
+                .as_ref()
+                .and_then(|payload| payload.get("transfer_id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let reason = msg
+                .payload
+                .as_ref()
+                .and_then(|payload| payload.get("reason"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("direct transfer cancelled")
+                .to_string();
+            if transfer_id.is_empty() {
+                return Ok(());
+            }
+
+            if let Some(transfer) = outbound_host_transfers.remove(&transfer_id) {
+                let _ = direct_transfer_event_tx.send(DirectHostTransferEvent::Result {
+                    transfer_id: transfer_id.clone(),
+                    mobile_device_id: transfer.mobile_device_id.clone(),
+                    ok: false,
+                    bytes_written: 0,
+                    error: Some(reason),
+                });
+                transfer.peer.close().await;
+                return Ok(());
+            }
+
+            if let Some(transfer) = inbound_host_transfers.remove(&transfer_id) {
+                transfer.peer.close().await;
+            }
+        }
         "session_request" => {
             let Some(session_id) = msg.session_id else {
                 return Ok(());
@@ -2070,6 +3172,7 @@ async fn handle_signal(
                             sessions.active_count(),
                         );
                         let _ = sessions.close_session(&evicted_session_id);
+                        session_ciphers.remove(&evicted_session_id);
                         store.touch_session_state(&evicted_session_id, SessionState::Ended);
                         if let Ok(token) = store.access_token().map(|s| s.to_string()) {
                             let _ = backend
@@ -2328,6 +3431,7 @@ async fn handle_signal(
                             } else {
                                 // Non-persistent session — detach acts as close
                                 peer_session_routes.retain(|_, sid| sid != &session_id);
+                                session_ciphers.remove(&session_id);
                                 store.touch_session_state(&session_id, SessionState::Ended);
                                 let ended_event = SignalEnvelope {
                                     message_type: "session_event".to_string(),
@@ -2355,6 +3459,7 @@ async fn handle_signal(
                             peer_session_routes.retain(|_, sid| sid != &session_id);
                             webrtc_mgr.close_session(&session_id);
                             sessions.close_session(&session_id)?;
+                            session_ciphers.remove(&session_id);
                             store.touch_session_state(&session_id, SessionState::Ended);
                             let ended_event = SignalEnvelope {
                                 message_type: "session_event".to_string(),
@@ -2380,6 +3485,15 @@ async fn handle_signal(
                     }
                 }
                 "files" => {
+                    // Reject unencrypted file ops when E2E encryption is established
+                    if session_ciphers.contains_key(&session_id) {
+                        warn!(
+                            "rejecting unencrypted files request for session {} — use encrypted_file_payload",
+                            session_id
+                        );
+                        return Ok(());
+                    }
+
                     let target_mobile_device_id = msg
                         .extra
                         .get("mobile_device_id")
@@ -2401,7 +3515,7 @@ async fn handle_signal(
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
-                    info!(
+                    debug!(
                         "files signaling >> action={} req={} path={}",
                         action, request_id, path
                     );
@@ -2417,7 +3531,7 @@ async fn handle_signal(
 
                         let response_payload = match result {
                             Ok(data) => {
-                                info!(
+                                debug!(
                                     "files signaling << action={} req={} status=ok elapsed={:?}",
                                     action_clone, req_id_clone, elapsed
                                 );
@@ -2596,6 +3710,12 @@ async fn handle_signal(
                     "detached" => SessionState::Detached,
                     _ => SessionState::Requested,
                 };
+                // Clean up session cipher when session ends or fails
+                if matches!(mapped, SessionState::Ended | SessionState::Failed) {
+                    if session_ciphers.remove(&session_id).is_some() {
+                        info!("removed E2E cipher for ended session {}", session_id);
+                    }
+                }
                 store.touch_session_state(&session_id, mapped);
                 store.save()?;
             }
@@ -2894,6 +4014,320 @@ async fn handle_signal(
                     }
                 }
             }
+        }
+        "encrypted_file_payload" => {
+            let mobile_device_id = msg
+                .extra
+                .get("mobile_device_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+
+            if !store.is_trusted(&mobile_device_id) {
+                warn!(
+                    "encrypted_file_payload rejected: device {} is not trusted",
+                    mobile_device_id
+                );
+                return Ok(());
+            }
+
+            let Some(payload) = msg.payload else {
+                return Ok(());
+            };
+
+            let session_id = match payload.get("session_id").and_then(|v| v.as_str()) {
+                Some(sid) => sid.to_string(),
+                None => {
+                    warn!("encrypted_file_payload: missing session_id");
+                    return Ok(());
+                }
+            };
+
+            let nonce_b64 = match payload.get("nonce").and_then(|v| v.as_str()) {
+                Some(n) => n,
+                None => {
+                    warn!("encrypted_file_payload: missing nonce");
+                    return Ok(());
+                }
+            };
+            let ciphertext_b64 = match payload.get("ciphertext").and_then(|v| v.as_str()) {
+                Some(c) => c,
+                None => {
+                    warn!("encrypted_file_payload: missing ciphertext");
+                    return Ok(());
+                }
+            };
+
+            let cipher = match session_ciphers.get_mut(&session_id) {
+                Some(c) => c,
+                None => {
+                    warn!("encrypted_file_payload: no cipher for session {}", session_id);
+                    return Ok(());
+                }
+            };
+
+            let nonce_bytes = match base64::engine::general_purpose::STANDARD.decode(nonce_b64) {
+                Ok(b) => b,
+                Err(e) => {
+                    warn!("encrypted_file_payload: invalid nonce base64: {}", e);
+                    return Ok(());
+                }
+            };
+            let ciphertext = match base64::engine::general_purpose::STANDARD.decode(ciphertext_b64)
+            {
+                Ok(b) => b,
+                Err(e) => {
+                    warn!("encrypted_file_payload: invalid ciphertext base64: {}", e);
+                    return Ok(());
+                }
+            };
+
+            // Reject oversized inbound payloads (200 KB ciphertext ceiling)
+            const MAX_INBOUND_CIPHERTEXT: usize = 200 * 1024;
+            if ciphertext.len() > MAX_INBOUND_CIPHERTEXT {
+                warn!(
+                    "encrypted_file_payload: inbound too large ({} bytes), rejecting",
+                    ciphertext.len()
+                );
+                return Ok(());
+            }
+
+            // Decrypt the request
+            let plaintext = match cipher.decrypt(&nonce_bytes, &ciphertext) {
+                Ok(pt) => pt,
+                Err(e) => {
+                    warn!("encrypted_file_payload: decryption failed: {}", e);
+                    return Ok(());
+                }
+            };
+
+            let file_payload: serde_json::Value = match serde_json::from_slice(&plaintext) {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!("encrypted_file_payload: invalid JSON after decrypt: {}", e);
+                    return Ok(());
+                }
+            };
+
+            let request_id = file_payload
+                .get("request_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let action = file_payload
+                .get("action")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?")
+                .to_string();
+            let path = file_payload
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            debug!(
+                "encrypted files >> action={} req={} path={} session={}",
+                action, request_id, path, session_id
+            );
+
+            // Helper: encrypt plaintext and build an encrypted signaling envelope
+            let encrypt_and_build = |cipher: &mut SessionCipher,
+                                      plaintext: &[u8],
+                                      session_id: &str,
+                                      mobile_device_id: &str|
+                -> std::result::Result<SignalEnvelope, anyhow::Error> {
+                let (nonce, ct) = cipher.encrypt(plaintext)?;
+                let mut extra = std::collections::HashMap::new();
+                extra.insert(
+                    "target_mobile_device_id".to_string(),
+                    serde_json::json!(mobile_device_id),
+                );
+                Ok(SignalEnvelope {
+                    message_type: "encrypted_file_payload".to_string(),
+                    session_id: None,
+                    payload: Some(serde_json::json!({
+                        "session_id": session_id,
+                        "nonce": base64::engine::general_purpose::STANDARD.encode(&nonce),
+                        "ciphertext": base64::engine::general_purpose::STANDARD.encode(&ct),
+                    })),
+                    state: None,
+                    accepted: None,
+                    reason: None,
+                    extra,
+                })
+            };
+
+            // Spawn file I/O so it doesn't block the signaling event loop
+            let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+            let action_clone = action.clone();
+            let req_id_clone = request_id.clone();
+            tokio::spawn(async move {
+                let start = std::time::Instant::now();
+                let result = crate::files::handle_files_action(&file_payload).await;
+                let elapsed = start.elapsed();
+
+                let response_json = match result {
+                    Ok(data) => {
+                        debug!(
+                            "encrypted files << action={} req={} status=ok elapsed={:?}",
+                            action_clone, req_id_clone, elapsed
+                        );
+                        serde_json::json!({
+                            "channel": "files",
+                            "response_to": req_id_clone,
+                            "status": "ok",
+                            "data": data
+                        })
+                    }
+                    Err(err) => {
+                        warn!(
+                            "encrypted files << action={} req={} status=error elapsed={:?} error={}",
+                            action_clone, req_id_clone, elapsed, err
+                        );
+                        serde_json::json!({
+                            "channel": "files",
+                            "response_to": req_id_clone,
+                            "status": "error",
+                            "error": err.to_string(),
+                            "error_code": "operation_failed"
+                        })
+                    }
+                };
+                let _ = result_tx.send(response_json);
+            });
+
+            // Wait for the spawned task, then encrypt the result
+            let response_json = match result_rx.await {
+                Ok(v) => v,
+                Err(_) => {
+                    warn!("encrypted files: file op task dropped for req={}", request_id);
+                    return Ok(());
+                }
+            };
+            let response_plaintext = serde_json::to_vec(&response_json).unwrap_or_default();
+
+            // Enforce 200 KB limit for signaling responses
+            const MAX_SIGNALING_RESPONSE_BYTES: usize = 200 * 1024;
+            let plaintext_to_encrypt = if response_plaintext.len() > MAX_SIGNALING_RESPONSE_BYTES {
+                warn!(
+                    "encrypted files: response too large ({} bytes), rejecting",
+                    response_plaintext.len()
+                );
+                serde_json::to_vec(&serde_json::json!({
+                    "channel": "files",
+                    "response_to": request_id,
+                    "status": "error",
+                    "error": "Response exceeds signaling size limit",
+                    "error_code": "payload_too_large"
+                }))
+                .unwrap_or_default()
+            } else {
+                response_plaintext
+            };
+
+            match encrypt_and_build(cipher, &plaintext_to_encrypt, &session_id, &mobile_device_id) {
+                Ok(envelope) => {
+                    let _ = send_signal(ws, &envelope).await;
+                }
+                Err(e) => {
+                    warn!("encrypted files: failed to encrypt response: {}", e);
+                }
+            }
+        }
+        "x25519_public_key" => {
+            let mobile_device_id = msg
+                .extra
+                .get("mobile_device_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+
+            if !store.is_trusted(&mobile_device_id) {
+                warn!(
+                    "x25519_public_key rejected: device {} is not trusted",
+                    mobile_device_id
+                );
+                return Ok(());
+            }
+
+            let session_id = match msg.payload.as_ref().and_then(|p| p.get("session_id")).and_then(|v| v.as_str()) {
+                Some(sid) => sid.to_string(),
+                None => {
+                    warn!("x25519_public_key: missing session_id");
+                    return Ok(());
+                }
+            };
+
+            let mobile_pub_b64 = match msg.payload.as_ref().and_then(|p| p.get("public_key")).and_then(|v| v.as_str()) {
+                Some(k) => k,
+                None => {
+                    warn!("x25519_public_key: missing public_key");
+                    return Ok(());
+                }
+            };
+
+            let mobile_pub = match signaling_crypto::parse_x25519_public_key(mobile_pub_b64) {
+                Ok(k) => k,
+                Err(e) => {
+                    warn!("x25519_public_key: invalid public key: {}", e);
+                    return Ok(());
+                }
+            };
+
+            // Generate ephemeral keypair for this session
+            let host_kp = EphemeralKeypair::generate();
+            let host_pub_bytes = host_kp.public_key_bytes();
+            let host_pub_b64 = host_kp.public_key_base64();
+
+            // Generate random salt for HKDF
+            let mut salt = [0u8; 32];
+            rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut salt);
+            let salt_b64 = base64::engine::general_purpose::STANDARD.encode(&salt);
+
+            // Compute shared secret and derive session key (consumes host private key)
+            let mobile_pub_bytes = mobile_pub.to_bytes();
+            let shared = host_kp.diffie_hellman(&mobile_pub);
+            let session_key = match signaling_crypto::derive_session_key(
+                shared.as_bytes(),
+                &salt,
+                &mobile_pub_bytes,
+                &host_pub_bytes,
+                &session_id,
+            ) {
+                Ok(k) => k,
+                Err(e) => {
+                    warn!("x25519 key derivation failed: {}", e);
+                    return Ok(());
+                }
+            };
+
+            // Store cipher for this session
+            let cipher = SessionCipher::new_host(session_key);
+            session_ciphers.insert(session_id.clone(), cipher);
+            info!("E2E encryption established for session {}", session_id);
+
+            // Send response with host's ephemeral public key and salt
+            let host_id = store.host_id()?.to_string();
+            let mut extra = std::collections::HashMap::new();
+            extra.insert("host_id".to_string(), serde_json::json!(host_id));
+            extra.insert(
+                "target_mobile_device_id".to_string(),
+                serde_json::json!(mobile_device_id),
+            );
+            let response = SignalEnvelope {
+                message_type: "x25519_key_response".to_string(),
+                session_id: None,
+                payload: Some(serde_json::json!({
+                    "session_id": session_id,
+                    "public_key": host_pub_b64,
+                    "salt": salt_b64,
+                })),
+                state: None,
+                accepted: None,
+                reason: None,
+                extra,
+            };
+            let _ = send_signal(ws, &response).await;
         }
         "alert_preferences_sync" => {
             if let Some(payload) = msg.payload {

@@ -6,6 +6,7 @@ use tokio::sync::mpsc;
 use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::APIBuilder;
 use webrtc::data_channel::RTCDataChannel;
+use webrtc::data_channel::data_channel_init::RTCDataChannelInit;
 use webrtc::ice_transport::ice_candidate::{RTCIceCandidate, RTCIceCandidateInit};
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::peer_connection::configuration::RTCConfiguration;
@@ -108,6 +109,48 @@ impl WebRtcPeer {
             .map_err(|e| HostError::Backend(format!("set local answer failed: {e}")))?;
 
         Ok(answer.sdp)
+    }
+
+    /// Create a local data channel and generate an SDP offer.
+    pub async fn create_offer_with_data_channel(
+        &self,
+        label: &str,
+    ) -> Result<(Arc<RTCDataChannel>, String)> {
+        let data_channel = self
+            .peer
+            .create_data_channel(
+                label,
+                Some(RTCDataChannelInit {
+                    ordered: Some(true),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .map_err(|e| HostError::Backend(format!("create data channel failed: {e}")))?;
+
+        let offer = self
+            .peer
+            .create_offer(None)
+            .await
+            .map_err(|e| HostError::Backend(format!("offer create failed: {e}")))?;
+
+        self.peer
+            .set_local_description(offer.clone())
+            .await
+            .map_err(|e| HostError::Backend(format!("set local offer failed: {e}")))?;
+
+        Ok((data_channel, offer.sdp))
+    }
+
+    /// Apply an answer SDP to a previously created local offer.
+    pub async fn apply_answer(&self, sdp: &str) -> Result<()> {
+        let answer = RTCSessionDescription::answer(sdp.to_string())
+            .map_err(|e| HostError::Backend(format!("invalid answer SDP: {e}")))?;
+
+        self.peer
+            .set_remote_description(answer)
+            .await
+            .map_err(|e| HostError::Backend(format!("set remote answer failed: {e}")))
     }
 
     pub async fn add_ice_candidate(&self, candidate: RTCIceCandidateInit) -> Result<()> {
