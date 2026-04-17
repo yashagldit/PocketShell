@@ -67,6 +67,21 @@ pub enum WebRtcEvent {
         data: Vec<u8>,
         channel: Arc<RTCDataChannel>,
     },
+    AgentChannelOpened {
+        agent_id: String,
+        mobile_device_id: String,
+        channel: Arc<RTCDataChannel>,
+    },
+    AgentChannelClosed {
+        agent_id: String,
+        mobile_device_id: String,
+    },
+    AgentMessage {
+        agent_id: String,
+        mobile_device_id: String,
+        data: Vec<u8>,
+        channel: Arc<RTCDataChannel>,
+    },
 }
 
 impl std::fmt::Debug for WebRtcEvent {
@@ -146,6 +161,22 @@ impl std::fmt::Debug for WebRtcEvent {
                 .field("mobile_device_id", mobile_device_id)
                 .field("data_len", &data.len())
                 .finish(),
+            Self::AgentChannelOpened { agent_id, mobile_device_id, .. } => f
+                .debug_struct("AgentChannelOpened")
+                .field("agent_id", agent_id)
+                .field("mobile_device_id", mobile_device_id)
+                .finish(),
+            Self::AgentChannelClosed { agent_id, mobile_device_id } => f
+                .debug_struct("AgentChannelClosed")
+                .field("agent_id", agent_id)
+                .field("mobile_device_id", mobile_device_id)
+                .finish(),
+            Self::AgentMessage { agent_id, mobile_device_id, data, .. } => f
+                .debug_struct("AgentMessage")
+                .field("agent_id", agent_id)
+                .field("mobile_device_id", mobile_device_id)
+                .field("data_len", &data.len())
+                .finish(),
         }
     }
 }
@@ -163,6 +194,10 @@ pub struct WebRtcManager {
     files_channel_owners: Vec<(String, Arc<RTCDataChannel>)>, // (peer_key, channel)
     /// Control channels tracked per mobile peer for proper cleanup.
     control_channel_owners: Vec<(String, Arc<RTCDataChannel>)>, // (peer_key, channel)
+    /// Agent chat channels: one channel per `agent-{id}` label.
+    /// Tracked by `(peer_key, agent_id, channel)` so we can prune by either
+    /// peer disconnect or session close.
+    agent_channel_owners: Vec<(String, String, Arc<RTCDataChannel>)>,
     event_tx: mpsc::UnboundedSender<WebRtcEvent>,
 }
 
@@ -179,6 +214,7 @@ impl WebRtcManager {
             stats_channel_owners: Vec::new(),
             files_channel_owners: Vec::new(),
             control_channel_owners: Vec::new(),
+            agent_channel_owners: Vec::new(),
             event_tx,
         }
     }
@@ -403,6 +439,15 @@ impl WebRtcManager {
         });
     }
 
+    /// Drop any agent channels whose underlying data channel has closed. The
+    /// daemon's pump task writes via the `Arc<RTCDataChannel>` it captured at
+    /// open-time, so we don't need fan-out here — only cleanup on close.
+    pub fn prune_agent_channels(&mut self) {
+        self.agent_channel_owners.retain(|(_, _, ch)| {
+            ch.ready_state() == webrtc::data_channel::data_channel_state::RTCDataChannelState::Open
+        });
+    }
+
     pub fn close_session(&mut self, session_id: &str) {
         if let Some(channels) = self.session_channels.remove(session_id) {
             for channel in channels {
@@ -470,6 +515,18 @@ impl WebRtcManager {
             .partition(|(owner_peer_key, _)| owner_peer_key == peer_key);
         self.control_channel_owners = ctrl_remaining;
         for (_, ch) in ctrl_to_close {
+            tokio::spawn(async move {
+                let _ = ch.close().await;
+            });
+        }
+
+        // Close agent channels owned by this specific peer.
+        let (agent_to_close, agent_remaining): (Vec<_>, Vec<_>) = self
+            .agent_channel_owners
+            .drain(..)
+            .partition(|(owner_peer_key, _, _)| owner_peer_key == peer_key);
+        self.agent_channel_owners = agent_remaining;
+        for (_, _, ch) in agent_to_close {
             tokio::spawn(async move {
                 let _ = ch.close().await;
             });
@@ -573,6 +630,60 @@ impl WebRtcManager {
 
             let _ = self.event_tx.send(WebRtcEvent::ControlChannelOpened {
                 mobile_device_id: mobile_id.to_string(),
+                channel: Arc::clone(&channel),
+            });
+            return;
+        }
+
+        if let Some(agent_id) = label.strip_prefix("agent-") {
+            info!(
+                "agent data channel opened for agent {} from mobile {} peer_key={}",
+                agent_id, mobile_id, peer_key
+            );
+            let agent_id = agent_id.to_string();
+            self.agent_channel_owners.push((
+                peer_key.to_string(),
+                agent_id.clone(),
+                Arc::clone(&channel),
+            ));
+
+            let event_tx_msg = self.event_tx.clone();
+            let mid_msg = mobile_id.clone();
+            let aid_msg = agent_id.clone();
+            let ch_msg = Arc::clone(&channel);
+            channel.on_message(Box::new(move |msg: DataChannelMessage| {
+                let tx = event_tx_msg.clone();
+                let mobile = mid_msg.clone();
+                let agent = aid_msg.clone();
+                let channel = Arc::clone(&ch_msg);
+                Box::pin(async move {
+                    let _ = tx.send(WebRtcEvent::AgentMessage {
+                        agent_id: agent,
+                        mobile_device_id: mobile,
+                        data: msg.data.to_vec(),
+                        channel,
+                    });
+                })
+            }));
+
+            let event_tx = self.event_tx.clone();
+            let mid_close = mobile_id.clone();
+            let aid_close = agent_id.clone();
+            channel.on_close(Box::new(move || {
+                let tx = event_tx.clone();
+                let mobile = mid_close.clone();
+                let agent = aid_close.clone();
+                Box::pin(async move {
+                    let _ = tx.send(WebRtcEvent::AgentChannelClosed {
+                        agent_id: agent,
+                        mobile_device_id: mobile,
+                    });
+                })
+            }));
+
+            let _ = self.event_tx.send(WebRtcEvent::AgentChannelOpened {
+                agent_id,
+                mobile_device_id: mobile_id.clone(),
                 channel: Arc::clone(&channel),
             });
             return;

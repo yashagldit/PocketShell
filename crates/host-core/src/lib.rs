@@ -1,3 +1,4 @@
+pub mod agent_session;
 pub mod alerts;
 pub mod local_attach;
 pub mod api;
