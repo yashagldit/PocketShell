@@ -1,7 +1,9 @@
 use crate::error::{HostError, Result};
 use crate::models::{
-    BackendSessionInfo, HeartbeatRequest, PairingValidateRequest, PairingValidateResponse,
-    SessionState, TokenPairResponse, TrustedDeviceRecord,
+    BackendSessionInfo, HeartbeatRequest, HostInitiatedCreateRequest,
+    HostInitiatedCreateResponse, HostInitiatedDeviceAddRequest, HostInitiatedPollOutcome,
+    HostInitiatedStatusResponse, PairingValidateRequest, PairingValidateResponse, SessionState,
+    TokenPairResponse, TrustedDeviceRecord,
 };
 use crate::secure::parse_jwt_exp;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
@@ -77,6 +79,116 @@ impl BackendClient {
         res.json::<PairingValidateResponse>()
             .await
             .map_err(|e| HostError::Backend(format!("invalid host registration payload: {e}")))
+    }
+
+    /// Start a host-initiated pairing claim. No auth required.
+    pub async fn start_host_initiated(
+        &self,
+        hostname: &str,
+        platform: &str,
+        public_key: &str,
+        app_version: &str,
+    ) -> Result<HostInitiatedCreateResponse> {
+        let url = format!("{}/api/v1/pairing/host-initiated", self.base_url);
+        let payload = HostInitiatedCreateRequest {
+            hostname: hostname.to_string(),
+            platform: platform.to_string(),
+            public_key: public_key.to_string(),
+            app_version: app_version.to_string(),
+        };
+        let res = self
+            .client
+            .post(url)
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| HostError::Backend(e.to_string()))?;
+
+        if !res.status().is_success() {
+            let body = res.text().await.unwrap_or_default();
+            return Err(HostError::Backend(format!(
+                "host-initiated pairing start failed: {body}"
+            )));
+        }
+
+        res.json::<HostInitiatedCreateResponse>()
+            .await
+            .map_err(|e| HostError::Backend(format!("invalid host-initiated create payload: {e}")))
+    }
+
+    /// Start a host-initiated device-add claim. Requires host auth (Bearer access token).
+    /// Used when an already-paired host wants to add a new mobile device.
+    pub async fn start_host_initiated_device_add(
+        &self,
+        token: &str,
+        host_id: &str,
+    ) -> Result<HostInitiatedCreateResponse> {
+        let url = format!("{}/api/v1/pairing/host-initiated/device-add", self.base_url);
+        let payload = HostInitiatedDeviceAddRequest {
+            existing_host_id: host_id.to_string(),
+        };
+        let res = self
+            .client
+            .post(url)
+            .header(AUTHORIZATION, format!("Bearer {token}"))
+            .header(CONTENT_TYPE, "application/json")
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| HostError::Backend(e.to_string()))?;
+
+        if res.status() == StatusCode::UNAUTHORIZED {
+            return Err(HostError::AuthRevoked);
+        }
+
+        if !res.status().is_success() {
+            let body = res.text().await.unwrap_or_default();
+            return Err(HostError::Backend(format!(
+                "host-initiated device-add start failed: {body}"
+            )));
+        }
+
+        res.json::<HostInitiatedCreateResponse>()
+            .await
+            .map_err(|e| HostError::Backend(format!("invalid host-initiated create payload: {e}")))
+    }
+
+    /// Poll the status of a host-initiated claim. No auth required.
+    pub async fn poll_host_initiated_status(
+        &self,
+        claim_token: &str,
+    ) -> Result<HostInitiatedPollOutcome> {
+        let url = format!(
+            "{}/api/v1/pairing/host-initiated/{}/status",
+            self.base_url, claim_token
+        );
+        let res = self
+            .client
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| HostError::Backend(e.to_string()))?;
+
+        match res.status() {
+            StatusCode::GONE => Ok(HostInitiatedPollOutcome::AlreadyDelivered),
+            StatusCode::NOT_FOUND => Ok(HostInitiatedPollOutcome::Expired),
+            s if s.is_success() => {
+                let body: HostInitiatedStatusResponse = res.json().await.map_err(|e| {
+                    HostError::Backend(format!("invalid host-initiated status payload: {e}"))
+                })?;
+                if body.status == "claimed" {
+                    Ok(HostInitiatedPollOutcome::Claimed(Box::new(body)))
+                } else {
+                    Ok(HostInitiatedPollOutcome::Pending)
+                }
+            }
+            other => {
+                let body = res.text().await.unwrap_or_default();
+                Err(HostError::Backend(format!(
+                    "host-initiated poll failed ({other}): {body}"
+                )))
+            }
+        }
     }
 
     pub async fn send_heartbeat(

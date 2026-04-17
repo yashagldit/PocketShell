@@ -5,8 +5,8 @@ use host_core::audit::{write_audit_event, AuditEvent};
 use host_core::config::AppConfig;
 use host_core::daemon;
 use host_core::discovery::SessionDiscovery;
-use host_core::models::{AuthState, HostIdentity, PairingValidateRequest};
-use host_core::secure::parse_jwt_exp;
+use host_core::models::{AuthState, HostIdentity, HostInitiatedPollOutcome, PairingValidateRequest};
+use host_core::secure::{parse_jwt_exp, require_refresh_token, token_is_expiring};
 use host_core::stats::StatsCollector;
 use host_core::store::StateStore;
 use nix::sys::signal::{kill, Signal};
@@ -29,15 +29,22 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Register this host using a pairing code from the mobile app.
-    /// If already paired, adds the new device to this host.
+    /// Pair this host with the mobile app.
+    ///
+    /// With no args: displays a QR code for the mobile app to scan (new-host if
+    /// not yet paired, device-add if already paired).
+    /// With a code: validates the pairing code from the mobile app (legacy flow;
+    /// also auto-detects new-host vs device-add from local state).
     /// Use --reset to wipe existing pairing and start fresh (e.g. switching accounts).
     Pair {
-        /// Pairing code displayed in the mobile app
+        /// Pairing code displayed in the mobile app (optional — omit for QR flow)
         code: Option<String>,
         /// Clear existing host identity before pairing (use when switching accounts)
         #[arg(long)]
         reset: bool,
+        /// Deprecated: QR is now the default. Accepted for backward compatibility.
+        #[arg(long, hide = true)]
+        show_qr: bool,
     },
     Logout {
         #[arg(long)]
@@ -112,7 +119,16 @@ async fn main() -> Result<()> {
     let config = AppConfig::from_env();
 
     match cli.command {
-        Commands::Pair { code, reset } => pair(config, code, reset).await,
+        Commands::Pair { code, reset, show_qr: _ } => {
+            // QR is now the default. --show-qr is accepted (no-op) for backward compat.
+            // `code.is_some()` → legacy code-entry flow (preserves existing behavior).
+            // Otherwise → QR flow, which auto-picks new-host vs device-add from state.
+            if code.is_some() {
+                pair(config, code, reset).await
+            } else {
+                pair_qr(config, reset).await
+            }
+        }
         Commands::Logout { reset } => logout(reset),
         Commands::Status => status(config).await,
         Commands::Devices { command } => devices(config, command).await,
@@ -294,6 +310,381 @@ async fn pair(config: AppConfig, code: Option<String>, reset: bool) -> Result<()
         }
     }
 
+    Ok(())
+}
+
+/// Dispatcher for the QR-based pairing flow. Picks new-host vs device-add based
+/// on local state and the `--reset` flag:
+///   reset → wipe identity, then new-host
+///   paired → device-add
+///   not paired → new-host
+async fn pair_qr(config: AppConfig, reset: bool) -> Result<()> {
+    let mut store = StateStore::load().context("loading local state")?;
+
+    if reset && store.state.host.is_some() {
+        println!("resetting existing host identity...");
+        store.state = Default::default();
+        store.save().context("persisting reset state")?;
+    }
+
+    if store.state.host.is_some() {
+        pair_qr_device_add(config, store).await
+    } else {
+        pair_qr_new_host(config, store).await
+    }
+}
+
+async fn pair_qr_new_host(config: AppConfig, mut store: StateStore) -> Result<()> {
+    use qrcode::render::unicode;
+    use qrcode::{EcLevel, QrCode};
+
+    // Always new-host: generate a fresh keypair
+    let (public_key, private_key) = generate_keypair();
+
+    let hostname = std::env::var("HOSTNAME")
+        .unwrap_or_else(|_| whoami::fallible::hostname().unwrap_or_else(|_| "unknown".to_string()));
+    let platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
+
+    println!("Requesting pairing claim from backend...");
+    let backend = BackendClient::new(config.backend_base_url.clone());
+    let claim = backend
+        .start_host_initiated(&hostname, &platform, &public_key, &config.app_version)
+        .await
+        .context("starting host-initiated pairing")?;
+
+    // Build QR payload. Short keys used to keep QR small for low EC level.
+    let payload = serde_json::json!({
+        "v": 1,
+        "mode": "host_init",
+        "token": claim.claim_token,
+        "pubkey": public_key,
+        "hostname": hostname,
+        "platform": platform,
+        "bu": config.backend_base_url,
+    });
+    let payload_str = serde_json::to_string(&payload)?;
+
+    let code = QrCode::with_error_correction_level(payload_str.as_bytes(), EcLevel::L)
+        .context("rendering QR code")?;
+    let rendered = code
+        .render::<unicode::Dense1x2>()
+        .dark_color(unicode::Dense1x2::Light)
+        .light_color(unicode::Dense1x2::Dark)
+        .build();
+
+    println!();
+    println!("{rendered}");
+    println!();
+    println!(
+        "QR expires at {}. Scan from the PocketShell mobile app (Hosts -> Add via QR).",
+        claim.expires_at
+    );
+    println!();
+
+    // Poll every 2s up to 5 minutes
+    const POLL_INTERVAL: Duration = Duration::from_secs(2);
+    const MAX_ATTEMPTS: usize = 150; // 5 minutes / 2s
+
+    print!("Waiting for mobile device to scan");
+    let _ = io::stdout().flush();
+
+    let mut claimed: Option<host_core::models::HostInitiatedStatusResponse> = None;
+    for _ in 0..MAX_ATTEMPTS {
+        sleep(POLL_INTERVAL).await;
+        match backend.poll_host_initiated_status(&claim.claim_token).await {
+            Ok(HostInitiatedPollOutcome::Pending) => {
+                print!(".");
+                let _ = io::stdout().flush();
+            }
+            Ok(HostInitiatedPollOutcome::Claimed(body)) => {
+                println!();
+                claimed = Some(*body);
+                break;
+            }
+            Ok(HostInitiatedPollOutcome::AlreadyDelivered) => {
+                println!();
+                return Err(anyhow!(
+                    "pairing claim was already delivered (possible race or replay)"
+                ));
+            }
+            Ok(HostInitiatedPollOutcome::Expired) => {
+                println!();
+                return Err(anyhow!(
+                    "pairing claim expired or is invalid — please retry"
+                ));
+            }
+            Err(e) => {
+                // Transient errors: keep trying until timeout
+                tracing::debug!("poll error: {e}");
+                print!("?");
+                let _ = io::stdout().flush();
+            }
+        }
+    }
+
+    let response = claimed.ok_or_else(|| {
+        anyhow!("timed out waiting for mobile device to scan — please retry")
+    })?;
+
+    let host = response
+        .host
+        .ok_or_else(|| anyhow!("claimed response missing host"))?;
+    let access_token = response
+        .access_token
+        .ok_or_else(|| anyhow!("claimed response missing access_token"))?;
+    let refresh_token = response
+        .refresh_token
+        .ok_or_else(|| anyhow!("claimed response missing refresh_token"))?;
+
+    // Persist auth + host identity
+    store.state.auth = Some(AuthState {
+        access_token: access_token.clone(),
+        refresh_token,
+        access_expires_at: parse_jwt_exp(&access_token),
+    });
+    store.state.host = Some(HostIdentity {
+        host_id: host.id.clone(),
+        user_id: host.user_id.clone(),
+        hostname,
+        platform,
+        app_version: config.app_version.clone(),
+        public_key,
+        private_key,
+        registered_at: chrono::Utc::now(),
+    });
+    store.save().context("persisting local state")?;
+
+    let _ = write_audit_event(AuditEvent {
+        event_type: "login_success".to_string(),
+        host_id: Some(host.id.clone()),
+        ..AuditEvent::new("login_success")
+    });
+
+    // Add the trusted device (mirror existing pair flow)
+    let host_id = host.id.clone();
+    if let (Some(device_key), Some(mid)) = (
+        response.device_public_key.as_ref(),
+        response.mobile_device_id.as_ref(),
+    ) {
+        if let Ok(devices) = backend.list_trusted_devices(&access_token, &host_id).await {
+            if let Some(mut paired_device) = devices.into_iter().find(|d| {
+                d.mobile_device_id == *mid
+                    && d.approved_at.is_some()
+                    && d.revoked_at.is_none()
+            }) {
+                paired_device.device_public_key = Some(device_key.clone());
+                store.add_trusted_device(paired_device);
+                store
+                    .save()
+                    .context("persisting paired device with pinned key")?;
+            }
+        }
+    }
+
+    println!("pairing successful — host registered as {}", host.hostname);
+    println!("host_id: {}", host.id);
+
+    // Ensure daemon is running
+    if !host_core::service::is_service_running() {
+        print!("installing service...");
+        let _ = io::stdout().flush();
+        match host_core::service::install_and_start() {
+            Ok(host_core::service::ServiceStatus::Installed) => {
+                println!(" done");
+                println!("daemon installed as a system service and started");
+            }
+            Ok(host_core::service::ServiceStatus::AlreadyRunning) => {
+                println!(" already running");
+            }
+            Ok(host_core::service::ServiceStatus::StartedDaemon) => {
+                println!(" done");
+                println!("daemon started in background");
+            }
+            Err(e) => {
+                println!(" failed ({e})");
+                println!("start the daemon manually with: pocketshell daemon start");
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Device-add QR flow: an already-paired host displays a QR to enroll a new
+/// mobile device. Uses the host's existing keypair + access token.
+async fn pair_qr_device_add(config: AppConfig, mut store: StateStore) -> Result<()> {
+    use qrcode::render::unicode;
+    use qrcode::{EcLevel, QrCode};
+
+    let backend = BackendClient::new(config.backend_base_url.clone());
+
+    // Refresh host access token if it's expiring — mirrors daemon logic.
+    refresh_auth_if_needed(&backend, &mut store).await.map_err(|e| {
+        anyhow!(
+            "host auth expired — re-pair with: pocketshell pair --reset (detail: {e})"
+        )
+    })?;
+
+    let host = store
+        .state
+        .host
+        .clone()
+        .ok_or_else(|| anyhow!("no host identity — cannot run device-add flow"))?;
+    let access_token = store.access_token()?.to_string();
+
+    println!("Requesting device-add pairing claim from backend...");
+    let claim = backend
+        .start_host_initiated_device_add(&access_token, &host.host_id)
+        .await
+        .context("starting host-initiated device-add")?;
+
+    // QR payload includes host_id (device-add marker) and the existing host's
+    // pubkey so mobile can verify continuity with any previously pinned key.
+    let payload = serde_json::json!({
+        "v": 1,
+        "mode": "host_init",
+        "token": claim.claim_token,
+        "pubkey": host.public_key,
+        "hostname": host.hostname,
+        "platform": host.platform,
+        "bu": config.backend_base_url,
+        "host_id": host.host_id,
+    });
+    let payload_str = serde_json::to_string(&payload)?;
+
+    let code = QrCode::with_error_correction_level(payload_str.as_bytes(), EcLevel::L)
+        .context("rendering QR code")?;
+    let rendered = code
+        .render::<unicode::Dense1x2>()
+        .dark_color(unicode::Dense1x2::Light)
+        .light_color(unicode::Dense1x2::Dark)
+        .build();
+
+    println!();
+    println!("{rendered}");
+    println!();
+    println!(
+        "Scan to add this device to existing host {}. Device will be approved automatically.",
+        host.hostname
+    );
+    println!("QR expires at {}.", claim.expires_at);
+    println!();
+
+    const POLL_INTERVAL: Duration = Duration::from_secs(2);
+    const MAX_ATTEMPTS: usize = 150; // 5 minutes / 2s
+
+    print!("Waiting for mobile device to scan");
+    let _ = io::stdout().flush();
+
+    let mut claimed: Option<host_core::models::HostInitiatedStatusResponse> = None;
+    for _ in 0..MAX_ATTEMPTS {
+        sleep(POLL_INTERVAL).await;
+        match backend.poll_host_initiated_status(&claim.claim_token).await {
+            Ok(HostInitiatedPollOutcome::Pending) => {
+                print!(".");
+                let _ = io::stdout().flush();
+            }
+            Ok(HostInitiatedPollOutcome::Claimed(body)) => {
+                println!();
+                claimed = Some(*body);
+                break;
+            }
+            Ok(HostInitiatedPollOutcome::AlreadyDelivered) => {
+                println!();
+                return Err(anyhow!(
+                    "pairing claim was already delivered (possible race or replay)"
+                ));
+            }
+            Ok(HostInitiatedPollOutcome::Expired) => {
+                println!();
+                return Err(anyhow!(
+                    "pairing claim expired or is invalid — please retry"
+                ));
+            }
+            Err(e) => {
+                tracing::debug!("poll error: {e}");
+                print!("?");
+                let _ = io::stdout().flush();
+            }
+        }
+    }
+
+    let response = claimed
+        .ok_or_else(|| anyhow!("timed out waiting for mobile device to scan — please retry"))?;
+
+    // Sanity-check the claim mode — device-add claims must not come back as new_host.
+    if let Some(ref mode) = response.mode {
+        if mode != "device_add" {
+            return Err(anyhow!(
+                "backend returned unexpected claim mode '{}' for device-add flow",
+                mode
+            ));
+        }
+    }
+
+    let mobile_device_id = response
+        .mobile_device_id
+        .ok_or_else(|| anyhow!("claimed response missing mobile_device_id"))?;
+    let device_public_key = response.device_public_key.clone();
+
+    // Sync trusted-device list from backend and persist the newly added device.
+    if let Ok(devices) = backend
+        .list_trusted_devices(&access_token, &host.host_id)
+        .await
+    {
+        if let Some(mut paired_device) = devices.into_iter().find(|d| {
+            d.mobile_device_id == mobile_device_id
+                && d.approved_at.is_some()
+                && d.revoked_at.is_none()
+        }) {
+            if let Some(ref key) = device_public_key {
+                paired_device.device_public_key = Some(key.clone());
+            }
+            store.add_trusted_device(paired_device);
+            store
+                .save()
+                .context("persisting paired device with pinned key")?;
+        }
+    }
+
+    let _ = write_audit_event(AuditEvent {
+        event_type: "device_approved".to_string(),
+        mobile_device_id: Some(mobile_device_id.clone()),
+        host_id: Some(host.host_id.clone()),
+        ..AuditEvent::new("device_approved")
+    });
+
+    println!("device added: {mobile_device_id}");
+    println!("the device can now connect to this host");
+
+    Ok(())
+}
+
+/// Refresh the host's access token if it's close to expiring. Mirrors the
+/// daemon's `refresh_auth_if_needed` so CLI device-add works when the daemon
+/// isn't the one driving refresh.
+async fn refresh_auth_if_needed(
+    backend: &BackendClient,
+    store: &mut StateStore,
+) -> Result<()> {
+    let Some(auth) = store.state.auth.clone() else {
+        return Err(anyhow!("not logged in"));
+    };
+    if !token_is_expiring(auth.access_expires_at, 60) {
+        return Ok(());
+    }
+    let refresh = require_refresh_token(&auth).map_err(|e| anyhow!(e.to_string()))?;
+    let tokens = backend
+        .refresh_tokens(&refresh)
+        .await
+        .map_err(|e| anyhow!(e.to_string()))?;
+    let expires = parse_jwt_exp(&tokens.access_token);
+    store.state.auth = Some(AuthState {
+        access_token: tokens.access_token,
+        refresh_token: tokens.refresh_token,
+        access_expires_at: expires,
+    });
+    store.save().context("persisting refreshed tokens")?;
     Ok(())
 }
 

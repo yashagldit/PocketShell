@@ -38,6 +38,60 @@ use webrtc::data_channel::data_channel_message::DataChannelMessage;
 /// Whether the backend kill-action is honored.
 const HONOR_KILL_ACTION: bool = true;
 
+/// Build a signaling payload JSON value for an outbound SDP, attaching an
+/// ED25519 signature binding the SDP to the host's identity key so the mobile
+/// client can detect a MITM rewriting the DTLS fingerprint.
+///
+/// `sdp_type` MUST be `"offer"` or `"answer"`. `extra` is merged into the
+/// resulting JSON object (e.g. to carry `transfer_id`, `offer_id`, etc.).
+///
+/// If the host's private key is unavailable or signing fails, returns a plain
+/// SDP payload (no signature) — preserves compatibility with legacy-paired
+/// hosts where the private key may not be stored locally.
+fn build_signed_sdp_payload(
+    store: &StateStore,
+    sdp: &str,
+    sdp_type: &str,
+    extra: Vec<(&str, serde_json::Value)>,
+) -> serde_json::Value {
+    let mut obj = serde_json::Map::new();
+    obj.insert("sdp".to_string(), serde_json::Value::String(sdp.to_string()));
+    obj.insert(
+        "type".to_string(),
+        serde_json::Value::String(sdp_type.to_string()),
+    );
+
+    if let Some(host) = store.state.host.as_ref() {
+        if !host.private_key.is_empty() {
+            match signaling_crypto::sign_sdp(&host.private_key, sdp, sdp_type) {
+                Ok(signed) => {
+                    obj.insert(
+                        "sdp_sig".to_string(),
+                        serde_json::Value::String(signed.sig_b64),
+                    );
+                    obj.insert(
+                        "sdp_sig_nonce".to_string(),
+                        serde_json::Value::String(signed.nonce_b64),
+                    );
+                    obj.insert(
+                        "sdp_sig_ts".to_string(),
+                        serde_json::Value::Number(signed.ts.into()),
+                    );
+                }
+                Err(e) => {
+                    warn!("failed to sign SDP ({}): {}", sdp_type, e);
+                }
+            }
+        }
+    }
+
+    for (k, v) in extra {
+        obj.insert(k.to_string(), v);
+    }
+
+    serde_json::Value::Object(obj)
+}
+
 /// In-progress file transfer from a mobile device.
 struct PendingFileTransfer {
     request_id: String,
@@ -2432,6 +2486,96 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                 }
                             }
                         }
+                        WebRtcEvent::ControlChannelOpened { mobile_device_id, channel } => {
+                            info!("control WebRTC channel opened for mobile {}", mobile_device_id);
+                            let control_channel_key = format!("control:{mobile_device_id}");
+                            let mut nonce_bytes = [0u8; 32];
+                            rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
+                            let nonce_b64 = base64::engine::general_purpose::STANDARD.encode(&nonce_bytes);
+                            pending_auth.insert(control_channel_key.clone(), (nonce_b64.clone(), mobile_device_id.clone()));
+                            let challenge = build_auth_message(&serde_json::json!({
+                                "type": "auth_challenge",
+                                "nonce": nonce_b64,
+                            }));
+                            if let Err(err) = channel.send(&bytes::Bytes::from(challenge)).await {
+                                warn!("control auth challenge send failed for device {}: {}", mobile_device_id, err);
+                            } else {
+                                info!("sent control auth challenge for device {}", mobile_device_id);
+                            }
+                        }
+                        WebRtcEvent::ControlChannelClosed { mobile_device_id } => {
+                            info!("control WebRTC channel closed for mobile {}", mobile_device_id);
+                            let control_channel_key = format!("control:{mobile_device_id}");
+                            authenticated_channels.remove(&control_channel_key);
+                            pending_auth.remove(&control_channel_key);
+                            webrtc_mgr.prune_control_channels();
+                        }
+                        WebRtcEvent::ControlMessage { mobile_device_id, data, channel } => {
+                            let control_channel_key = format!("control:{mobile_device_id}");
+                            // Handle \x00PSAU auth protocol messages.
+                            if data.len() > 5 && data[0] == 0x00 && &data[1..5] == b"PSAU" {
+                                if let Ok(json_str) = std::str::from_utf8(&data[5..]) {
+                                    if let Ok(msg) = serde_json::from_str::<serde_json::Value>(json_str) {
+                                        let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                                        if msg_type == "auth_response" {
+                                            let result = verify_device_auth(
+                                                &msg, &control_channel_key, &mobile_device_id,
+                                                &mut pending_auth, &store,
+                                            );
+                                            let response = build_auth_message(&serde_json::json!({
+                                                "type": "auth_result",
+                                                "ok": result.is_ok(),
+                                                "reason": result.as_ref().err(),
+                                            }));
+                                            if let Err(err) = channel.send(&bytes::Bytes::from(response)).await {
+                                                warn!("control auth result send failed for device {}: {}", mobile_device_id, err);
+                                            }
+                                            if result.is_ok() {
+                                                authenticated_channels.insert(control_channel_key.clone());
+                                                info!("device {} authenticated for control channel", mobile_device_id);
+                                                // Send ready so the mobile knows it can start issuing RPCs.
+                                                let ready = serde_json::json!({
+                                                    "channel": "control",
+                                                    "event": "ready",
+                                                });
+                                                match serde_json::to_vec(&ready) {
+                                                    Ok(bytes) => {
+                                                        if let Err(err) = channel.send(&bytes::Bytes::from(bytes)).await {
+                                                            warn!("control ready send failed for device {}: {}", mobile_device_id, err);
+                                                        }
+                                                    }
+                                                    Err(err) => warn!("control ready encode failed: {}", err),
+                                                }
+                                            } else {
+                                                warn!("control auth failed for device {}: {:?}", mobile_device_id, result.err());
+                                            }
+                                        }
+                                    }
+                                }
+                            } else if !authenticated_channels.contains(&control_channel_key) {
+                                warn!("dropping unauthenticated control message from device {}", mobile_device_id);
+                            } else if let Some(req) = crate::rpc::parse_request(&data) {
+                                let method = req.method.clone();
+                                let req_id = req.id.clone();
+                                // Dispatch on a blocking-friendly future; RPC handlers are cheap
+                                // and synchronous, but spawn to avoid holding the event loop
+                                // if future handlers block (e.g. on command execution).
+                                let ch = Arc::clone(&channel);
+                                tokio::spawn(async move {
+                                    let resp = crate::rpc::dispatch(req).await;
+                                    match serde_json::to_vec(&resp) {
+                                        Ok(bytes) => {
+                                            if let Err(err) = ch.send(&bytes::Bytes::from(bytes)).await {
+                                                warn!("control RPC response send failed for method={} id={}: {}", method, req_id, err);
+                                            }
+                                        }
+                                        Err(err) => warn!("control RPC response encode failed: {}", err),
+                                    }
+                                });
+                            } else {
+                                warn!("control RPC parse failed from device {} (bytes={})", mobile_device_id, data.len());
+                            }
+                        }
                         WebRtcEvent::IceCandidate { peer_key, mobile_device_id, candidate_json } => {
                             if let Ok(candidate_value) = serde_json::from_str::<serde_json::Value>(&candidate_json) {
                                 if peer_key.starts_with("files:") {
@@ -2859,16 +3003,21 @@ async fn handle_signal(
                 "mobile_device_id".to_string(),
                 serde_json::json!(mobile_device_id),
             );
+            let offer_payload = build_signed_sdp_payload(
+                store,
+                &offer_sdp,
+                "offer",
+                vec![
+                    ("transfer_id", serde_json::json!(transfer_id)),
+                    ("offer_id", serde_json::json!(offer_id)),
+                    ("dst_path", serde_json::json!(dst_path)),
+                    ("total_size", serde_json::json!(total_size)),
+                ],
+            );
             let offer_msg = SignalEnvelope {
                 message_type: "host_transfer_offer".to_string(),
                 session_id: None,
-                payload: Some(serde_json::json!({
-                    "transfer_id": transfer_id,
-                    "offer_id": offer_id,
-                    "sdp": offer_sdp,
-                    "dst_path": dst_path,
-                    "total_size": total_size,
-                })),
+                payload: Some(offer_payload),
                 state: None,
                 accepted: None,
                 reason: None,
@@ -2967,14 +3116,19 @@ async fn handle_signal(
                 "mobile_device_id".to_string(),
                 serde_json::json!(mobile_device_id),
             );
+            let answer_payload = build_signed_sdp_payload(
+                store,
+                &answer_sdp,
+                "answer",
+                vec![
+                    ("transfer_id", serde_json::json!(transfer_id)),
+                    ("offer_id", serde_json::json!(offer_id)),
+                ],
+            );
             let answer_msg = SignalEnvelope {
                 message_type: "host_transfer_answer".to_string(),
                 session_id: None,
-                payload: Some(serde_json::json!({
-                    "transfer_id": transfer_id,
-                    "offer_id": offer_id,
-                    "sdp": answer_sdp,
-                })),
+                payload: Some(answer_payload),
                 state: None,
                 accepted: None,
                 reason: None,
@@ -3759,10 +3913,16 @@ async fn handle_signal(
                                         "target_mobile_device_id".to_string(),
                                         serde_json::json!(mobile_device_id),
                                     );
+                                    let answer_payload = build_signed_sdp_payload(
+                                        store,
+                                        &answer_sdp,
+                                        "answer",
+                                        vec![],
+                                    );
                                     let answer_msg = SignalEnvelope {
                                         message_type: "session_answer".to_string(),
                                         session_id: msg.session_id.clone(),
-                                        payload: Some(serde_json::json!({ "sdp": answer_sdp })),
+                                        payload: Some(answer_payload),
                                         state: None,
                                         accepted: None,
                                         reason: None,
@@ -3855,10 +4015,16 @@ async fn handle_signal(
                                         "mobile_device_id".to_string(),
                                         serde_json::json!(mobile_device_id),
                                     );
+                                    let answer_payload = build_signed_sdp_payload(
+                                        store,
+                                        &answer_sdp,
+                                        "answer",
+                                        vec![],
+                                    );
                                     let answer_msg = SignalEnvelope {
                                         message_type: "stats_answer".to_string(),
                                         session_id: None,
-                                        payload: Some(serde_json::json!({ "sdp": answer_sdp })),
+                                        payload: Some(answer_payload),
                                         state: None,
                                         accepted: None,
                                         reason: None,
@@ -3930,13 +4096,16 @@ async fn handle_signal(
                                 Ok(answer_sdp) if !answer_sdp.is_empty() => {
                                     let mut extra = std::collections::HashMap::new();
                                     extra.insert("host_id".to_string(), serde_json::json!(host_id));
+                                    let answer_payload = build_signed_sdp_payload(
+                                        store,
+                                        &answer_sdp,
+                                        "answer",
+                                        vec![("offer_id", serde_json::json!(offer_id))],
+                                    );
                                     let answer_msg = SignalEnvelope {
                                         message_type: "files_answer".to_string(),
                                         session_id: None,
-                                        payload: Some(serde_json::json!({
-                                            "sdp": answer_sdp,
-                                            "offer_id": offer_id,
-                                        })),
+                                        payload: Some(answer_payload),
                                         state: None,
                                         accepted: None,
                                         reason: None,

@@ -4,12 +4,18 @@ use chacha20poly1305::{
     aead::{Aead, KeyInit},
     ChaCha20Poly1305, Nonce,
 };
+use ed25519_dalek::{Signer, SigningKey};
 use hkdf::Hkdf;
 use rand::rngs::OsRng;
+use rand::RngCore;
 use sha2::Sha256;
 use x25519_dalek::{EphemeralSecret, PublicKey, SharedSecret};
 
 const PROTOCOL_INFO_PREFIX: &[u8] = b"pocketshell-files-v1";
+
+/// Shared signing-context prefix for signed SDP envelopes. MUST match the
+/// mobile-side constant in `mobile/src/services/sdpSignature.ts`.
+pub const SDP_SIGNING_PREFIX: &str = "pocketshell-sdp-v1";
 
 /// Direction flag for nonce construction — prevents nonce collision between sides.
 const DIRECTION_HOST_TO_MOBILE: u32 = 0x00000001;
@@ -208,9 +214,106 @@ pub fn parse_x25519_public_key(b64: &str) -> Result<PublicKey> {
     Ok(PublicKey::from(arr))
 }
 
+/// Signed-SDP envelope fields, produced by `sign_sdp` and emitted alongside
+/// the raw SDP in the signaling payload.
+#[derive(Debug, Clone)]
+pub struct SignedSdp {
+    pub sig_b64: String,
+    pub nonce_b64: String,
+    pub ts: i64,
+}
+
+fn canonical_signing_payload(sdp_type: &str, nonce_b64: &str, ts: i64, sdp: &str) -> String {
+    format!(
+        "{}|{}|{}|{}|{}",
+        SDP_SIGNING_PREFIX, sdp_type, nonce_b64, ts, sdp
+    )
+}
+
+fn parse_ed25519_signing_key(private_key_b64: &str) -> Result<SigningKey> {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(private_key_b64)
+        .map_err(|e| anyhow!("invalid base64 for ed25519 private key: {}", e))?;
+    if bytes.len() != 32 {
+        return Err(anyhow!(
+            "ed25519 private key must be 32 bytes, got {}",
+            bytes.len()
+        ));
+    }
+    let mut arr: zeroize::Zeroizing<[u8; 32]> = zeroize::Zeroizing::new([0u8; 32]);
+    arr.copy_from_slice(&bytes);
+    Ok(SigningKey::from_bytes(&*arr))
+}
+
+/// Sign an outgoing SDP offer/answer with the host's ED25519 identity key.
+///
+/// `private_key_b64` is the base64-encoded 32-byte ED25519 secret (the `private_key`
+/// field stored on `HostIdentity`). `sdp_type` MUST be `"offer"` or `"answer"`.
+///
+/// Returns the signature, a fresh 16-byte nonce, and a Unix timestamp — all of
+/// which are echoed in the signaling envelope alongside the SDP so the mobile
+/// client can verify.
+pub fn sign_sdp(private_key_b64: &str, sdp: &str, sdp_type: &str) -> Result<SignedSdp> {
+    let signing_key = parse_ed25519_signing_key(private_key_b64)?;
+
+    let mut nonce = [0u8; 16];
+    OsRng.fill_bytes(&mut nonce);
+    let nonce_b64 = base64::engine::general_purpose::STANDARD.encode(nonce);
+    let ts = chrono::Utc::now().timestamp();
+
+    let payload = canonical_signing_payload(sdp_type, &nonce_b64, ts, sdp);
+    let sig = signing_key.sign(payload.as_bytes());
+    let sig_b64 = base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
+
+    Ok(SignedSdp {
+        sig_b64,
+        nonce_b64,
+        ts,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+
+    #[test]
+    fn test_sign_sdp_roundtrip() {
+        let sk = SigningKey::generate(&mut OsRng);
+        let vk: VerifyingKey = sk.verifying_key();
+
+        let sk_b64 = base64::engine::general_purpose::STANDARD.encode(sk.to_bytes());
+        let sdp = "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=fingerprint:sha-256 AA:BB\r\n";
+
+        let signed = sign_sdp(&sk_b64, sdp, "answer").unwrap();
+
+        // Verify using the same canonical payload construction.
+        let canon = canonical_signing_payload("answer", &signed.nonce_b64, signed.ts, sdp);
+        let sig_bytes = base64::engine::general_purpose::STANDARD
+            .decode(&signed.sig_b64)
+            .unwrap();
+        let sig = Signature::from_slice(&sig_bytes).unwrap();
+        vk.verify(canon.as_bytes(), &sig).unwrap();
+
+        // Tampering the sdp must break the signature.
+        let bad = canonical_signing_payload("answer", &signed.nonce_b64, signed.ts, "different");
+        assert!(vk.verify(bad.as_bytes(), &sig).is_err());
+
+        // Nonce is 16 bytes = 24 base64 chars (with '=' padding).
+        let n = base64::engine::general_purpose::STANDARD
+            .decode(&signed.nonce_b64)
+            .unwrap();
+        assert_eq!(n.len(), 16);
+    }
+
+    #[test]
+    fn test_sign_sdp_rejects_bad_key() {
+        // Not base64
+        assert!(sign_sdp("!!not-base64!!", "sdp", "offer").is_err());
+        // Wrong length
+        let short = base64::engine::general_purpose::STANDARD.encode(&[0u8; 16]);
+        assert!(sign_sdp(&short, "sdp", "offer").is_err());
+    }
 
     #[test]
     fn test_key_exchange_and_encrypt_decrypt() {

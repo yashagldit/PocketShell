@@ -55,6 +55,18 @@ pub enum WebRtcEvent {
         data: Vec<u8>,
         channel: Arc<RTCDataChannel>,
     },
+    ControlChannelOpened {
+        mobile_device_id: String,
+        channel: Arc<RTCDataChannel>,
+    },
+    ControlChannelClosed {
+        mobile_device_id: String,
+    },
+    ControlMessage {
+        mobile_device_id: String,
+        data: Vec<u8>,
+        channel: Arc<RTCDataChannel>,
+    },
 }
 
 impl std::fmt::Debug for WebRtcEvent {
@@ -121,6 +133,19 @@ impl std::fmt::Debug for WebRtcEvent {
                 .field("mobile_device_id", mobile_device_id)
                 .field("data_len", &data.len())
                 .finish(),
+            Self::ControlChannelOpened { mobile_device_id, .. } => f
+                .debug_struct("ControlChannelOpened")
+                .field("mobile_device_id", mobile_device_id)
+                .finish(),
+            Self::ControlChannelClosed { mobile_device_id } => f
+                .debug_struct("ControlChannelClosed")
+                .field("mobile_device_id", mobile_device_id)
+                .finish(),
+            Self::ControlMessage { mobile_device_id, data, .. } => f
+                .debug_struct("ControlMessage")
+                .field("mobile_device_id", mobile_device_id)
+                .field("data_len", &data.len())
+                .finish(),
         }
     }
 }
@@ -136,6 +161,8 @@ pub struct WebRtcManager {
     stats_channel_owners: Vec<(String, Arc<RTCDataChannel>)>, // (peer_key, channel)
     /// Files channels tracked per mobile peer for proper cleanup.
     files_channel_owners: Vec<(String, Arc<RTCDataChannel>)>, // (peer_key, channel)
+    /// Control channels tracked per mobile peer for proper cleanup.
+    control_channel_owners: Vec<(String, Arc<RTCDataChannel>)>, // (peer_key, channel)
     event_tx: mpsc::UnboundedSender<WebRtcEvent>,
 }
 
@@ -151,6 +178,7 @@ impl WebRtcManager {
             channel_owners: Vec::new(),
             stats_channel_owners: Vec::new(),
             files_channel_owners: Vec::new(),
+            control_channel_owners: Vec::new(),
             event_tx,
         }
     }
@@ -368,6 +396,13 @@ impl WebRtcManager {
         });
     }
 
+    /// Remove closed control channels (called when ControlChannelClosed event fires).
+    pub fn prune_control_channels(&mut self) {
+        self.control_channel_owners.retain(|(_, ch)| {
+            ch.ready_state() == webrtc::data_channel::data_channel_state::RTCDataChannelState::Open
+        });
+    }
+
     pub fn close_session(&mut self, session_id: &str) {
         if let Some(channels) = self.session_channels.remove(session_id) {
             for channel in channels {
@@ -427,6 +462,18 @@ impl WebRtcManager {
                 let _ = ch.close().await;
             });
         }
+
+        // Close control channels owned by this specific peer.
+        let (ctrl_to_close, ctrl_remaining): (Vec<_>, Vec<_>) = self
+            .control_channel_owners
+            .drain(..)
+            .partition(|(owner_peer_key, _)| owner_peer_key == peer_key);
+        self.control_channel_owners = ctrl_remaining;
+        for (_, ch) in ctrl_to_close {
+            tokio::spawn(async move {
+                let _ = ch.close().await;
+            });
+        }
     }
 
     pub async fn close_all(&mut self) {
@@ -482,6 +529,49 @@ impl WebRtcManager {
 
             let _ = self.event_tx.send(WebRtcEvent::StatsChannelOpened {
                 host_id: host_id.to_string(),
+                mobile_device_id: mobile_id.to_string(),
+                channel: Arc::clone(&channel),
+            });
+            return;
+        }
+
+        if label.starts_with("control-") {
+            info!(
+                "control data channel opened from mobile {} peer_key={}",
+                mobile_id, peer_key
+            );
+            self.control_channel_owners
+                .push((peer_key.to_string(), Arc::clone(&channel)));
+
+            let event_tx_msg = self.event_tx.clone();
+            let mid = mobile_id.to_string();
+            let ch = Arc::clone(&channel);
+            channel.on_message(Box::new(move |msg: DataChannelMessage| {
+                let tx = event_tx_msg.clone();
+                let mobile = mid.clone();
+                let channel = Arc::clone(&ch);
+                Box::pin(async move {
+                    let _ = tx.send(WebRtcEvent::ControlMessage {
+                        mobile_device_id: mobile,
+                        data: msg.data.to_vec(),
+                        channel,
+                    });
+                })
+            }));
+
+            let event_tx = self.event_tx.clone();
+            let mid = mobile_id.to_string();
+            channel.on_close(Box::new(move || {
+                let tx = event_tx.clone();
+                let mobile = mid.clone();
+                Box::pin(async move {
+                    let _ = tx.send(WebRtcEvent::ControlChannelClosed {
+                        mobile_device_id: mobile,
+                    });
+                })
+            }));
+
+            let _ = self.event_tx.send(WebRtcEvent::ControlChannelOpened {
                 mobile_device_id: mobile_id.to_string(),
                 channel: Arc::clone(&channel),
             });

@@ -86,6 +86,54 @@ pub struct PairingValidateResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HostInitiatedCreateRequest {
+    pub hostname: String,
+    pub platform: String,
+    pub public_key: String,
+    pub app_version: String,
+}
+
+/// Body for the host-authenticated device-add endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HostInitiatedDeviceAddRequest {
+    pub existing_host_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HostInitiatedCreateResponse {
+    pub claim_token: String,
+    pub expires_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HostInitiatedStatusResponse {
+    pub status: String,
+    /// "new_host" | "device_add" — populated by backend on claimed responses.
+    #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
+    pub host: Option<HostApiResponse>,
+    #[serde(default)]
+    pub access_token: Option<String>,
+    #[serde(default)]
+    pub refresh_token: Option<String>,
+    #[serde(default)]
+    pub mobile_device_id: Option<String>,
+    #[serde(default)]
+    pub device_public_key: Option<String>,
+}
+
+/// Result of polling the host-initiated pairing status endpoint.
+pub enum HostInitiatedPollOutcome {
+    Pending,
+    Claimed(Box<HostInitiatedStatusResponse>),
+    /// 410 Gone — claim was already delivered (or consumed).
+    AlreadyDelivered,
+    /// 404 — claim expired or invalid.
+    Expired,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrustedDeviceRecord {
     pub id: String,
     pub host_id: String,
