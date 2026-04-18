@@ -218,6 +218,34 @@ pub struct SpawnConfig {
     /// channel-label id here so the session can be looked up by that id in
     /// `AgentManager` without a post-hoc re-key.
     pub id: Option<String>,
+    /// Model alias/id. Codex: passed via `newConversation`/`thread/start`
+    /// params (see `build_start_params`). Claude: passed via `--model` argv.
+    pub model: Option<String>,
+    /// Reasoning effort hint. Codex-only; Claude CLI has no equivalent knob.
+    pub reasoning_effort: Option<String>,
+}
+
+/// One image attachment sent with a user message.
+#[derive(Debug, Clone)]
+pub enum AgentAttachment {
+    /// Zero-copy: host filesystem path. Codex consumes this as `localImage`;
+    /// Claude has no path form so the path is read + base64-encoded at send time.
+    LocalPath {
+        path: String,
+        media_type: String,
+    },
+    /// Already-base64-encoded bytes (no `data:` prefix).
+    Base64 {
+        data: String,
+        media_type: String,
+    },
+}
+
+/// Input for `AgentSession::send_user_message`.
+#[derive(Debug, Clone, Default)]
+pub struct SendUserMessageInput {
+    pub text: String,
+    pub attachments: Vec<AgentAttachment>,
 }
 
 impl SpawnConfig {
@@ -226,6 +254,48 @@ impl SpawnConfig {
             Backend::Codex => self.codex_plans(),
             Backend::Claude => self.claude_plans(),
         }
+    }
+
+    /// Build the `params` object for a Codex `newConversation` / `thread/start`
+    /// RPC call, populating model + reasoningEffort from this config. Mobile
+    /// (or a future host-side driver) merges this with its own fields like
+    /// `conversationId` / `workspaceId`.
+    pub fn codex_start_params(&self) -> serde_json::Value {
+        let mut obj = serde_json::Map::new();
+        if let Some(m) = self.model.as_ref() {
+            obj.insert("model".into(), serde_json::Value::String(m.clone()));
+        }
+        if let Some(r) = self.reasoning_effort.as_ref() {
+            obj.insert(
+                "reasoningEffort".into(),
+                serde_json::Value::String(r.clone()),
+            );
+        }
+        serde_json::Value::Object(obj)
+    }
+
+    /// Build the `params` object for a Codex resume RPC. Uses `thread/resume`
+    /// shape if `use_thread_surface` is true (`{threadId}`), else legacy
+    /// `resumeConversation` (`{conversationId}`). Returns `None` if there is
+    /// no `resume_id` set.
+    pub fn codex_resume_params(&self, use_thread_surface: bool) -> Option<serde_json::Value> {
+        let id = self.resume_id.as_ref()?.clone();
+        let mut obj = serde_json::Map::new();
+        if use_thread_surface {
+            obj.insert("threadId".into(), serde_json::Value::String(id));
+        } else {
+            obj.insert("conversationId".into(), serde_json::Value::String(id));
+        }
+        if let Some(m) = self.model.as_ref() {
+            obj.insert("model".into(), serde_json::Value::String(m.clone()));
+        }
+        if let Some(r) = self.reasoning_effort.as_ref() {
+            obj.insert(
+                "reasoningEffort".into(),
+                serde_json::Value::String(r.clone()),
+            );
+        }
+        Some(serde_json::Value::Object(obj))
     }
 
     fn codex_plans(&self) -> Vec<LaunchPlan> {
@@ -266,6 +336,10 @@ impl SpawnConfig {
         if let Some(id) = self.resume_id.as_ref() {
             args.push("--resume".into());
             args.push(id.clone());
+        }
+        if let Some(model) = self.model.as_ref() {
+            args.push("--model".into());
+            args.push(model.clone());
         }
         let mut plans = vec![LaunchPlan {
             program: "claude".into(),
@@ -377,6 +451,33 @@ impl AgentSession {
         }
     }
 
+    /// Build and send a user message frame appropriate for this session's
+    /// backend. For Codex the caller must pass the active `conversation_id`
+    /// and a JSON-RPC request id; for Claude both are ignored.
+    ///
+    /// Attachments are transformed per backend: Codex takes `localImage` /
+    /// `image` items alongside a `text` item; Claude requires base64 (path
+    /// attachments are read from disk and encoded inline).
+    pub async fn send_user_message(
+        &self,
+        input: SendUserMessageInput,
+        codex_conversation_id: Option<&str>,
+        codex_request_id: Option<i64>,
+    ) -> Result<(), AgentSendError> {
+        let line = match self.backend {
+            Backend::Codex => {
+                let conv = codex_conversation_id.ok_or(AgentSendError::MissingConversationId)?;
+                let rid = codex_request_id.unwrap_or(1);
+                build_codex_send_user_message(conv, rid, &input)
+                    .map_err(AgentSendError::BuildFailed)?
+            }
+            Backend::Claude => {
+                build_claude_user_message(&input).map_err(AgentSendError::BuildFailed)?
+            }
+        };
+        self.send_line(line).await
+    }
+
     /// Take the stdout receiver. Can only be taken once — the daemon owns it
     /// for the lifetime of the session and forwards lines to the data channel.
     pub async fn take_stdout(&self) -> Option<mpsc::Receiver<String>> {
@@ -439,6 +540,92 @@ impl Drop for AgentSession {
 pub enum AgentSendError {
     #[error("agent session is closed")]
     SessionClosed,
+    #[error("codex send_user_message requires a conversation_id")]
+    MissingConversationId,
+    #[error("failed to build user message frame: {0}")]
+    BuildFailed(String),
+}
+
+/// Build the JSON-RPC line for a Codex `sendUserMessage` with optional image
+/// attachments. `localImage` items are preferred for host-filesystem paths
+/// (zero-copy); `Base64` attachments become `image` items with a data URL.
+pub fn build_codex_send_user_message(
+    conversation_id: &str,
+    request_id: i64,
+    input: &SendUserMessageInput,
+) -> Result<String, String> {
+    let mut items: Vec<serde_json::Value> = Vec::with_capacity(input.attachments.len() + 1);
+    for att in &input.attachments {
+        match att {
+            AgentAttachment::LocalPath { path, .. } => {
+                items.push(serde_json::json!({
+                    "type": "localImage",
+                    "data": { "path": path }
+                }));
+            }
+            AgentAttachment::Base64 { data, media_type } => {
+                let url = format!("data:{media_type};base64,{data}");
+                items.push(serde_json::json!({
+                    "type": "image",
+                    "data": { "image_url": url }
+                }));
+            }
+        }
+    }
+    items.push(serde_json::json!({
+        "type": "text",
+        "data": { "text": input.text, "text_elements": [] }
+    }));
+    let frame = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "method": "sendUserMessage",
+        "params": {
+            "conversationId": conversation_id,
+            "items": items,
+        }
+    });
+    serde_json::to_string(&frame).map_err(|e| e.to_string())
+}
+
+/// Build the stream-json line for a Claude user turn. If `attachments` is
+/// empty, keeps the legacy string `content` shape (matches existing tests /
+/// docs). Otherwise emits an array with images first, then a text block. Local
+/// paths are read + base64-encoded here (Claude has no path-form input).
+pub fn build_claude_user_message(input: &SendUserMessageInput) -> Result<String, String> {
+    if input.attachments.is_empty() {
+        let frame = serde_json::json!({
+            "type": "user",
+            "message": { "role": "user", "content": input.text },
+        });
+        return serde_json::to_string(&frame).map_err(|e| e.to_string());
+    }
+    let mut blocks: Vec<serde_json::Value> = Vec::with_capacity(input.attachments.len() + 1);
+    for att in &input.attachments {
+        let (media_type, data) = match att {
+            AgentAttachment::Base64 { data, media_type } => (media_type.clone(), data.clone()),
+            AgentAttachment::LocalPath { path, media_type } => {
+                let bytes = std::fs::read(path).map_err(|e| format!("read {path}: {e}"))?;
+                use base64::Engine;
+                let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                (media_type.clone(), encoded)
+            }
+        };
+        blocks.push(serde_json::json!({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": media_type,
+                "data": data,
+            }
+        }));
+    }
+    blocks.push(serde_json::json!({ "type": "text", "text": input.text }));
+    let frame = serde_json::json!({
+        "type": "user",
+        "message": { "role": "user", "content": blocks },
+    });
+    serde_json::to_string(&frame).map_err(|e| e.to_string())
 }
 
 /// Errors raised by `spawn_session` before any I/O tasks are running.
@@ -814,6 +1001,122 @@ impl AgentManager {
 mod tests {
     use super::*;
 
+    fn parse(line: &str) -> serde_json::Value {
+        serde_json::from_str(line).expect("valid json")
+    }
+
+    #[test]
+    fn codex_builder_text_only() {
+        let input = SendUserMessageInput {
+            text: "hi".into(),
+            attachments: vec![],
+        };
+        let line = build_codex_send_user_message("conv-1", 42, &input).unwrap();
+        let v = parse(&line);
+        assert_eq!(v["method"], "sendUserMessage");
+        assert_eq!(v["id"], 42);
+        assert_eq!(v["params"]["conversationId"], "conv-1");
+        let items = v["params"]["items"].as_array().unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["type"], "text");
+        assert_eq!(items[0]["data"]["text"], "hi");
+        assert!(items[0]["data"]["text_elements"].is_array());
+    }
+
+    #[test]
+    fn codex_builder_mixed_attachments() {
+        let input = SendUserMessageInput {
+            text: "describe".into(),
+            attachments: vec![
+                AgentAttachment::LocalPath {
+                    path: "/tmp/a.png".into(),
+                    media_type: "image/png".into(),
+                },
+                AgentAttachment::Base64 {
+                    data: "QUJD".into(),
+                    media_type: "image/jpeg".into(),
+                },
+            ],
+        };
+        let v = parse(&build_codex_send_user_message("c", 1, &input).unwrap());
+        let items = v["params"]["items"].as_array().unwrap();
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0]["type"], "localImage");
+        assert_eq!(items[0]["data"]["path"], "/tmp/a.png");
+        assert_eq!(items[1]["type"], "image");
+        assert_eq!(
+            items[1]["data"]["image_url"],
+            "data:image/jpeg;base64,QUJD"
+        );
+        assert_eq!(items[2]["type"], "text");
+        assert_eq!(items[2]["data"]["text"], "describe");
+    }
+
+    #[test]
+    fn claude_builder_text_only_keeps_string_content() {
+        let input = SendUserMessageInput {
+            text: "hello".into(),
+            attachments: vec![],
+        };
+        let v = parse(&build_claude_user_message(&input).unwrap());
+        assert_eq!(v["type"], "user");
+        assert_eq!(v["message"]["content"], "hello");
+    }
+
+    #[test]
+    fn claude_builder_base64_block_array() {
+        let input = SendUserMessageInput {
+            text: "what".into(),
+            attachments: vec![AgentAttachment::Base64 {
+                data: "WFlB".into(),
+                media_type: "image/png".into(),
+            }],
+        };
+        let v = parse(&build_claude_user_message(&input).unwrap());
+        let content = v["message"]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0]["type"], "image");
+        assert_eq!(content[0]["source"]["type"], "base64");
+        assert_eq!(content[0]["source"]["media_type"], "image/png");
+        assert_eq!(content[0]["source"]["data"], "WFlB");
+        assert_eq!(content[1]["type"], "text");
+        assert_eq!(content[1]["text"], "what");
+    }
+
+    #[test]
+    fn codex_start_params_only_sets_given_keys() {
+        let cfg = SpawnConfig {
+            backend: Backend::Codex,
+            cwd: None,
+            resume_id: None,
+            bundled_binary: None,
+            id: None,
+            model: Some("gpt-5.2-codex".into()),
+            reasoning_effort: None,
+        };
+        let v = cfg.codex_start_params();
+        assert_eq!(v["model"], "gpt-5.2-codex");
+        assert!(v.get("reasoningEffort").is_none());
+    }
+
+    #[test]
+    fn codex_resume_params_picks_surface() {
+        let cfg = SpawnConfig {
+            backend: Backend::Codex,
+            cwd: None,
+            resume_id: Some("abc".into()),
+            bundled_binary: None,
+            id: None,
+            model: None,
+            reasoning_effort: Some("high".into()),
+        };
+        let thread = cfg.codex_resume_params(true).unwrap();
+        assert_eq!(thread["threadId"], "abc");
+        assert_eq!(thread["reasoningEffort"], "high");
+        let legacy = cfg.codex_resume_params(false).unwrap();
+        assert_eq!(legacy["conversationId"], "abc");
+    }
+
     #[test]
     fn codex_launch_plans_include_app_server() {
         let cfg = SpawnConfig {
@@ -822,6 +1125,8 @@ mod tests {
             resume_id: None,
             bundled_binary: Some(PathBuf::from("/Applications/Codex.app/Contents/Resources/codex")),
             id: None,
+            model: None,
+            reasoning_effort: None,
         };
         let plans = cfg.launch_plans();
         assert_eq!(plans.len(), 2);
@@ -838,6 +1143,8 @@ mod tests {
             resume_id: Some("abc-123".into()),
             bundled_binary: None,
             id: None,
+            model: None,
+            reasoning_effort: None,
         };
         let plans = cfg.launch_plans();
         assert_eq!(plans.len(), 1);
@@ -855,6 +1162,8 @@ mod tests {
             resume_id: None,
             bundled_binary: None,
             id: None,
+            model: None,
+            reasoning_effort: None,
         };
         let plans = cfg.launch_plans();
         assert!(!plans[0].args.iter().any(|a| a == "--resume"));
@@ -903,6 +1212,8 @@ mod tests {
             resume_id: None,
             bundled_binary: Some(PathBuf::from("/definitely/not/here/codex-binary-xyz")),
             id: None,
+            model: None,
+            reasoning_effort: None,
         };
         // Override the first plan to also point at a missing binary so we
         // exercise the all-plans-failed path. SpawnConfig always tries the
@@ -949,6 +1260,8 @@ mod tests {
             resume_id: None,
             bundled_binary: None,
             id: None,
+            model: None,
+            reasoning_effort: None,
         })
         .await
         .expect("codex spawn");
@@ -1079,6 +1392,8 @@ mod tests {
             resume_id: None,
             bundled_binary: None,
             id: None,
+            model: None,
+            reasoning_effort: None,
         })
         .await
         .expect("claude spawn");

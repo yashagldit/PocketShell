@@ -2728,7 +2728,13 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                             };
                             let cwd = init.get("cwd").and_then(|v| v.as_str())
                                 .map(std::path::PathBuf::from);
-                            let resume_id = init.get("resume_id").and_then(|v| v.as_str()).map(str::to_string);
+                            let resume_id = init.get("resumeId")
+                                .or_else(|| init.get("resume_id"))
+                                .and_then(|v| v.as_str()).map(str::to_string);
+                            let model = init.get("model").and_then(|v| v.as_str()).map(str::to_string);
+                            let reasoning_effort = init.get("reasoningEffort")
+                                .or_else(|| init.get("reasoning_effort"))
+                                .and_then(|v| v.as_str()).map(str::to_string);
 
                             let cfg = AgentSpawnConfig {
                                 backend,
@@ -2736,6 +2742,8 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                 resume_id,
                                 bundled_binary: agent_session::discover_bundled(backend),
                                 id: Some(agent_id.clone()),
+                                model,
+                                reasoning_effort,
                             };
                             let session = match agent_manager.create(cfg).await {
                                 Ok(s) => s,
@@ -3811,6 +3819,15 @@ async fn handle_signal(
                 .or_else(|| payload.get("resume_id"))
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
+            let model = payload
+                .get("model")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            let reasoning_effort = payload
+                .get("reasoningEffort")
+                .or_else(|| payload.get("reasoning_effort"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
 
             let cfg = AgentSpawnConfig {
                 backend: backend_kind,
@@ -3818,6 +3835,8 @@ async fn handle_signal(
                 resume_id,
                 bundled_binary: agent_session::discover_bundled(backend_kind),
                 id: Some(agent_id.clone()),
+                model,
+                reasoning_effort,
             };
 
             let session = match agent_manager.create(cfg).await {
