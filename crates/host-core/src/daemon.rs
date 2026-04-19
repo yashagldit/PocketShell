@@ -2781,12 +2781,31 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                             let pump_agent_id = agent_id.clone();
                             let pump_session = session.clone();
                             let handle = tokio::spawn(async move {
+                                let mut pump_seq: u64 = 0;
                                 while let Some(line) = stdout_rx.recv().await {
+                                    pump_seq += 1;
+                                    let line_bytes = line.len();
                                     let mut framed = line.into_bytes();
                                     framed.push(b'\n');
-                                    if let Err(e) = pump_channel.send(&bytes::Bytes::from(framed)).await {
-                                        warn!("agent stdout pump send failed agent={}: {}", pump_agent_id, e);
-                                        break;
+                                    match pump_channel.send(&bytes::Bytes::from(framed)).await {
+                                        Ok(_) => {
+                                            info!(
+                                                agent = %pump_agent_id,
+                                                seq = pump_seq,
+                                                bytes = line_bytes,
+                                                "agent pump -> mobile ok",
+                                            );
+                                        }
+                                        Err(e) => {
+                                            warn!(
+                                                agent = %pump_agent_id,
+                                                seq = pump_seq,
+                                                bytes = line_bytes,
+                                                "agent pump -> mobile send FAILED: {}",
+                                                e,
+                                            );
+                                            break;
+                                        }
                                     }
                                 }
                                 let exit = pump_session.exit_reason().await;

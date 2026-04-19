@@ -442,12 +442,23 @@ impl AgentSession {
             let guard = self.stdin_tx.lock().await;
             guard.as_ref().cloned()
         };
+        let preview: String = line.chars().take(160).collect();
         match sender {
-            Some(tx) => tx
-                .send(line)
-                .await
-                .map_err(|_| AgentSendError::SessionClosed),
-            None => Err(AgentSendError::SessionClosed),
+            Some(tx) => {
+                info!(
+                    session = %self.id,
+                    bytes = line.len(),
+                    preview = %preview,
+                    "agent stdin <<",
+                );
+                tx.send(line)
+                    .await
+                    .map_err(|_| AgentSendError::SessionClosed)
+            }
+            None => {
+                warn!(session = %self.id, "agent stdin send: session closed");
+                Err(AgentSendError::SessionClosed)
+            }
         }
     }
 
@@ -806,19 +817,29 @@ async fn reader_task(
     session_id: String,
 ) {
     let mut reader = BufReader::new(stdout).lines();
+    let mut line_count: u64 = 0;
     loop {
         match reader.next_line().await {
             Ok(Some(line)) => {
                 if line.trim().is_empty() {
                     continue;
                 }
+                line_count += 1;
+                let preview: String = line.chars().take(160).collect();
+                info!(
+                    session = %session_id,
+                    seq = line_count,
+                    bytes = line.len(),
+                    preview = %preview,
+                    "agent stdout >>",
+                );
                 if tx.send(line).await.is_err() {
-                    debug!(session = %session_id, "stdout receiver dropped");
+                    warn!(session = %session_id, "stdout receiver dropped, dropping further lines");
                     return;
                 }
             }
             Ok(None) => {
-                debug!(session = %session_id, "agent stdout EOF");
+                info!(session = %session_id, total_lines = line_count, "agent stdout EOF");
                 return;
             }
             Err(e) => {
