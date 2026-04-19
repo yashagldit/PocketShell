@@ -3,6 +3,7 @@ pub mod alerts;
 pub mod local_attach;
 pub mod api;
 pub mod audit;
+pub mod coding_sessions;
 pub mod config;
 pub mod daemon;
 pub mod discovery;

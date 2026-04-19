@@ -29,6 +29,14 @@ pub async fn handle_files_action(payload: &serde_json::Value) -> Result<serde_js
         .unwrap_or_default()
         .to_string();
 
+    if action == "list_coding_sessions" {
+        let limit = payload
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as usize);
+        return crate::coding_sessions::list_sessions(limit).await;
+    }
+
     let path_str = payload
         .get("path")
         .and_then(|v| v.as_str())
