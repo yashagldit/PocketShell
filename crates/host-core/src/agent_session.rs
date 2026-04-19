@@ -27,7 +27,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -1067,10 +1067,72 @@ fn send_sigterm(_pid: u32) {
     // (see remodex codex-transport.js). Deferred until we ship a Windows host.
 }
 
-/// Registry of live agent sessions. Owned by the daemon.
+/// Registry of live Claude sessions. Owned by the daemon via `AgentRouter`.
+///
+/// Claude binds its conversation at spawn time (via `--resume <id>`), so we
+/// can't switch conversations on a running process — each conversation owns
+/// its own child. Sessions are kept alive across data-channel closes so
+/// reopens rebind instead of respawning, saving the ~1s Claude cold-start.
+///
+/// Lookups prefer `resume_id` (the Claude-minted session uuid) since mobile
+/// generates fresh `agent_id` values per open. An idle-TTL sweep reaps
+/// sessions that have been detached longer than the configured window.
 #[derive(Default)]
 pub struct AgentManager {
-    sessions: Mutex<HashMap<String, Arc<AgentSession>>>,
+    state: Mutex<ManagerState>,
+}
+
+#[derive(Default)]
+struct ManagerState {
+    by_id: HashMap<String, ClaudeEntry>,
+    by_resume_id: HashMap<String, String>,
+}
+
+struct ClaudeEntry {
+    session: Arc<AgentSession>,
+    resume_id: Option<String>,
+    /// When the last data channel detached. `None` while a channel is bound.
+    last_detached_at: Option<Instant>,
+}
+
+impl ManagerState {
+    fn insert(&mut self, agent_id: String, entry: ClaudeEntry) {
+        if let Some(rid) = entry.resume_id.clone() {
+            self.by_resume_id.insert(rid, agent_id.clone());
+        }
+        self.by_id.insert(agent_id, entry);
+    }
+
+    fn remove(&mut self, agent_id: &str) -> Option<ClaudeEntry> {
+        let entry = self.by_id.remove(agent_id)?;
+        if let Some(rid) = &entry.resume_id {
+            // Only drop the reverse mapping if it still points at us — a
+            // concurrent rebind may have pointed it at a newer agent_id.
+            if self.by_resume_id.get(rid).map(|s| s.as_str()) == Some(agent_id) {
+                self.by_resume_id.remove(rid);
+            }
+        }
+        Some(entry)
+    }
+
+    /// Move an entry from `old_id` → `new_id`, refreshing the reverse index.
+    fn rekey(&mut self, old_id: &str, new_id: String) -> Option<&mut ClaudeEntry> {
+        let mut entry = self.by_id.remove(old_id)?;
+        if let Some(rid) = &entry.resume_id {
+            self.by_resume_id.insert(rid.clone(), new_id.clone());
+        }
+        entry.last_detached_at = None;
+        self.by_id.insert(new_id.clone(), entry);
+        self.by_id.get_mut(&new_id)
+    }
+}
+
+/// Return value of `bind` — session handle plus a fresh stdout receiver and
+/// whether an existing session was reused.
+pub struct BindOutcome {
+    pub session: Arc<AgentSession>,
+    pub stdout_rx: mpsc::Receiver<String>,
+    pub reattached: bool,
 }
 
 impl AgentManager {
@@ -1078,27 +1140,123 @@ impl AgentManager {
         Self::default()
     }
 
-    pub async fn create(
+    /// Rebind an existing live session (matched by `resume_id`) under
+    /// `agent_id`, or spawn a fresh one.
+    pub async fn bind(
         &self,
+        agent_id: String,
         config: SpawnConfig,
-    ) -> Result<Arc<AgentSession>, SpawnError> {
-        let session = spawn_session(config).await?;
-        self.sessions
-            .lock()
-            .await
-            .insert(session.id().to_string(), session.clone());
-        Ok(session)
+    ) -> Result<BindOutcome, SpawnError> {
+        if let Some(rid) = config.resume_id.clone() {
+            let prev = {
+                let state = self.state.lock().await;
+                state
+                    .by_resume_id
+                    .get(&rid)
+                    .and_then(|pid| state.by_id.get(pid).map(|e| (pid.clone(), e.session.clone())))
+            };
+            if let Some((prev_id, session)) = prev {
+                if session.exit_reason().await.is_none() {
+                    if let Some(rx) = session.take_stdout().await {
+                        let mut state = self.state.lock().await;
+                        if state.rekey(&prev_id, agent_id.clone()).is_some() {
+                            info!(prev = %prev_id, "claude rebound existing session");
+                            return Ok(BindOutcome { session, stdout_rx: rx, reattached: true });
+                        }
+                    }
+                }
+                // Stale/dead entry — drop it. `remove` guards against a
+                // concurrent rebind having already stolen the reverse mapping.
+                self.state.lock().await.remove(&prev_id);
+            }
+        }
+
+        let mut spawn_cfg = config;
+        spawn_cfg.id = Some(agent_id.clone());
+        let resume_id = spawn_cfg.resume_id.clone();
+        let session = spawn_session(spawn_cfg).await?;
+        let rx = session.take_stdout().await.ok_or_else(|| SpawnError::AllPlansFailed {
+            backend: Backend::Claude,
+            last_error: "stdout unavailable after spawn".into(),
+        })?;
+        self.state.lock().await.insert(
+            agent_id,
+            ClaudeEntry {
+                session: session.clone(),
+                resume_id,
+                last_detached_at: None,
+            },
+        );
+        Ok(BindOutcome { session, stdout_rx: rx, reattached: false })
     }
 
-    pub async fn get(&self, id: &str) -> Option<Arc<AgentSession>> {
-        self.sessions.lock().await.get(id).cloned()
+    /// Channel closed — drop the sink and mark the session as idle. The child
+    /// keeps running; `sweep_idle` reaps it eventually.
+    pub async fn detach(&self, agent_id: &str) {
+        let session = {
+            let mut state = self.state.lock().await;
+            state.by_id.get_mut(agent_id).map(|e| {
+                e.last_detached_at = Some(Instant::now());
+                e.session.clone()
+            })
+        };
+        if let Some(s) = session {
+            s.clear_sink().await;
+        }
     }
 
-    pub async fn close(&self, id: &str) -> bool {
-        let removed = self.sessions.lock().await.remove(id);
-        match removed {
-            Some(s) => {
-                s.close().await;
+    /// Agent ids that should be reaped — sessions detached longer than `ttl`
+    /// or whose child has already exited (crashed / completed). We collect
+    /// session handles under the lock and check `exit_reason` afterwards so
+    /// we don't hold the map mutex across async session calls.
+    pub async fn stale_ids(&self, ttl: Duration) -> Vec<String> {
+        let now = Instant::now();
+        let candidates: Vec<(String, Arc<AgentSession>, bool)> = {
+            let state = self.state.lock().await;
+            state
+                .by_id
+                .iter()
+                .map(|(id, e)| {
+                    let idle = e
+                        .last_detached_at
+                        .map(|t| now.duration_since(t) >= ttl)
+                        .unwrap_or(false);
+                    (id.clone(), e.session.clone(), idle)
+                })
+                .collect()
+        };
+        let mut out = Vec::new();
+        for (id, session, idle) in candidates {
+            if idle || session.exit_reason().await.is_some() {
+                out.push(id);
+            }
+        }
+        out
+    }
+
+    pub async fn get(&self, agent_id: &str) -> Option<Arc<AgentSession>> {
+        self.state.lock().await.by_id.get(agent_id).map(|e| e.session.clone())
+    }
+
+    /// Record the session's Claude-minted `session_id` once it's been
+    /// observed on stdout. Needed because the first-ever Claude open spawns
+    /// without `--resume`, leaving the entry out of `by_resume_id` until we
+    /// learn the id from the child's first `system` event.
+    pub async fn note_resume_id(&self, agent_id: &str, resume_id: String) {
+        let mut state = self.state.lock().await;
+        let Some(entry) = state.by_id.get_mut(agent_id) else { return };
+        if entry.resume_id.is_some() {
+            return;
+        }
+        entry.resume_id = Some(resume_id.clone());
+        state.by_resume_id.insert(resume_id, agent_id.to_string());
+    }
+
+    pub async fn close(&self, agent_id: &str) -> bool {
+        let entry = self.state.lock().await.remove(agent_id);
+        match entry {
+            Some(e) => {
+                e.session.close().await;
                 true
             }
             None => false,
@@ -1106,8 +1264,218 @@ impl AgentManager {
     }
 
     pub async fn list(&self) -> Vec<String> {
-        self.sessions.lock().await.keys().cloned().collect()
+        self.state.lock().await.by_id.keys().cloned().collect()
     }
+}
+
+/// Singleton Codex `app-server` process shared across all agent channels.
+///
+/// Codex multiplexes multiple conversations via `thread/start` and
+/// `thread/resume` RPCs, so a single long-lived child is enough — mobile
+/// drives which thread is active. That matches the remodex bridge pattern and
+/// lets us keep the process warm across channel opens/closes.
+///
+/// Lifecycle:
+/// - `bind(cfg)` lazily spawns on first call, then on every subsequent call
+///   reattaches the stdout sink to a fresh receiver. If the child has exited,
+///   it is respawned transparently.
+/// - `clear_sink()` drops the output binding without killing the child — used
+///   when a data channel closes. The mobile app will `thread/resume` against
+///   the same hub on reconnect.
+/// - `shutdown()` kills the child (called on daemon shutdown, not on channel
+///   close).
+#[derive(Default)]
+pub struct CodexHub {
+    inner: Mutex<Option<Arc<AgentSession>>>,
+}
+
+impl CodexHub {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Ensure a live Codex child exists, then install a fresh stdout sink.
+    /// Returns the shared session, the new stdout Receiver, and whether an
+    /// existing singleton was reused (`true`) vs freshly spawned (`false`).
+    ///
+    /// `cfg.backend` must be `Backend::Codex`; it's the caller's job to pass a
+    /// Codex config. `cfg.id`, `cfg.resume_id`, and `cfg.backend_session_id`
+    /// are ignored for the spawn — the hub is per-daemon, not per-agent —
+    /// but mobile still needs them echoed elsewhere for bookkeeping.
+    pub async fn bind(&self, cfg: SpawnConfig) -> Result<BindOutcome, SpawnError> {
+        debug_assert!(matches!(cfg.backend, Backend::Codex));
+        let mut guard = self.inner.lock().await;
+        let needs_spawn = match guard.as_ref() {
+            None => true,
+            Some(s) => s.exit_reason().await.is_some(),
+        };
+        let reattached = !needs_spawn;
+        if needs_spawn {
+            info!("codex hub spawning singleton");
+            let spawn_cfg = SpawnConfig {
+                // Strip per-agent identifiers — the hub is shared.
+                id: None,
+                resume_id: None,
+                backend_session_id: None,
+                ..cfg
+            };
+            let s = spawn_session(spawn_cfg).await?;
+            *guard = Some(s);
+        }
+        let session = guard
+            .as_ref()
+            .expect("singleton was just ensured")
+            .clone();
+        drop(guard);
+        let stdout_rx = session
+            .take_stdout()
+            .await
+            .ok_or_else(|| SpawnError::AllPlansFailed {
+                backend: Backend::Codex,
+                last_error: "codex hub session closed during bind".into(),
+            })?;
+        Ok(BindOutcome { session, stdout_rx, reattached })
+    }
+
+    /// Drop the current stdout sink without touching the child. Idempotent.
+    pub async fn clear_sink(&self) {
+        if let Some(s) = self.inner.lock().await.as_ref() {
+            s.clear_sink().await;
+        }
+    }
+
+    /// Snapshot of the live session, if any.
+    pub async fn current(&self) -> Option<Arc<AgentSession>> {
+        self.inner.lock().await.clone()
+    }
+
+    /// Terminate the singleton. Called on daemon shutdown.
+    pub async fn shutdown(&self) {
+        let s = self.inner.lock().await.take();
+        if let Some(s) = s {
+            s.close().await;
+        }
+    }
+}
+
+/// Routes per-channel agent requests to the right backend-specific owner:
+/// Codex → shared `CodexHub`, Claude → per-`agent_id` `AgentManager` entry.
+/// Keeps the backend-split out of the daemon event loop.
+#[derive(Default)]
+pub struct AgentRouter {
+    manager: Arc<AgentManager>,
+    codex: Arc<CodexHub>,
+    backends: Mutex<HashMap<String, Backend>>,
+}
+
+impl AgentRouter {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Spawn-or-bind for the given agent_id. For Codex this reuses the
+    /// singleton and installs a fresh sink; for Claude this spawns a new
+    /// per-session process. On success the backend is recorded so later
+    /// `send_line` / `detach` calls route correctly.
+    pub async fn bind(
+        &self,
+        agent_id: String,
+        cfg: SpawnConfig,
+    ) -> Result<BindOutcome, SpawnError> {
+        let backend = cfg.backend;
+        let outcome = match backend {
+            Backend::Codex => self.codex.bind(cfg).await?,
+            Backend::Claude => self.manager.bind(agent_id.clone(), cfg).await?,
+        };
+        self.backends.lock().await.insert(agent_id, backend);
+        Ok(outcome)
+    }
+
+    /// Send one stdin line to whichever session backs `agent_id`. Returns
+    /// `SessionClosed` if there's no live binding.
+    pub async fn send_line(
+        &self,
+        agent_id: &str,
+        line: String,
+    ) -> Result<(), AgentSendError> {
+        let backend = self.backends.lock().await.get(agent_id).copied();
+        let session = match backend {
+            Some(Backend::Codex) => self.codex.current().await,
+            Some(Backend::Claude) => self.manager.get(agent_id).await,
+            None => None,
+        };
+        match session {
+            Some(s) => s.send_line(line).await,
+            None => Err(AgentSendError::SessionClosed),
+        }
+    }
+
+    /// Channel-close hook. Codex keeps its singleton alive and drops the
+    /// sink. Claude also keeps its per-session process alive but marks it
+    /// for eventual reaping via `sweep_idle_claude`.
+    pub async fn detach(&self, agent_id: &str) {
+        let backend = self.backends.lock().await.remove(agent_id);
+        match backend {
+            Some(Backend::Codex) => self.codex.clear_sink().await,
+            Some(Backend::Claude) => self.manager.detach(agent_id).await,
+            None => {}
+        }
+    }
+
+    /// Close any Claude sessions that are idle longer than `ttl` or have
+    /// exited on their own, and drop the matching `backends` entries so the
+    /// router's index tracks the manager.
+    pub async fn sweep_idle_claude(&self, ttl: Duration) {
+        let stale = self.manager.stale_ids(ttl).await;
+        if stale.is_empty() {
+            return;
+        }
+        {
+            let mut backends = self.backends.lock().await;
+            for id in &stale {
+                backends.remove(id);
+            }
+        }
+        for id in stale {
+            info!(agent_id = %id, "claude idle/crashed reap");
+            self.manager.close(&id).await;
+        }
+    }
+
+    /// Whether `agent_id` has been bound (regardless of backend).
+    pub async fn contains(&self, agent_id: &str) -> bool {
+        self.backends.lock().await.contains_key(agent_id)
+    }
+
+    /// Propagate a freshly-observed Claude `session_id` into the manager's
+    /// resume index. Called by the pump on the first `system` event.
+    pub async fn note_claude_resume_id(&self, agent_id: &str, resume_id: String) {
+        self.manager.note_resume_id(agent_id, resume_id).await;
+    }
+}
+
+/// If `line` is Claude's first `system` JSON frame, extract `session_id`
+/// and record it on the manager so a later reopen can rebind by resume_id.
+/// Cheap negative path: the substring check fails for 99% of non-system lines.
+pub async fn maybe_note_claude_resume_id(
+    router: &AgentRouter,
+    agent_id: &str,
+    line: &str,
+    already_noted: &mut bool,
+) {
+    if *already_noted {
+        return;
+    }
+    if !line.contains("\"type\":\"system\"") {
+        return;
+    }
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { return };
+    if v.get("type").and_then(|t| t.as_str()) != Some("system") {
+        return;
+    }
+    let Some(sid) = v.get("session_id").and_then(|s| s.as_str()) else { return };
+    router.note_claude_resume_id(agent_id, sid.to_string()).await;
+    *already_noted = true;
 }
 
 #[cfg(test)]

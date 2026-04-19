@@ -1,5 +1,5 @@
 use crate::agent_session::{
-    self, AgentExitWire, AgentManager, AgentSession, Backend as AgentBackend,
+    self, AgentExitWire, AgentRouter, AgentSession, Backend as AgentBackend,
     SpawnConfig as AgentSpawnConfig,
 };
 use crate::api::{derive_access_expiry, BackendClient, HeartbeatAction};
@@ -1119,9 +1119,11 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
     // Maps channel_key -> (nonce_base64, expected_mobile_device_id)
     let mut pending_auth: HashMap<String, (String, String)> = HashMap::new();
 
-    // Agent chat sessions (Codex / Claude). Each `agent-{id}` data channel is
-    // bound to one `AgentSession`; the daemon pumps lines between them.
-    let agent_manager = Arc::new(AgentManager::new());
+    // Agent chat sessions (Codex / Claude). Codex multiplexes threads on one
+    // shared `app-server` (singleton inside the router); Claude spawns one
+    // process per `agent_id`. The router hides the split behind `bind` /
+    // `send_line` / `detach`.
+    let agent_router = Arc::new(AgentRouter::new());
     // Pump tasks forwarding stdout to data channels. Keyed by agent_id so we
     // can abort on channel close.
     let mut agent_pumps: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
@@ -1223,6 +1225,8 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
         let mut alert_tick = interval(Duration::from_secs(config.alert_check_interval_secs));
         let mut alert_checker = crate::alerts::AlertChecker::new();
         let mut discovery_tick = interval(Duration::from_secs(15));
+        let mut claude_idle_tick = interval(Duration::from_secs(30));
+        let claude_idle_ttl = Duration::from_secs(10 * 60);
         let mut webrtc_poll_tick = interval(Duration::from_millis(50));
         let mut stats_stream_tick = interval(Duration::from_secs(2));
 
@@ -2625,14 +2629,10 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                             authenticated_channels.remove(&key);
                             pending_auth.remove(&key);
                             webrtc_mgr.prune_agent_channels();
-                            // Channel is gone — tear down the child immediately.
-                            // On reconnect, mobile spawns fresh and resumes via
-                            // `thread/resume` / `--resume <id>`, so there is no
-                            // reason to keep a detached child around.
                             if let Some(prev) = agent_pumps.remove(&agent_id) {
                                 prev.abort();
                             }
-                            agent_manager.close(&agent_id).await;
+                            agent_router.detach(&agent_id).await;
                         }
                         WebRtcEvent::AgentMessage { agent_id, mobile_device_id, data, channel } => {
                             let key = agent_session::agent_channel_key(&agent_id, &mobile_device_id);
@@ -2685,14 +2685,12 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                 continue;
                             }
 
-                            // After auth, the first message must be the init
-                            // frame (fresh spawn) or a reattach frame
-                            // (rebind to an existing session under a new
-                            // channel). Subsequent messages pass through as
-                            // raw stdin lines.
-                            //   init:     {"op":"init","backend":"codex"|"claude",...}
-                            //   reattach: {"op":"reattach","session_id":"<backend-uuid>"}
-                            if let Some(existing) = agent_manager.get(&agent_id).await {
+                            // After auth, the first message is the init frame;
+                            // subsequent messages pass through as raw stdin.
+                            // Gate: if a pump is already running for this
+                            // agent_id, treat as stdin and route to the right
+                            // session (Codex hub vs per-agent Claude proc).
+                            if agent_pumps.contains_key(&agent_id) {
                                 let line = match std::str::from_utf8(&data) {
                                     Ok(s) => s.trim().to_string(),
                                     Err(_) => {
@@ -2700,7 +2698,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                         continue;
                                     }
                                 };
-                                if let Err(e) = existing.send_line(line).await {
+                                if let Err(e) = agent_router.send_line(&agent_id, line).await {
                                     warn!("agent send_line failed agent={}: {}", agent_id, e);
                                 }
                                 continue;
@@ -2758,26 +2756,15 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                     .get(&mobile_device_id)
                                     .cloned(),
                             };
-                            let session = match agent_manager.create(cfg).await {
-                                Ok(s) => s,
+                            let outcome = match agent_router.bind(agent_id.clone(), cfg).await {
+                                Ok(o) => o,
                                 Err(e) => {
-                                    warn!("agent spawn failed agent={}: {}", agent_id, e);
+                                    warn!("agent bind failed agent={}: {}", agent_id, e);
                                     send_err("spawn", e.to_string());
                                     continue;
                                 }
                             };
-
-                            // Take stdout first — if this fails the session can't stream and
-                            // we abort before telling mobile we're ready.
-                            let stdout_rx = match session.take_stdout().await {
-                                Some(rx) => rx,
-                                None => {
-                                    warn!("agent stdout already taken agent={}", agent_id);
-                                    send_err("init", "internal: stdout unavailable".into());
-                                    agent_manager.close(&agent_id).await;
-                                    continue;
-                                }
-                            };
+                            let agent_session::BindOutcome { session, stdout_rx, reattached } = outcome;
 
                             let ready = serde_json::json!({
                                 "type":"agent_ready",
@@ -2785,6 +2772,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                 "backend": backend_str,
                                 "session_id": session.id(),
                                 "launch": session.launch_description(),
+                                "reattached": reattached,
                             });
                             if let Ok(bytes) = serde_json::to_vec(&ready) {
                                 let _ = channel.send(&bytes::Bytes::from(bytes)).await;
@@ -2793,19 +2781,14 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                             let pump_channel = Arc::clone(&channel);
                             let pump_agent_id = agent_id.clone();
                             let pump_session = session.clone();
-                            let pump_agent_manager = Arc::clone(&agent_manager);
-                            let pump_backend_session_id =
-                                peer_session_routes.get(&mobile_device_id).cloned();
-                            let pump_ws_out = agent_ws_out_tx.clone();
+                            let pump_router = Arc::clone(&agent_router);
                             let handle = tokio::spawn(async move {
                                 spawn_webrtc_agent_pump(
                                     stdout_rx,
                                     pump_channel,
                                     pump_session,
                                     pump_agent_id,
-                                    pump_agent_manager,
-                                    pump_backend_session_id,
-                                    pump_ws_out,
+                                    pump_router,
                                 )
                                 .await;
                             });
@@ -2868,6 +2851,10 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                             }
                         }
                     }
+                }
+
+                _ = claude_idle_tick.tick() => {
+                    agent_router.sweep_idle_claude(claude_idle_ttl).await;
                 }
 
                 _ = ws_ping_tick.tick() => {
@@ -2936,7 +2923,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                 &files_response_tx,
                                 &direct_transfer_event_tx,
                                 &mut session_ciphers,
-                                &agent_manager,
+                                &agent_router,
                                 &mut agent_ws_pumps,
                                 &agent_ws_out_tx,
                             ).await {
@@ -3061,18 +3048,23 @@ async fn spawn_webrtc_agent_pump(
     channel: Arc<RTCDataChannel>,
     session: Arc<AgentSession>,
     agent_id: String,
-    _agent_manager: Arc<AgentManager>,
-    _backend_session_id: Option<String>,
-    _ws_out: tokio::sync::mpsc::UnboundedSender<SignalEnvelope>,
+    router: Arc<AgentRouter>,
 ) {
     let mut pump_seq: u64 = 0;
     let mut reached_eof = false;
+    let is_claude = session.backend() == AgentBackend::Claude;
+    let mut resume_id_noted = !is_claude;
     loop {
         let Some(line) = stdout_rx.recv().await else {
             reached_eof = true;
             break;
         };
         pump_seq += 1;
+        if is_claude {
+            agent_session::maybe_note_claude_resume_id(
+                &router, &agent_id, &line, &mut resume_id_noted,
+            ).await;
+        }
         let line_bytes = line.len();
         let mut framed = line.into_bytes();
         framed.push(b'\n');
@@ -3128,8 +3120,16 @@ async fn spawn_ws_agent_pump(
     mobile_device_id: String,
     backend_session_id: Option<String>,
     pump_tx: tokio::sync::mpsc::UnboundedSender<SignalEnvelope>,
+    router: Arc<AgentRouter>,
 ) {
+    let is_claude = session.backend() == AgentBackend::Claude;
+    let mut resume_id_noted = !is_claude;
     while let Some(line) = stdout_rx.recv().await {
+        if is_claude {
+            agent_session::maybe_note_claude_resume_id(
+                &router, &agent_id, &line, &mut resume_id_noted,
+            ).await;
+        }
         let mut extra = std::collections::HashMap::new();
         extra.insert("agentId".to_string(), serde_json::json!(agent_id));
         extra.insert(
@@ -3193,7 +3193,7 @@ async fn handle_signal(
     files_response_tx: &tokio::sync::mpsc::UnboundedSender<SignalEnvelope>,
     direct_transfer_event_tx: &tokio::sync::mpsc::UnboundedSender<DirectHostTransferEvent>,
     session_ciphers: &mut HashMap<String, SessionCipher>,
-    agent_manager: &Arc<AgentManager>,
+    agent_router: &Arc<AgentRouter>,
     agent_ws_pumps: &mut HashMap<String, tokio::task::JoinHandle<()>>,
     agent_ws_out_tx: &tokio::sync::mpsc::UnboundedSender<SignalEnvelope>,
 ) -> Result<()> {
@@ -3903,7 +3903,7 @@ async fn handle_signal(
             }
 
             // Reject duplicates so a retry doesn't double-spawn.
-            if agent_manager.get(&agent_id).await.is_some() {
+            if agent_ws_pumps.contains_key(&agent_id) {
                 debug!("agent_init for existing agent {} — ignored", agent_id);
                 return Ok(());
             }
@@ -3972,40 +3972,35 @@ async fn handle_signal(
                 backend_session_id: msg.session_id.clone(),
             };
 
-            let session = match agent_manager.create(cfg).await {
-                Ok(s) => s,
-                Err(e) => {
-                    warn!("agent_init spawn failed agent={}: {}", agent_id, e);
-                    let mut extra = std::collections::HashMap::new();
-                    extra.insert("agentId".to_string(), serde_json::json!(agent_id));
-                    extra.insert(
-                        "target_mobile_device_id".to_string(),
-                        serde_json::json!(mobile_device_id),
-                    );
-                    extra.insert("reason".to_string(), serde_json::json!("spawn_failed"));
-                    extra.insert("detail".to_string(), serde_json::json!(e.to_string()));
-                    let envelope = SignalEnvelope {
-                        message_type: "agent_exit".to_string(),
-                        session_id: msg.session_id.clone(),
-                        payload: None,
-                        state: None,
-                        accepted: None,
-                        reason: None,
-                        extra,
-                    };
-                    let _ = agent_ws_out_tx.send(envelope);
-                    return Ok(());
+            let spawn_err_signal = |e: &dyn std::fmt::Display| {
+                let mut extra = std::collections::HashMap::new();
+                extra.insert("agentId".to_string(), serde_json::json!(agent_id));
+                extra.insert(
+                    "target_mobile_device_id".to_string(),
+                    serde_json::json!(mobile_device_id),
+                );
+                extra.insert("reason".to_string(), serde_json::json!("spawn_failed"));
+                extra.insert("detail".to_string(), serde_json::json!(e.to_string()));
+                SignalEnvelope {
+                    message_type: "agent_exit".to_string(),
+                    session_id: msg.session_id.clone(),
+                    payload: None,
+                    state: None,
+                    accepted: None,
+                    reason: None,
+                    extra,
                 }
             };
 
-            let stdout_rx = match session.take_stdout().await {
-                Some(rx) => rx,
-                None => {
-                    warn!("agent_init stdout already taken agent={}", agent_id);
-                    agent_manager.close(&agent_id).await;
+            let outcome = match agent_router.bind(agent_id.clone(), cfg).await {
+                Ok(o) => o,
+                Err(e) => {
+                    warn!("agent_init bind failed agent={}: {}", agent_id, e);
+                    let _ = agent_ws_out_tx.send(spawn_err_signal(&e));
                     return Ok(());
                 }
             };
+            let agent_session::BindOutcome { session, stdout_rx, reattached } = outcome;
 
             // Emit an `agent_ready` so the mobile can run its post-init wiring
             // the same way as over the data channel.
@@ -4025,6 +4020,7 @@ async fn handle_signal(
                     "agent_session_id".to_string(),
                     serde_json::json!(session.id()),
                 );
+                extra.insert("reattached".to_string(), serde_json::json!(reattached));
                 let ready = SignalEnvelope {
                     message_type: "agent_ready".to_string(),
                     session_id: msg.session_id.clone(),
@@ -4044,6 +4040,7 @@ async fn handle_signal(
                 mobile_device_id.clone(),
                 msg.session_id.clone(),
                 agent_ws_out_tx.clone(),
+                Arc::clone(agent_router),
             ));
             agent_ws_pumps.insert(agent_id, handle);
         }
@@ -4071,12 +4068,8 @@ async fn handle_signal(
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string();
-            if let Some(existing) = agent_manager.get(&agent_id).await {
-                if let Err(e) = existing.send_line(line).await {
-                    warn!("agent_input send_line failed agent={}: {}", agent_id, e);
-                }
-            } else {
-                warn!("agent_input for unknown agent {}", agent_id);
+            if let Err(e) = agent_router.send_line(&agent_id, line).await {
+                warn!("agent_input send_line failed agent={}: {}", agent_id, e);
             }
         }
         "agent_close" => {
@@ -4101,7 +4094,7 @@ async fn handle_signal(
             if let Some(handle) = agent_ws_pumps.remove(&agent_id) {
                 handle.abort();
             }
-            agent_manager.close(&agent_id).await;
+            agent_router.detach(&agent_id).await;
         }
         "signal" => {
             let Some(session_id) = msg.session_id else {
