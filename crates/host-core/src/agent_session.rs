@@ -223,6 +223,10 @@ pub struct SpawnConfig {
     pub model: Option<String>,
     /// Reasoning effort hint. Codex-only; Claude CLI has no equivalent knob.
     pub reasoning_effort: Option<String>,
+    /// Backend session id (DB UUID). Populated by the daemon at spawn time so
+    /// `AgentManager` can map session_id → agent_id for reattach. Independent
+    /// of `id` which is the channel-label agent id.
+    pub backend_session_id: Option<String>,
 }
 
 /// One image attachment sent with a user message.
@@ -399,6 +403,18 @@ pub enum ExitReason {
 }
 
 /// One running agent session. Drop or `close()` triggers graceful shutdown.
+///
+/// Concurrency model for stdout forwarding:
+/// - A single long-lived forwarder task (started in `spawn_session`) owns the
+///   child's stdout receiver.
+/// - For each line it reads, it snapshots the current sink from `sink` (an
+///   `Mutex<Option<Sender<String>>>`). If Some, it forwards the line; if the
+///   send fails or sink is None, the line is dropped.
+/// - `take_stdout()` (and reattach) install a fresh bounded mpsc and return its
+///   Receiver; any prior sink sender is dropped. `clear_sink()` drops the sink
+///   without installing a replacement (used on implicit detach).
+/// - This keeps `stdout_rx` ownership single-owner inside the session and
+///   makes "swap the sink" the only cross-task coordination required.
 pub struct AgentSession {
     id: String,
     backend: Backend,
@@ -408,8 +424,10 @@ pub struct AgentSession {
     /// Returns `Err` if the session has shut down. Taken out on `close()` so
     /// the writer task observes EOF and exits even with queued backlog.
     stdin_tx: Mutex<Option<mpsc::Sender<String>>>,
-    /// Receive JSON lines from the child's stdout. Closed when the child exits.
-    stdout_rx: Mutex<Option<mpsc::Receiver<String>>>,
+    /// Current stdout sink. The internal forwarder task reads the child's
+    /// stdout and sends each line here if `Some`; drops the line if `None`
+    /// or if send fails.
+    sink: Arc<Mutex<Option<mpsc::Sender<String>>>>,
     /// Final exit reason, populated when the supervisor task ends.
     exit: Arc<Mutex<Option<ExitReason>>>,
     /// Handles to the supervisor + I/O tasks so we can wait/abort on Drop.
@@ -489,15 +507,42 @@ impl AgentSession {
         self.send_line(line).await
     }
 
-    /// Take the stdout receiver. Can only be taken once — the daemon owns it
-    /// for the lifetime of the session and forwards lines to the data channel.
+    /// Install a fresh sink and return its Receiver. Subsequent stdout lines
+    /// go to this receiver until it's replaced (by another call) or cleared
+    /// (by `clear_sink`). Returns `None` only if the session has been closed.
+    ///
+    /// Unlike the original one-shot `take_stdout`, this can be called multiple
+    /// times — that's the primitive that makes reattach work. The previous
+    /// sink's sender is dropped, closing any previous receiver.
     pub async fn take_stdout(&self) -> Option<mpsc::Receiver<String>> {
-        self.stdout_rx.lock().await.take()
+        if self
+            .shutdown_requested
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return None;
+        }
+        let (tx, rx) = mpsc::channel::<String>(STDOUT_CHANNEL_CAPACITY);
+        *self.sink.lock().await = Some(tx);
+        Some(rx)
+    }
+
+    /// Drop the current sink without installing a replacement. Lines the
+    /// child emits while detached will be discarded by the forwarder, keeping
+    /// the bounded internal channel drained. Idempotent.
+    pub async fn clear_sink(&self) {
+        *self.sink.lock().await = None;
     }
 
     /// Final exit reason if the session has terminated, else `None`.
     pub async fn exit_reason(&self) -> Option<ExitReason> {
         self.exit.lock().await.clone()
+    }
+
+    /// Whether `close()` has been invoked on this session. Daemon pump uses
+    /// this to tell an explicit shutdown apart from an implicit channel drop.
+    pub fn shutdown_requested(&self) -> bool {
+        self.shutdown_requested
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Trigger graceful shutdown: SIGTERM, wait briefly, SIGKILL. Returns
@@ -718,13 +763,14 @@ pub async fn spawn_session(config: SpawnConfig) -> Result<Arc<AgentSession>, Spa
     let stderr = child.stderr.take().expect("piped");
 
     let (stdin_tx, stdin_rx) = mpsc::channel::<String>(STDIN_CHANNEL_CAPACITY);
-    let (stdout_tx, stdout_rx) = mpsc::channel::<String>(STDOUT_CHANNEL_CAPACITY);
+    let (stdout_tx, stdout_rx_internal) = mpsc::channel::<String>(STDOUT_CHANNEL_CAPACITY);
 
     let id = config.id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
     let exit_slot: Arc<Mutex<Option<ExitReason>>> = Arc::new(Mutex::new(None));
     let shutdown_requested = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stderr_ring = Arc::new(Mutex::new(StderrRing::new()));
     let child_pid: Arc<Mutex<Option<u32>>> = Arc::new(Mutex::new(pid));
+    let sink: Arc<Mutex<Option<mpsc::Sender<String>>>> = Arc::new(Mutex::new(None));
 
     // Writer task: pull lines from stdin_rx and write to child stdin.
     let writer_handle = tokio::spawn(writer_task(
@@ -736,6 +782,18 @@ pub async fn spawn_session(config: SpawnConfig) -> Result<Arc<AgentSession>, Spa
 
     // Reader task: line-buffered stdout → stdout_tx.
     let reader_handle = tokio::spawn(reader_task(stdout, stdout_tx, id.clone()));
+
+    // Forwarder task: owns the single stdout receiver. Reads every line; if
+    // the sink is Some(tx) tries to send, else drops. A failed send (e.g.
+    // receiver dropped after detach without `clear_sink`) is treated as detach
+    // and the sink is nulled so we don't spin retrying the stale sender.
+    let forwarder_sink = sink.clone();
+    let forwarder_id = id.clone();
+    let forwarder_handle = tokio::spawn(forwarder_task(
+        stdout_rx_internal,
+        forwarder_sink,
+        forwarder_id,
+    ));
 
     // Stderr task: append to ring buffer for crash diagnostics.
     let stderr_handle = tokio::spawn(stderr_task(stderr, stderr_ring.clone(), id.clone()));
@@ -756,18 +814,53 @@ pub async fn spawn_session(config: SpawnConfig) -> Result<Arc<AgentSession>, Spa
         backend: config.backend,
         launch_description: launch.description,
         stdin_tx: Mutex::new(Some(stdin_tx)),
-        stdout_rx: Mutex::new(Some(stdout_rx)),
+        sink,
         exit: exit_slot,
         tasks: Mutex::new(vec![
             writer_handle,
             reader_handle,
             stderr_handle,
             supervisor_handle,
+            forwarder_handle,
         ]),
         shutdown_requested,
         child_pid,
     };
     Ok(Arc::new(session))
+}
+
+/// Pump child stdout lines to the currently-bound sink, or drop them. The
+/// lock is only held briefly per line; a reattach swapping the sink races
+/// harmlessly with an in-flight iteration (either the old or new sender sees
+/// the line, never both).
+async fn forwarder_task(
+    mut rx: mpsc::Receiver<String>,
+    sink: Arc<Mutex<Option<mpsc::Sender<String>>>>,
+    session_id: String,
+) {
+    while let Some(line) = rx.recv().await {
+        let sender = { sink.lock().await.clone() };
+        let Some(tx) = sender else {
+            debug!(session = %session_id, "agent forwarder drop (no sink)");
+            continue;
+        };
+        if let Err(e) = tx.send(line).await {
+            debug!(
+                session = %session_id,
+                ?e,
+                "agent forwarder send failed — clearing sink",
+            );
+            let mut guard = sink.lock().await;
+            // Only clear if the sender we failed on is still the installed one —
+            // a concurrent reattach may have swapped it already.
+            if let Some(installed) = guard.as_ref() {
+                if installed.same_channel(&tx) {
+                    *guard = None;
+                }
+            }
+        }
+    }
+    debug!(session = %session_id, "agent forwarder EOF");
 }
 
 /// Pump JSON lines from `rx` into the child's stdin, one per write, with a
@@ -997,7 +1090,6 @@ impl AgentManager {
         Ok(session)
     }
 
-
     pub async fn get(&self, id: &str) -> Option<Arc<AgentSession>> {
         self.sessions.lock().await.get(id).cloned()
     }
@@ -1114,6 +1206,7 @@ mod tests {
             id: None,
             model: Some("gpt-5.2-codex".into()),
             reasoning_effort: None,
+            backend_session_id: None,
         };
         let v = cfg.codex_start_params();
         assert_eq!(v["model"], "gpt-5.2-codex");
@@ -1130,6 +1223,7 @@ mod tests {
             id: None,
             model: None,
             reasoning_effort: Some("high".into()),
+            backend_session_id: None,
         };
         let thread = cfg.codex_resume_params(true).unwrap();
         assert_eq!(thread["threadId"], "abc");
@@ -1148,6 +1242,7 @@ mod tests {
             id: None,
             model: None,
             reasoning_effort: None,
+            backend_session_id: None,
         };
         let plans = cfg.launch_plans();
         assert_eq!(plans.len(), 2);
@@ -1166,6 +1261,7 @@ mod tests {
             id: None,
             model: None,
             reasoning_effort: None,
+            backend_session_id: None,
         };
         let plans = cfg.launch_plans();
         assert_eq!(plans.len(), 1);
@@ -1185,6 +1281,7 @@ mod tests {
             id: None,
             model: None,
             reasoning_effort: None,
+            backend_session_id: None,
         };
         let plans = cfg.launch_plans();
         assert!(!plans[0].args.iter().any(|a| a == "--resume"));
@@ -1235,6 +1332,7 @@ mod tests {
             id: None,
             model: None,
             reasoning_effort: None,
+            backend_session_id: None,
         };
         // Override the first plan to also point at a missing binary so we
         // exercise the all-plans-failed path. SpawnConfig always tries the
@@ -1283,6 +1381,7 @@ mod tests {
             id: None,
             model: None,
             reasoning_effort: None,
+            backend_session_id: None,
         })
         .await
         .expect("codex spawn");
@@ -1415,6 +1514,7 @@ mod tests {
             id: None,
             model: None,
             reasoning_effort: None,
+            backend_session_id: None,
         })
         .await
         .expect("claude spawn");
