@@ -340,6 +340,16 @@ async fn send_files_stream_frame(
     Ok(())
 }
 
+fn spawn_files_reply(
+    channel: &std::sync::Arc<webrtc::data_channel::RTCDataChannel>,
+    response: serde_json::Value,
+) {
+    let ch = std::sync::Arc::clone(channel);
+    tokio::spawn(async move {
+        let _ = send_framed_files_response(ch, &response).await;
+    });
+}
+
 async fn send_framed_files_response(
     channel: std::sync::Arc<webrtc::data_channel::RTCDataChannel>,
     response: &serde_json::Value,
@@ -1025,14 +1035,25 @@ fn handle_file_transfer_msg(
                                     image_bytes.len(),
                                     temp_path,
                                 );
-                                // Inject the file path into the PTY as terminal input
-                                let path_bytes = temp_path.as_bytes().to_vec();
-                                if let Err(e) = sessions.write_input(session_id, path_bytes) {
-                                    warn!("failed to inject file path into PTY: {}", e);
-                                    return Some(FileTransferUpdate::Error {
-                                        request_id: transfer.request_id,
-                                        message: format!("pty_inject_failed: {e}"),
-                                    });
+                                // Terminal sessions have a PTY — inject the path
+                                // as stdin so it appears on the command line.
+                                // Agent sessions (purpose="agent") have no PTY;
+                                // the mobile inlines the path into the user
+                                // message instead.
+                                if sessions.is_active(session_id) {
+                                    let path_bytes = temp_path.as_bytes().to_vec();
+                                    if let Err(e) =
+                                        sessions.write_input(session_id, path_bytes)
+                                    {
+                                        warn!(
+                                            "failed to inject file path into PTY: {}",
+                                            e,
+                                        );
+                                        return Some(FileTransferUpdate::Error {
+                                            request_id: transfer.request_id,
+                                            message: format!("pty_inject_failed: {e}"),
+                                        });
+                                    }
                                 }
                                 Some(FileTransferUpdate::Complete {
                                     request_id: transfer.request_id,
@@ -1113,6 +1134,8 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
     let mut session_ciphers: HashMap<String, SessionCipher> = HashMap::new();
     // Cancellation signals for active download_stream tasks per mobile device
     let mut files_download_cancels: HashMap<String, tokio::sync::watch::Sender<bool>> = HashMap::new();
+    // Active JSONL tailers, keyed by (mobile_device_id, subscription_id).
+    let mut files_watchers: HashMap<(String, String), tokio::task::JoinHandle<()>> = HashMap::new();
 
     // Challenge-response auth state for WebRTC channels
     let mut authenticated_channels: HashSet<String> = HashSet::new();
@@ -1985,6 +2008,14 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                             if let Some(cancel_tx) = files_download_cancels.remove(&mobile_device_id) {
                                 let _ = cancel_tx.send(true);
                             }
+                            files_watchers.retain(|(dev, _), handle| {
+                                if dev == &mobile_device_id {
+                                    handle.abort();
+                                    false
+                                } else {
+                                    true
+                                }
+                            });
                             // Clean up pending uploads and their temp files
                             let prefix = format!("{mobile_device_id}:");
                             let stale_keys: Vec<String> = files_binary_uploads
@@ -2370,6 +2401,156 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                                 send_files_stream_frame(channel, &end, &[]),
                                             ).await;
                                         });
+                                        continue;
+                                    }
+
+                                    if action == "watch_file" {
+                                        // Reap watchers whose task already exited (idle stop,
+                                        // send failure) — they only get removed from the map here
+                                        // or on FilesChannelClosed.
+                                        files_watchers.retain(|_, h| !h.is_finished());
+
+                                        let subscription_id = payload
+                                            .get("subscription_id")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("")
+                                            .to_string();
+                                        let poll_ms = payload
+                                            .get("poll_ms")
+                                            .and_then(|v| v.as_u64())
+                                            .unwrap_or(crate::files_watch::DEFAULT_POLL_MS);
+                                        let idle_ms = payload
+                                            .get("idle_ms")
+                                            .and_then(|v| v.as_u64())
+                                            .unwrap_or(crate::files_watch::DEFAULT_IDLE_MS);
+                                        let from_offset = payload
+                                            .get("from_offset")
+                                            .and_then(|v| v.as_u64());
+
+                                        if subscription_id.is_empty() {
+                                            spawn_files_reply(&channel, serde_json::json!({
+                                                "channel": "files",
+                                                "response_to": request_id,
+                                                "status": "error",
+                                                "error": "missing subscription_id",
+                                                "error_code": "watch_bad_request",
+                                            }));
+                                            continue;
+                                        }
+
+                                        let canonical = match crate::files::resolve_file_path_for_transfer(&path) {
+                                            Ok(p) => p,
+                                            Err(err) => {
+                                                spawn_files_reply(&channel, serde_json::json!({
+                                                    "channel": "files",
+                                                    "response_to": request_id,
+                                                    "status": "error",
+                                                    "error": err.to_string(),
+                                                    "error_code": "watch_path_failed",
+                                                }));
+                                                continue;
+                                            }
+                                        };
+
+                                        let key = (mobile_device_id.clone(), subscription_id.clone());
+                                        if let Some(prev) = files_watchers.remove(&key) {
+                                            prev.abort();
+                                        }
+
+                                        let initial_offset = from_offset
+                                            .unwrap_or_else(|| crate::files_watch::initial_offset(&canonical));
+                                        spawn_files_reply(&channel, serde_json::json!({
+                                            "channel": "files",
+                                            "response_to": request_id,
+                                            "status": "ok",
+                                            "data": {
+                                                "subscription_id": subscription_id,
+                                                "initial_offset": initial_offset,
+                                            }
+                                        }));
+
+                                        let watcher_channel = std::sync::Arc::clone(&channel);
+                                        let watcher_path = canonical.clone();
+                                        let path_str = path.clone();
+                                        let sub_id = subscription_id.clone();
+                                        let handle = tokio::spawn(async move {
+                                            use tokio::time::{interval, Duration, Instant};
+                                            let mut state = crate::files_watch::TailState::starting_at(initial_offset);
+                                            let mut ticker = interval(Duration::from_millis(poll_ms.max(100)));
+                                            ticker.set_missed_tick_behavior(
+                                                tokio::time::MissedTickBehavior::Delay,
+                                            );
+                                            let mut last_growth = Instant::now();
+                                            loop {
+                                                ticker.tick().await;
+                                                let lines = match crate::files_watch::read_delta(
+                                                    &watcher_path,
+                                                    &mut state,
+                                                ) {
+                                                    Ok(l) => l,
+                                                    Err(e) => {
+                                                        warn!(
+                                                            "files watch read_delta error sub={} path={}: {}",
+                                                            sub_id,
+                                                            watcher_path.display(),
+                                                            e
+                                                        );
+                                                        continue;
+                                                    }
+                                                };
+                                                if !lines.is_empty() {
+                                                    last_growth = Instant::now();
+                                                    let frame = serde_json::json!({
+                                                        "channel": "files",
+                                                        "event": "file_appended",
+                                                        "subscription_id": sub_id,
+                                                        "path": path_str,
+                                                        "lines": lines,
+                                                        "new_offset": state.last_size,
+                                                    });
+                                                    let ch = std::sync::Arc::clone(&watcher_channel);
+                                                    if let Err(e) = send_framed_files_response(ch, &frame).await {
+                                                        warn!(
+                                                            "files watch frame send failed sub={}: {}",
+                                                            sub_id, e
+                                                        );
+                                                        break;
+                                                    }
+                                                } else if last_growth.elapsed()
+                                                    >= Duration::from_millis(idle_ms)
+                                                {
+                                                    let stop = serde_json::json!({
+                                                        "channel": "files",
+                                                        "event": "watch_stopped",
+                                                        "subscription_id": sub_id,
+                                                        "reason": "idle",
+                                                    });
+                                                    let ch = std::sync::Arc::clone(&watcher_channel);
+                                                    let _ = send_framed_files_response(ch, &stop).await;
+                                                    break;
+                                                }
+                                            }
+                                        });
+                                        files_watchers.insert(key, handle);
+                                        continue;
+                                    }
+
+                                    if action == "unwatch_file" {
+                                        let subscription_id = payload
+                                            .get("subscription_id")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("")
+                                            .to_string();
+                                        let key = (mobile_device_id.clone(), subscription_id.clone());
+                                        if let Some(handle) = files_watchers.remove(&key) {
+                                            handle.abort();
+                                        }
+                                        spawn_files_reply(&channel, serde_json::json!({
+                                            "channel": "files",
+                                            "response_to": request_id,
+                                            "status": "ok",
+                                            "data": { "subscription_id": subscription_id },
+                                        }));
                                         continue;
                                     }
 
@@ -3039,6 +3220,128 @@ async fn refresh_auth_if_needed(backend: &BackendClient, store: &mut StateStore)
     Ok(())
 }
 
+/// Rewrite a Claude stdout line so that embedded `tool_result` payloads are
+/// stripped down to a short placeholder. The mobile normalizer only needs to
+/// know that the tool call succeeded/failed — it already rendered the tool
+/// name/input from the preceding `tool_use` frame. Raw tool results can be
+/// hundreds of KB (file contents, bash stdout, base64 images) and blow past
+/// the SCTP max message size, killing the data channel mid-turn.
+/// Conservative cap that leaves plenty of SCTP headroom. webrtc-rs defaults to
+/// `SCTP_MAX_MESSAGE_SIZE = 65535`; staying well under lets fragmentation +
+/// overhead breathe.
+const OUTBOUND_LINE_SAFE_MAX: usize = 48 * 1024;
+/// Longest individual string value we'll keep verbatim before truncating.
+/// 4 KB is more than enough for tool names, paths, short outputs, etc.
+const TRUNCATE_STRING_OVER: usize = 4 * 1024;
+
+/// Walk the JSON value and replace any string longer than
+/// `TRUNCATE_STRING_OVER` with a placeholder. Also collapses arrays that look
+/// like content-part lists when they're the obvious culprit. Mutates in place
+/// and reports whether anything changed.
+fn truncate_oversized_strings(val: &mut serde_json::Value) -> bool {
+    let mut changed = false;
+    match val {
+        serde_json::Value::String(s) => {
+            if s.len() > TRUNCATE_STRING_OVER {
+                let placeholder = format!("[truncated by pocketshell: {} bytes]", s.len());
+                *s = placeholder;
+                changed = true;
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items.iter_mut() {
+                if truncate_oversized_strings(item) {
+                    changed = true;
+                }
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for (_k, v) in map.iter_mut() {
+                if truncate_oversized_strings(v) {
+                    changed = true;
+                }
+            }
+        }
+        _ => {}
+    }
+    changed
+}
+
+/// Safety net: if a stdout line is about to blow the SCTP cap, forcibly
+/// truncate any oversized string values inside it. Returns the rewritten line
+/// only when the input actually exceeded `OUTBOUND_LINE_SAFE_MAX`.
+fn truncate_outbound_line_if_too_large(line: &str) -> Option<String> {
+    if line.len() <= OUTBOUND_LINE_SAFE_MAX {
+        return None;
+    }
+    let mut val: serde_json::Value = serde_json::from_str(line).ok()?;
+    truncate_oversized_strings(&mut val);
+    let out = serde_json::to_string(&val).ok()?;
+    if out.len() >= line.len() {
+        // Nothing salvageable (e.g. massive number of small fields). Drop a
+        // summary envelope so the turn doesn't stall waiting for a frame the
+        // peer will never accept.
+        return Some(
+            serde_json::json!({
+                "type": "system",
+                "subtype": "notification",
+                "key": "outbound_truncated",
+                "text": format!("[pocketshell dropped a {}-byte frame]", line.len()),
+            })
+            .to_string(),
+        );
+    }
+    Some(out)
+}
+
+fn sanitize_claude_outbound_line(line: &str) -> Option<String> {
+    // Cheap pre-check — skip the JSON parse on frames that can't contain
+    // tool_result (the vast majority of deltas).
+    if !line.contains("\"tool_result\"") && !line.contains("\"tool_use_result\"") {
+        return None;
+    }
+    let mut val: serde_json::Value = serde_json::from_str(line).ok()?;
+    let ty = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    if ty != "user" && ty != "assistant" {
+        return None;
+    }
+    let stub = serde_json::json!("[stripped by pocketshell]");
+    let mut changed = false;
+
+    // Inside message.content[] — tool_result items can carry image base64,
+    // file contents, or bash stdout. Replace the body with a compact stub.
+    if let Some(content) = val
+        .get_mut("message")
+        .and_then(|m| m.get_mut("content"))
+        .and_then(|c| c.as_array_mut())
+    {
+        for item in content.iter_mut() {
+            let Some(obj) = item.as_object_mut() else { continue };
+            if obj.get("type").and_then(|v| v.as_str()) != Some("tool_result") {
+                continue;
+            }
+            if let Some(inner) = obj.get_mut("content") {
+                *inner = stub.clone();
+                changed = true;
+            }
+        }
+    }
+
+    // Sibling `tool_use_result` field on the frame (Claude -p emits the
+    // tool's output here too — redundant copy of message.content[].content).
+    if val.get("tool_use_result").is_some() {
+        if let Some(obj) = val.as_object_mut() {
+            obj.insert("tool_use_result".to_string(), stub.clone());
+            changed = true;
+        }
+    }
+
+    if !changed {
+        return None;
+    }
+    serde_json::to_string(&val).ok()
+}
+
 /// WebRTC-transport agent stdout pump. Reads the child's stdout Receiver and
 /// forwards each line to `channel`. On send failure the channel is gone — just
 /// exit; `AgentChannelClosed` will tear down the child. On natural EOF (child
@@ -3065,6 +3368,24 @@ async fn spawn_webrtc_agent_pump(
                 &router, &agent_id, &line, &mut resume_id_noted,
             ).await;
         }
+        let line = if is_claude {
+            sanitize_claude_outbound_line(&line).unwrap_or(line)
+        } else {
+            line
+        };
+        let line = match truncate_outbound_line_if_too_large(&line) {
+            Some(safe) => {
+                warn!(
+                    agent = %agent_id,
+                    seq = pump_seq,
+                    original_bytes = line.len(),
+                    new_bytes = safe.len(),
+                    "agent pump -> mobile: oversized frame truncated",
+                );
+                safe
+            }
+            None => line,
+        };
         let line_bytes = line.len();
         let mut framed = line.into_bytes();
         framed.push(b'\n');
@@ -3130,6 +3451,23 @@ async fn spawn_ws_agent_pump(
                 &router, &agent_id, &line, &mut resume_id_noted,
             ).await;
         }
+        let line = if is_claude {
+            sanitize_claude_outbound_line(&line).unwrap_or(line)
+        } else {
+            line
+        };
+        let line = match truncate_outbound_line_if_too_large(&line) {
+            Some(safe) => {
+                warn!(
+                    agent = %agent_id,
+                    original_bytes = line.len(),
+                    new_bytes = safe.len(),
+                    "agent pump (ws) -> mobile: oversized frame truncated",
+                );
+                safe
+            }
+            None => line,
+        };
         let mut extra = std::collections::HashMap::new();
         extra.insert("agentId".to_string(), serde_json::json!(agent_id));
         extra.insert(

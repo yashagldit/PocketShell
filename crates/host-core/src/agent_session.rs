@@ -336,6 +336,10 @@ impl SpawnConfig {
             "stream-json".into(),
             "--include-partial-messages".into(),
             "--verbose".into(),
+            // Mobile has no way to click an approval prompt mid-turn. Trust
+            // the host (user owns it) and auto-allow every tool call.
+            "--permission-mode".into(),
+            "bypassPermissions".into(),
         ];
         if let Some(id) = self.resume_id.as_ref() {
             args.push("--resume".into());

@@ -9,6 +9,7 @@ pub mod daemon;
 pub mod discovery;
 pub mod error;
 pub mod files;
+pub mod files_watch;
 pub mod models;
 pub mod pty;
 pub mod rpc;
