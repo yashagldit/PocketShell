@@ -3955,9 +3955,8 @@ async fn handle_signal(
                 .unwrap_or(120) as u16;
             let rows = msg.extra.get("rows").and_then(|v| v.as_u64()).unwrap_or(30) as u16;
             // `purpose` is new in phase 1: the backend forwards what mobile
-            // sent. "agent" sessions are signaling anchors for agent-chat —
-            // the terminal data channel opens but no PTY is spawned, so
-            // agent chats don't consume the 8-PTY budget.
+            // sent. Some session types are signaling/data-channel anchors only
+            // and do not need a PTY on the host.
             let purpose = msg
                 .extra
                 .get("purpose")
@@ -3965,6 +3964,8 @@ async fn handle_signal(
                 .unwrap_or("terminal")
                 .to_string();
             let is_agent_purpose = purpose == "agent";
+            let is_utility_purpose = purpose == "utility";
+            let is_passthrough_purpose = is_agent_purpose || is_utility_purpose;
 
             if !store.is_trusted(&mobile_device_id) {
                 let mut extra = std::collections::HashMap::new();
@@ -4015,20 +4016,20 @@ async fn handle_signal(
 
             let mut accept_error: Option<String> = None;
             let mut accept = false;
-            // For purpose="agent", skip PTY spawn entirely. The session is
-            // just a signaling anchor for the `agent-{id}` data channel;
-            // nothing reads from/writes to a PTY on the host side.
-            if is_agent_purpose {
+            // For passthrough purposes, skip PTY spawn entirely. These
+            // sessions exist only to anchor signaling / extra data channels.
+            // They must not consume the finite PTY session budget.
+            if is_passthrough_purpose {
                 info!(
-                    "session_request accepted without PTY (agent purpose) session={} mobile={}",
-                    session_id, mobile_device_id,
+                    "session_request accepted without PTY (purpose={}) session={} mobile={}",
+                    purpose, session_id, mobile_device_id,
                 );
                 let mut ack_extra = std::collections::HashMap::new();
                 ack_extra.insert(
                     "target_mobile_device_id".to_string(),
                     serde_json::json!(mobile_device_id),
                 );
-                ack_extra.insert("purpose".to_string(), serde_json::json!("agent"));
+                ack_extra.insert("purpose".to_string(), serde_json::json!(purpose));
                 let ack = SignalEnvelope {
                     message_type: "session_ack".to_string(),
                     session_id: Some(session_id.clone()),
@@ -4543,6 +4544,107 @@ async fn handle_signal(
                         .and_then(|v| v.as_str())
                         .unwrap_or_default();
                     match action {
+                        "host_close_all_sessions" => {
+                            info!("host_close_all_sessions requested by mobile={}", mobile_device_id);
+
+                            let daemon_host_id = match store.host_id() {
+                                Ok(id) => id,
+                                Err(_) => String::new(),
+                            };
+                            let active_backend_sessions = match store
+                                .access_token()
+                                .map(|s| s.to_string())
+                            {
+                                Ok(token) => backend
+                                    .list_active_sessions_full(&token, &daemon_host_id)
+                                    .await
+                                    .unwrap_or_default(),
+                                Err(_) => Vec::new(),
+                            };
+
+                            peer_session_routes.clear();
+                            session_ciphers.clear();
+                            sessions.close_all();
+                            webrtc_mgr.close_all().await;
+
+                            for (_, handle) in agent_ws_pumps.drain() {
+                                handle.abort();
+                            }
+                            agent_router.close_all().await;
+
+                            if let Ok(token) = store.access_token().map(|s| s.to_string()) {
+                                for session in active_backend_sessions {
+                                    let _ = backend
+                                        .transition_session(
+                                            &token,
+                                            &session.id,
+                                            SessionState::Ended,
+                                            None,
+                                        )
+                                        .await;
+                                    store.touch_session_state(&session.id, SessionState::Ended);
+                                }
+                            }
+
+                            let _ = store.save();
+                        }
+                        "host_restart_agent" => {
+                            info!("host_restart_agent requested by mobile={}", mobile_device_id);
+
+                            let daemon_host_id = match store.host_id() {
+                                Ok(id) => id,
+                                Err(_) => String::new(),
+                            };
+                            let active_backend_sessions = match store
+                                .access_token()
+                                .map(|s| s.to_string())
+                            {
+                                Ok(token) => backend
+                                    .list_active_sessions_full(&token, &daemon_host_id)
+                                    .await
+                                    .unwrap_or_default(),
+                                Err(_) => Vec::new(),
+                            };
+
+                            peer_session_routes.clear();
+                            session_ciphers.clear();
+                            sessions.close_all();
+                            webrtc_mgr.close_all().await;
+
+                            for (_, handle) in agent_ws_pumps.drain() {
+                                handle.abort();
+                            }
+                            agent_router.close_all().await;
+
+                            if let Ok(token) = store.access_token().map(|s| s.to_string()) {
+                                for session in active_backend_sessions {
+                                    let _ = backend
+                                        .transition_session(
+                                            &token,
+                                            &session.id,
+                                            SessionState::Ended,
+                                            None,
+                                        )
+                                        .await;
+                                    store.touch_session_state(&session.id, SessionState::Ended);
+                                }
+                            }
+
+                            let _ = store.save();
+
+                            tokio::spawn(async move {
+                                tokio::time::sleep(Duration::from_millis(250)).await;
+                                match crate::service::restart() {
+                                    Ok(crate::service::RestartStatus::RestartedService) => {}
+                                    Ok(crate::service::RestartStatus::StartedDaemon) => {
+                                        std::process::exit(0);
+                                    }
+                                    Err(err) => {
+                                        warn!("host_restart_agent failed: {}", err);
+                                    }
+                                }
+                            });
+                        }
                         "resize" => {
                             let cols =
                                 payload.get("cols").and_then(|v| v.as_u64()).unwrap_or(120) as u16;

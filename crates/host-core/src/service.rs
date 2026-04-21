@@ -20,6 +20,12 @@ pub enum StopStatus {
     NotRunning,
 }
 
+/// Result of a restart attempt.
+pub enum RestartStatus {
+    RestartedService,
+    StartedDaemon,
+}
+
 /// Install and start the daemon as a system service.
 /// Falls back to `daemon start`-style background spawn if service install fails.
 pub fn install_and_start() -> Result<ServiceStatus> {
@@ -328,6 +334,66 @@ fn start_daemon_process() -> Result<()> {
 
     info!("daemon started as background process (pid {})", child.id());
     Ok(())
+}
+
+/// Restart the daemon using the service manager when available; otherwise
+/// spawn a replacement detached daemon process.
+pub fn restart() -> Result<RestartStatus> {
+    if cfg!(target_os = "macos") {
+        let plist_path = launchd_plist_path();
+        if plist_path.exists() {
+            let _ = Command::new("launchctl")
+                .args(["load", "-w"])
+                .arg(&plist_path)
+                .status();
+
+            let uid = Command::new("id")
+                .arg("-u")
+                .output()
+                .ok()
+                .and_then(|out| {
+                    if out.status.success() {
+                        String::from_utf8(out.stdout).ok()
+                    } else {
+                        None
+                    }
+                })
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| HostError::Config("resolve launchd uid".into()))?;
+
+            let target = format!("gui/{uid}/{LAUNCHD_LABEL}");
+            let status = Command::new("launchctl")
+                .args(["kickstart", "-k", &target])
+                .status()
+                .map_err(|e| HostError::Config(format!("launchctl kickstart: {e}")))?;
+
+            if !status.success() {
+                return Err(HostError::Config("launchctl kickstart failed".into()));
+            }
+
+            info!("launchd service restarted");
+            return Ok(RestartStatus::RestartedService);
+        }
+    } else if cfg!(target_os = "linux") && has_systemctl() {
+        let unit_path = systemd_unit_path();
+        if unit_path.exists() {
+            let status = Command::new("systemctl")
+                .args(["--user", "restart", SYSTEMD_SERVICE])
+                .status()
+                .map_err(|e| HostError::Config(format!("systemctl restart: {e}")))?;
+
+            if !status.success() {
+                return Err(HostError::Config("systemctl restart failed".into()));
+            }
+
+            info!("systemd user service restarted");
+            return Ok(RestartStatus::RestartedService);
+        }
+    }
+
+    start_daemon_process()?;
+    Ok(RestartStatus::StartedDaemon)
 }
 
 /// Stop the service without removing it. It will still auto-start on reboot.

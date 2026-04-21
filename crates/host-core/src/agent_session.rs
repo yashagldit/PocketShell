@@ -1451,6 +1451,16 @@ impl AgentRouter {
         self.backends.lock().await.contains_key(agent_id)
     }
 
+    /// Terminate every live agent session and clear the routing index.
+    pub async fn close_all(&self) {
+        let claude_ids = self.manager.list().await;
+        for id in claude_ids {
+            let _ = self.manager.close(&id).await;
+        }
+        self.codex.shutdown().await;
+        self.backends.lock().await.clear();
+    }
+
     /// Propagate a freshly-observed Claude `session_id` into the manager's
     /// resume index. Called by the pump on the first `system` event.
     pub async fn note_claude_resume_id(&self, agent_id: &str, resume_id: String) {
