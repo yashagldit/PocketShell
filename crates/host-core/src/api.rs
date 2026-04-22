@@ -141,6 +141,14 @@ impl BackendClient {
             return Err(HostError::AuthRevoked);
         }
 
+        // 403 on this endpoint means the backend doesn't recognize this host as
+        // owned by the authenticated user — typically because the host was
+        // deleted from the mobile app. Surface as HostGone so the caller can
+        // auto-recover by re-registering as a new host.
+        if res.status() == StatusCode::FORBIDDEN {
+            return Err(HostError::HostGone);
+        }
+
         if !res.status().is_success() {
             let body = res.text().await.unwrap_or_default();
             return Err(HostError::Backend(format!(

@@ -533,10 +533,21 @@ async fn pair_qr_device_add(config: AppConfig, mut store: StateStore) -> Result<
     let access_token = store.access_token()?.to_string();
 
     println!("Requesting device-add pairing claim from backend...");
-    let claim = backend
+    let claim = match backend
         .start_host_initiated_device_add(&access_token, &host.host_id)
         .await
-        .context("starting host-initiated device-add")?;
+    {
+        Ok(c) => c,
+        Err(host_core::error::HostError::HostGone) => {
+            println!(
+                "this host was removed from your account on the backend — re-registering as a new host..."
+            );
+            store.state = Default::default();
+            store.save().context("clearing stale host identity")?;
+            return pair_qr_new_host(config, store).await;
+        }
+        Err(e) => return Err(e).context("starting host-initiated device-add"),
+    };
 
     // QR payload includes host_id (device-add marker) and the existing host's
     // pubkey so mobile can verify continuity with any previously pinned key.

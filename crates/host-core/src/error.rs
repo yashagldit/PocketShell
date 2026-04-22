@@ -10,6 +10,8 @@ pub enum HostError {
     Backend(String),
     #[error("authentication revoked or invalid; please run `pocketshell pair <CODE>` again")]
     AuthRevoked,
+    #[error("host no longer exists on the backend (removed from account)")]
+    HostGone,
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("serialization error: {0}")]
