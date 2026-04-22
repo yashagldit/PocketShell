@@ -5807,3 +5807,200 @@ fn version_gte(current: &str, required: &str) -> bool {
 
     true
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn version_gte_equal() {
+        assert!(version_gte("1.2.3", "1.2.3"));
+    }
+
+    #[test]
+    fn version_gte_current_newer() {
+        assert!(version_gte("1.2.4", "1.2.3"));
+        assert!(version_gte("2.0.0", "1.9.9"));
+        assert!(version_gte("1.2.3.1", "1.2.3"));
+    }
+
+    #[test]
+    fn version_gte_current_older() {
+        assert!(!version_gte("1.2.2", "1.2.3"));
+        assert!(!version_gte("0.9.9", "1.0.0"));
+        assert!(!version_gte("1.2", "1.2.1"));
+    }
+
+    #[test]
+    fn version_gte_handles_nonnumeric_as_zero() {
+        // "abc" parses to 0 per the impl — treat as missing component.
+        assert!(version_gte("1.0.0", "1.0.abc"));
+        assert!(version_gte("1.0.abc", "1.0.0"));
+    }
+
+    #[test]
+    fn build_auth_message_prefixes_sentinel() {
+        let val = serde_json::json!({"type": "challenge", "nonce": "abc"});
+        let out = build_auth_message(&val);
+        assert_eq!(&out[..AUTH_SENTINEL.len()], AUTH_SENTINEL);
+        let body = &out[AUTH_SENTINEL.len()..];
+        let parsed: serde_json::Value = serde_json::from_slice(body).unwrap();
+        assert_eq!(parsed, val);
+    }
+
+    #[test]
+    fn encode_decode_files_stream_frame_roundtrip() {
+        let header = serde_json::json!({"op": "upload_chunk", "id": "t1", "i": 42});
+        let payload = b"\x01\x02\x03binary\xffpayload\n\nend";
+        let encoded = encode_files_stream_frame(&header, payload);
+        assert_eq!(&encoded[..5], b"\x00PSFB");
+
+        let decoded = decode_files_stream_frame(&encoded).expect("decodes");
+        assert_eq!(decoded.header, header);
+        assert_eq!(decoded.payload, payload);
+    }
+
+    #[test]
+    fn decode_files_stream_frame_rejects_missing_sentinel() {
+        assert!(decode_files_stream_frame(b"bogus").is_none());
+        assert!(decode_files_stream_frame(b"\x00PSXX{}\nfoo").is_none());
+    }
+
+    #[test]
+    fn decode_files_stream_frame_rejects_missing_newline() {
+        // Header without a trailing newline separator is unparseable.
+        let bad = b"\x00PSFB{\"op\":\"x\"}no-newline-before-payload";
+        assert!(decode_files_stream_frame(bad).is_none());
+    }
+
+    #[test]
+    fn decode_framed_files_message_returns_utf8_for_non_sentinel() {
+        let mut messages = HashMap::new();
+        let out =
+            decode_framed_files_message(&mut messages, "m1", b"hello world");
+        assert_eq!(out.as_deref(), Some("hello world"));
+    }
+
+    #[test]
+    fn decode_framed_files_message_assembles_chunked_payload() {
+        let mut messages = HashMap::new();
+
+        let start = b"\x00PSFC{\"op\":\"start\",\"id\":\"msg1\",\"chunks\":2}";
+        assert!(decode_framed_files_message(&mut messages, "dev", start).is_none());
+
+        let chunk0 = b"\x00PSFC{\"op\":\"chunk\",\"id\":\"msg1\",\"i\":0,\"d\":\"hello \"}";
+        assert!(decode_framed_files_message(&mut messages, "dev", chunk0).is_none());
+
+        let chunk1 = b"\x00PSFC{\"op\":\"chunk\",\"id\":\"msg1\",\"i\":1,\"d\":\"world\"}";
+        assert!(decode_framed_files_message(&mut messages, "dev", chunk1).is_none());
+
+        let end = b"\x00PSFC{\"op\":\"end\",\"id\":\"msg1\"}";
+        let result = decode_framed_files_message(&mut messages, "dev", end);
+        assert_eq!(result.as_deref(), Some("hello world"));
+        // `end` should have cleaned up the pending message.
+        assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn decode_framed_files_message_scopes_by_device_id() {
+        let mut messages = HashMap::new();
+        let start = b"\x00PSFC{\"op\":\"start\",\"id\":\"x\",\"chunks\":1}";
+        decode_framed_files_message(&mut messages, "devA", start);
+
+        // Same message id from a *different* device should not find the entry.
+        let end = b"\x00PSFC{\"op\":\"end\",\"id\":\"x\"}";
+        assert!(decode_framed_files_message(&mut messages, "devB", end).is_none());
+        // But the original device can finalize.
+        let got = decode_framed_files_message(&mut messages, "devA", end);
+        assert_eq!(got.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn truncate_oversized_strings_replaces_large_leaf() {
+        let big = "x".repeat(TRUNCATE_STRING_OVER + 10);
+        let mut val = serde_json::json!({
+            "small": "ok",
+            "big": big,
+            "nested": { "arr": ["short", "y".repeat(TRUNCATE_STRING_OVER + 1)] }
+        });
+        let changed = truncate_oversized_strings(&mut val);
+        assert!(changed);
+        assert_eq!(val["small"], serde_json::json!("ok"));
+        assert!(val["big"]
+            .as_str()
+            .unwrap()
+            .starts_with("[truncated by pocketshell:"));
+        assert!(val["nested"]["arr"][1]
+            .as_str()
+            .unwrap()
+            .starts_with("[truncated by pocketshell:"));
+        // Short sibling untouched.
+        assert_eq!(val["nested"]["arr"][0], serde_json::json!("short"));
+    }
+
+    #[test]
+    fn truncate_outbound_line_passthrough_when_small() {
+        let line = r#"{"hello":"world"}"#;
+        assert!(truncate_outbound_line_if_too_large(line).is_none());
+    }
+
+    #[test]
+    fn truncate_outbound_line_shrinks_large_frame() {
+        let big = "a".repeat(OUTBOUND_LINE_SAFE_MAX + 1_000);
+        let line = serde_json::json!({"type": "out", "text": big}).to_string();
+        let out = truncate_outbound_line_if_too_large(&line).expect("shrinks");
+        assert!(out.len() < line.len());
+        assert!(out.contains("[truncated by pocketshell:"));
+    }
+
+    #[test]
+    fn sanitize_claude_skips_lines_without_tool_result() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}"#;
+        assert!(sanitize_claude_outbound_line(line).is_none());
+    }
+
+    #[test]
+    fn sanitize_claude_strips_tool_result_content() {
+        let line = serde_json::json!({
+            "type": "user",
+            "message": {
+                "content": [
+                    {"type": "tool_result", "content": "a very large base64 blob..."},
+                    {"type": "text", "text": "keep me"}
+                ]
+            }
+        })
+        .to_string();
+        let sanitized = sanitize_claude_outbound_line(&line).expect("rewritten");
+        let val: serde_json::Value = serde_json::from_str(&sanitized).unwrap();
+        assert_eq!(
+            val["message"]["content"][0]["content"],
+            serde_json::json!("[stripped by pocketshell]")
+        );
+        // Sibling text item untouched.
+        assert_eq!(val["message"]["content"][1]["text"], serde_json::json!("keep me"));
+    }
+
+    #[test]
+    fn sanitize_claude_strips_tool_use_result_sibling() {
+        let line = serde_json::json!({
+            "type": "assistant",
+            "tool_use_result": {"stdout": "huge"},
+            "message": {"content": []}
+        })
+        .to_string();
+        let sanitized = sanitize_claude_outbound_line(&line).expect("rewritten");
+        let val: serde_json::Value = serde_json::from_str(&sanitized).unwrap();
+        assert_eq!(
+            val["tool_use_result"],
+            serde_json::json!("[stripped by pocketshell]")
+        );
+    }
+
+    #[test]
+    fn sanitize_claude_ignores_wrong_type() {
+        // Contains tool_result token but type is neither user nor assistant.
+        let line = r#"{"type":"system","tool_use_result":{"x":1}}"#;
+        assert!(sanitize_claude_outbound_line(line).is_none());
+    }
+}

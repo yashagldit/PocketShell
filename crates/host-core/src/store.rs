@@ -234,3 +234,289 @@ fn set_dir_permissions(path: &PathBuf) -> Result<()> {
 fn set_dir_permissions(_path: &PathBuf) -> Result<()> {
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{AuthState, HostIdentity, SessionState};
+    use chrono::{Duration, Utc};
+
+    fn make_store(path: PathBuf) -> StateStore {
+        StateStore {
+            path,
+            state: AgentState::default(),
+        }
+    }
+
+    fn trusted_device(mobile_id: &str) -> TrustedDeviceRecord {
+        TrustedDeviceRecord {
+            id: format!("td-{mobile_id}"),
+            host_id: "host-1".into(),
+            mobile_device_id: mobile_id.into(),
+            approved_at: Some(Utc::now()),
+            revoked_at: None,
+            permissions_json: None,
+            device_public_key: Some("pubkey".into()),
+            created_at: Utc::now(),
+        }
+    }
+
+    fn session_record(id: &str, state: SessionState, age_secs: i64) -> SessionRecord {
+        SessionRecord {
+            session_id: id.into(),
+            mobile_device_id: "m".into(),
+            state,
+            updated_at: Utc::now() - Duration::seconds(age_secs),
+            persistent: false,
+            tmux_session_name: None,
+        }
+    }
+
+    #[test]
+    fn save_writes_pretty_json_to_path() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("state.json");
+        let mut store = make_store(path.clone());
+        store.state.auth = Some(AuthState {
+            access_token: "A".into(),
+            refresh_token: "R".into(),
+            access_expires_at: None,
+        });
+        store.save().unwrap();
+
+        let raw = fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("\"access_token\""));
+        assert!(raw.contains("\"A\""));
+        // serde_json::to_string_pretty emits newlines
+        assert!(raw.contains('\n'));
+    }
+
+    #[test]
+    fn save_then_deserialize_roundtrips_state() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("state.json");
+        let mut store = make_store(path.clone());
+        store.add_trusted_device(trusted_device("m1"));
+        store.save().unwrap();
+
+        let raw = fs::read_to_string(&path).unwrap();
+        let parsed: AgentState = serde_json::from_str(&raw).unwrap();
+        assert_eq!(parsed.trusted_devices.len(), 1);
+        assert_eq!(parsed.trusted_devices[0].mobile_device_id, "m1");
+    }
+
+    #[test]
+    fn require_logged_in_errors_when_missing() {
+        let store = make_store(PathBuf::from("/tmp/unused"));
+        let err = store.require_logged_in().unwrap_err();
+        assert!(matches!(err, HostError::NotLoggedIn));
+    }
+
+    #[test]
+    fn require_logged_in_ok_when_auth_and_host_present() {
+        let mut store = make_store(PathBuf::from("/tmp/unused"));
+        store.state.auth = Some(AuthState {
+            access_token: "a".into(),
+            refresh_token: "r".into(),
+            access_expires_at: None,
+        });
+        store.state.host = Some(HostIdentity {
+            host_id: "h".into(),
+            user_id: "u".into(),
+            hostname: "n".into(),
+            platform: "p".into(),
+            app_version: "v".into(),
+            public_key: "pk".into(),
+            private_key: String::new(),
+            registered_at: Utc::now(),
+        });
+        assert!(store.require_logged_in().is_ok());
+        assert_eq!(store.host_id().unwrap(), "h");
+        assert_eq!(store.access_token().unwrap(), "a");
+    }
+
+    #[test]
+    fn host_id_and_access_token_error_without_login() {
+        let store = make_store(PathBuf::from("/tmp/unused"));
+        assert!(matches!(store.host_id().unwrap_err(), HostError::NotLoggedIn));
+        assert!(matches!(
+            store.access_token().unwrap_err(),
+            HostError::NotLoggedIn
+        ));
+    }
+
+    #[test]
+    fn upsert_pending_device_replaces_duplicate() {
+        let mut store = make_store(PathBuf::from("/tmp/unused"));
+        let mut d1 = trusted_device("m1");
+        d1.id = "first".into();
+        store.upsert_pending_device(d1);
+        let mut d2 = trusted_device("m1");
+        d2.id = "second".into();
+        store.upsert_pending_device(d2);
+        assert_eq!(store.state.pending_devices.len(), 1);
+        assert_eq!(store.state.pending_devices[0].id, "second");
+    }
+
+    #[test]
+    fn add_trusted_device_replaces_and_clears_pending() {
+        let mut store = make_store(PathBuf::from("/tmp/unused"));
+        store.upsert_pending_device(trusted_device("m1"));
+        assert_eq!(store.state.pending_devices.len(), 1);
+
+        store.add_trusted_device(trusted_device("m1"));
+        assert_eq!(store.state.trusted_devices.len(), 1);
+        assert!(store.state.pending_devices.is_empty());
+
+        // Re-adding same mobile id does not grow the list
+        store.add_trusted_device(trusted_device("m1"));
+        assert_eq!(store.state.trusted_devices.len(), 1);
+    }
+
+    #[test]
+    fn remove_trusted_device_filters_by_mobile_id() {
+        let mut store = make_store(PathBuf::from("/tmp/unused"));
+        store.add_trusted_device(trusted_device("m1"));
+        store.add_trusted_device(trusted_device("m2"));
+        store.remove_trusted_device("m1");
+        assert_eq!(store.state.trusted_devices.len(), 1);
+        assert_eq!(store.state.trusted_devices[0].mobile_device_id, "m2");
+    }
+
+    #[test]
+    fn is_trusted_requires_approved_and_not_revoked() {
+        let mut store = make_store(PathBuf::from("/tmp/unused"));
+        let mut approved = trusted_device("ok");
+        approved.approved_at = Some(Utc::now());
+        approved.revoked_at = None;
+        store.add_trusted_device(approved);
+
+        let mut pending = trusted_device("pending");
+        pending.approved_at = None;
+        store.add_trusted_device(pending);
+
+        let mut revoked = trusted_device("revoked");
+        revoked.approved_at = Some(Utc::now());
+        revoked.revoked_at = Some(Utc::now());
+        store.add_trusted_device(revoked);
+
+        assert!(store.is_trusted("ok"));
+        assert!(!store.is_trusted("pending"));
+        assert!(!store.is_trusted("revoked"));
+        assert!(!store.is_trusted("nonexistent"));
+    }
+
+    #[test]
+    fn apply_revocations_removes_revoked_and_clears_pending() {
+        let mut store = make_store(PathBuf::from("/tmp/unused"));
+        store.add_trusted_device(trusted_device("keep"));
+        store.add_trusted_device(trusted_device("gone"));
+        store.upsert_pending_device(trusted_device("gone"));
+
+        let mut revoked = trusted_device("gone");
+        revoked.revoked_at = Some(Utc::now());
+        let backend = vec![trusted_device("keep"), revoked];
+
+        let removed = store.apply_revocations(&backend);
+        assert_eq!(removed, vec!["gone".to_string()]);
+        assert_eq!(store.state.trusted_devices.len(), 1);
+        assert_eq!(store.state.trusted_devices[0].mobile_device_id, "keep");
+        assert!(store.state.pending_devices.is_empty());
+    }
+
+    #[test]
+    fn apply_revocations_no_op_when_backend_all_active() {
+        let mut store = make_store(PathBuf::from("/tmp/unused"));
+        store.add_trusted_device(trusted_device("a"));
+        let removed = store.apply_revocations(&[trusted_device("a")]);
+        assert!(removed.is_empty());
+        assert_eq!(store.state.trusted_devices.len(), 1);
+    }
+
+    #[test]
+    fn upsert_session_replaces_existing() {
+        let mut store = make_store(PathBuf::from("/tmp/unused"));
+        store.upsert_session(session_record("s1", SessionState::Connected, 0));
+        store.upsert_session(session_record("s1", SessionState::Ended, 0));
+        assert_eq!(store.state.sessions.len(), 1);
+        assert_eq!(store.state.sessions[0].state, SessionState::Ended);
+    }
+
+    #[test]
+    fn touch_session_state_updates_existing() {
+        let mut store = make_store(PathBuf::from("/tmp/unused"));
+        store.upsert_session(session_record("s1", SessionState::Connected, 100));
+        let before = store.state.sessions[0].updated_at;
+        store.touch_session_state("s1", SessionState::Detached);
+        assert_eq!(store.state.sessions.len(), 1);
+        assert_eq!(store.state.sessions[0].state, SessionState::Detached);
+        assert!(store.state.sessions[0].updated_at > before);
+    }
+
+    #[test]
+    fn touch_session_state_inserts_when_unknown() {
+        let mut store = make_store(PathBuf::from("/tmp/unused"));
+        store.touch_session_state("new", SessionState::Requested);
+        assert_eq!(store.state.sessions.len(), 1);
+        let s = &store.state.sessions[0];
+        assert_eq!(s.session_id, "new");
+        assert_eq!(s.mobile_device_id, "unknown");
+        assert_eq!(s.state, SessionState::Requested);
+        assert!(!s.persistent);
+    }
+
+    #[test]
+    fn clear_ended_sessions_drops_old_ended_but_keeps_recent() {
+        let mut store = make_store(PathBuf::from("/tmp/unused"));
+        store.upsert_session(session_record("old-ended", SessionState::Ended, 1000));
+        store.upsert_session(session_record("recent-ended", SessionState::Ended, 10));
+        store.upsert_session(session_record("old-connected", SessionState::Connected, 1000));
+
+        let (native, expired) = store.clear_ended_sessions(300, 100_000);
+        assert!(native.is_empty());
+        assert!(expired.is_empty());
+        let ids: Vec<_> = store
+            .state
+            .sessions
+            .iter()
+            .map(|s| s.session_id.clone())
+            .collect();
+        assert!(!ids.contains(&"old-ended".to_string()));
+        assert!(ids.contains(&"recent-ended".to_string()));
+        assert!(ids.contains(&"old-connected".to_string()));
+    }
+
+    #[test]
+    fn clear_ended_sessions_expires_old_detached_non_persistent() {
+        let mut store = make_store(PathBuf::from("/tmp/unused"));
+        let mut s = session_record("det", SessionState::Detached, 500);
+        s.persistent = false;
+        store.upsert_session(s);
+
+        let (native, expired) = store.clear_ended_sessions(300, 100);
+        assert!(native.is_empty(), "non-persistent should not request PTY kill");
+        assert_eq!(expired, vec!["det".to_string()]);
+        assert!(store.state.sessions.is_empty());
+    }
+
+    #[test]
+    fn clear_ended_sessions_expires_old_detached_persistent_native() {
+        let mut store = make_store(PathBuf::from("/tmp/unused"));
+        let mut s = session_record("det", SessionState::Detached, 500);
+        s.persistent = true;
+        s.tmux_session_name = None;
+        store.upsert_session(s);
+
+        let (native, expired) = store.clear_ended_sessions(300, 100);
+        assert_eq!(native, vec!["det".to_string()]);
+        assert_eq!(expired, vec!["det".to_string()]);
+    }
+
+    #[test]
+    fn get_device_public_key_returns_stored_key() {
+        let mut store = make_store(PathBuf::from("/tmp/unused"));
+        store.add_trusted_device(trusted_device("m1"));
+        assert_eq!(store.get_device_public_key("m1"), Some("pubkey"));
+        assert!(store.get_device_public_key("missing").is_none());
+    }
+}

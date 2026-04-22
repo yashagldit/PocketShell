@@ -108,3 +108,149 @@ impl AppConfig {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::HOME_LOCK as ENV_LOCK;
+
+    const ALL_VARS: &[&str] = &[
+        "POCKETSHELL_BACKEND_URL",
+        "POCKETSHELL_WS_URL",
+        "POCKETSHELL_APP_VERSION",
+        "POCKETSHELL_MIN_HOST_VERSION",
+        "POCKETSHELL_HEARTBEAT_SECS",
+        "POCKETSHELL_STATS_SECS",
+        "POCKETSHELL_SESSION_LIMIT",
+        "POCKETSHELL_STALE_SESSION_SECS",
+        "POCKETSHELL_DETACH_MAX_SECS",
+        "POCKETSHELL_ALERT_CHECK_SECS",
+    ];
+
+    fn clear_all() {
+        for v in ALL_VARS {
+            // SAFETY: tests serialize via ENV_LOCK.
+            unsafe { env::remove_var(v) };
+        }
+    }
+
+    #[test]
+    fn from_env_uses_documented_defaults() {
+        let _g = ENV_LOCK.lock().unwrap();
+        clear_all();
+        let cfg = AppConfig::from_env();
+        assert_eq!(cfg.backend_base_url, "https://tapi.pocketshell.app");
+        assert_eq!(cfg.ws_url, "wss://tapi.pocketshell.app/ws/host");
+        assert_eq!(cfg.app_version, "0.1.0");
+        assert!(cfg.min_backend_host_version.is_none());
+        assert_eq!(cfg.heartbeat_interval_secs, 20);
+        assert_eq!(cfg.stats_interval_secs, 5);
+        assert_eq!(cfg.session_limit, 8);
+        assert_eq!(cfg.stale_session_secs, 300);
+        assert_eq!(cfg.detach_max_secs, 86400);
+        assert_eq!(cfg.alert_check_interval_secs, 60);
+    }
+
+    #[test]
+    fn from_env_custom_overrides() {
+        let _g = ENV_LOCK.lock().unwrap();
+        clear_all();
+        unsafe {
+            env::set_var("POCKETSHELL_BACKEND_URL", "https://example.test");
+            env::set_var("POCKETSHELL_WS_URL", "wss://example.test/ws");
+            env::set_var("POCKETSHELL_APP_VERSION", "9.9.9");
+            env::set_var("POCKETSHELL_MIN_HOST_VERSION", "1.2.3");
+            env::set_var("POCKETSHELL_HEARTBEAT_SECS", "7");
+            env::set_var("POCKETSHELL_STATS_SECS", "11");
+            env::set_var("POCKETSHELL_SESSION_LIMIT", "42");
+            env::set_var("POCKETSHELL_STALE_SESSION_SECS", "600");
+            env::set_var("POCKETSHELL_DETACH_MAX_SECS", "100");
+            env::set_var("POCKETSHELL_ALERT_CHECK_SECS", "30");
+        }
+        let cfg = AppConfig::from_env();
+        assert_eq!(cfg.backend_base_url, "https://example.test");
+        assert_eq!(cfg.ws_url, "wss://example.test/ws");
+        assert_eq!(cfg.app_version, "9.9.9");
+        assert_eq!(cfg.min_backend_host_version.as_deref(), Some("1.2.3"));
+        assert_eq!(cfg.heartbeat_interval_secs, 7);
+        assert_eq!(cfg.stats_interval_secs, 11);
+        assert_eq!(cfg.session_limit, 42);
+        assert_eq!(cfg.stale_session_secs, 600);
+        assert_eq!(cfg.detach_max_secs, 100);
+        assert_eq!(cfg.alert_check_interval_secs, 30);
+        clear_all();
+    }
+
+    #[test]
+    fn from_env_invalid_numeric_falls_back_to_default() {
+        let _g = ENV_LOCK.lock().unwrap();
+        clear_all();
+        unsafe {
+            env::set_var("POCKETSHELL_HEARTBEAT_SECS", "not-a-number");
+            env::set_var("POCKETSHELL_SESSION_LIMIT", "-5"); // invalid for usize
+        }
+        let cfg = AppConfig::from_env();
+        assert_eq!(cfg.heartbeat_interval_secs, 20);
+        assert_eq!(cfg.session_limit, 8);
+        clear_all();
+    }
+
+    #[test]
+    fn paths_builds_under_home_dir() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        // dirs::home_dir() on unix respects $HOME.
+        let prev_home = env::var_os("HOME");
+        unsafe { env::set_var("HOME", tmp.path()) };
+
+        let paths = AppConfig::paths().expect("paths should resolve");
+        assert_eq!(paths.state_dir, tmp.path().join(".pocketshell"));
+        assert_eq!(
+            paths.state_file,
+            tmp.path().join(".pocketshell").join("state.json")
+        );
+        assert_eq!(
+            paths.pid_file,
+            tmp.path().join(".pocketshell").join("daemon.pid")
+        );
+        assert_eq!(
+            paths.log_file,
+            tmp.path().join(".pocketshell").join("daemon.log")
+        );
+        assert_eq!(
+            paths.audit_file,
+            tmp.path().join(".pocketshell").join("audit.log")
+        );
+
+        // restore
+        unsafe {
+            match prev_home {
+                Some(v) => env::set_var("HOME", v),
+                None => env::remove_var("HOME"),
+            }
+        }
+    }
+
+    #[test]
+    fn default_shell_honors_env() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let prev = env::var_os("SHELL");
+        unsafe { env::set_var("SHELL", "/opt/custom/fish") };
+        assert_eq!(AppConfig::default_shell(), "/opt/custom/fish");
+
+        unsafe { env::remove_var("SHELL") };
+        let fallback = AppConfig::default_shell();
+        if cfg!(target_os = "macos") {
+            assert_eq!(fallback, "/bin/zsh");
+        } else {
+            assert_eq!(fallback, "/bin/bash");
+        }
+
+        unsafe {
+            match prev {
+                Some(v) => env::set_var("SHELL", v),
+                None => env::remove_var("SHELL"),
+            }
+        }
+    }
+}

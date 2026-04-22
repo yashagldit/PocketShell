@@ -1885,6 +1885,344 @@ mod tests {
     }
 
     /// Same idea for Claude. Ignored by default — needs the binary + auth.
+    #[test]
+    fn backend_as_str_roundtrip() {
+        assert_eq!(Backend::Codex.as_str(), "codex");
+        assert_eq!(Backend::Claude.as_str(), "claude");
+    }
+
+    #[test]
+    fn backend_serde_lowercase() {
+        assert_eq!(serde_json::to_string(&Backend::Codex).unwrap(), "\"codex\"");
+        assert_eq!(serde_json::to_string(&Backend::Claude).unwrap(), "\"claude\"");
+        let b: Backend = serde_json::from_str("\"codex\"").unwrap();
+        assert_eq!(b, Backend::Codex);
+        let b: Backend = serde_json::from_str("\"claude\"").unwrap();
+        assert_eq!(b, Backend::Claude);
+    }
+
+    #[test]
+    fn agent_channel_key_format() {
+        assert_eq!(
+            agent_channel_key("agent-123", "dev-xyz"),
+            "agent:agent-123:dev-xyz"
+        );
+    }
+
+    #[test]
+    fn agent_channel_key_empty_components() {
+        assert_eq!(agent_channel_key("", ""), "agent::");
+    }
+
+    #[test]
+    fn codex_start_params_empty_when_no_fields() {
+        let cfg = SpawnConfig {
+            backend: Backend::Codex,
+            cwd: None,
+            resume_id: None,
+            bundled_binary: None,
+            id: None,
+            model: None,
+            reasoning_effort: None,
+            backend_session_id: None,
+        };
+        let v = cfg.codex_start_params();
+        assert_eq!(v, serde_json::json!({}));
+    }
+
+    #[test]
+    fn codex_start_params_both_fields() {
+        let cfg = SpawnConfig {
+            backend: Backend::Codex,
+            cwd: None,
+            resume_id: None,
+            bundled_binary: None,
+            id: None,
+            model: Some("m".into()),
+            reasoning_effort: Some("high".into()),
+            backend_session_id: None,
+        };
+        let v = cfg.codex_start_params();
+        assert_eq!(v["model"], "m");
+        assert_eq!(v["reasoningEffort"], "high");
+    }
+
+    #[test]
+    fn codex_resume_params_returns_none_without_resume_id() {
+        let cfg = SpawnConfig {
+            backend: Backend::Codex,
+            cwd: None,
+            resume_id: None,
+            bundled_binary: None,
+            id: None,
+            model: Some("m".into()),
+            reasoning_effort: None,
+            backend_session_id: None,
+        };
+        assert!(cfg.codex_resume_params(true).is_none());
+        assert!(cfg.codex_resume_params(false).is_none());
+    }
+
+    #[test]
+    fn claude_launch_plans_include_bundled_fallback() {
+        let cfg = SpawnConfig {
+            backend: Backend::Claude,
+            cwd: None,
+            resume_id: None,
+            bundled_binary: Some(PathBuf::from("/my/bundled/claude")),
+            id: None,
+            model: None,
+            reasoning_effort: None,
+            backend_session_id: None,
+        };
+        let plans = cfg.launch_plans();
+        assert_eq!(plans.len(), 2);
+        assert_eq!(plans[0].program, "claude");
+        assert_eq!(plans[1].program, "/my/bundled/claude");
+    }
+
+    #[test]
+    fn claude_launch_plans_include_model_args() {
+        let cfg = SpawnConfig {
+            backend: Backend::Claude,
+            cwd: None,
+            resume_id: None,
+            bundled_binary: None,
+            id: None,
+            model: Some("opus-4.7".into()),
+            reasoning_effort: None,
+            backend_session_id: None,
+        };
+        let plans = cfg.launch_plans();
+        assert!(plans[0].args.iter().any(|a| a == "--model"));
+        assert!(plans[0].args.iter().any(|a| a == "opus-4.7"));
+    }
+
+    #[test]
+    fn codex_launch_plans_empty_bundled_skipped() {
+        let cfg = SpawnConfig {
+            backend: Backend::Codex,
+            cwd: None,
+            resume_id: None,
+            bundled_binary: Some(PathBuf::from("")),
+            id: None,
+            model: None,
+            reasoning_effort: None,
+            backend_session_id: None,
+        };
+        let plans = cfg.launch_plans();
+        assert_eq!(plans.len(), 1); // Empty path must not produce a fallback plan
+    }
+
+    #[test]
+    fn agent_exit_wire_from_mapping() {
+        assert!(matches!(
+            AgentExitWire::from(Some(&ExitReason::RequestedShutdown)),
+            AgentExitWire::Requested
+        ));
+        assert!(matches!(
+            AgentExitWire::from(Some(&ExitReason::NormalExit { code: 0 })),
+            AgentExitWire::Normal
+        ));
+        assert!(matches!(
+            AgentExitWire::from(Some(&ExitReason::Crashed {
+                code: Some(1),
+                stderr: "boom".into(),
+            })),
+            AgentExitWire::Crashed
+        ));
+        assert!(matches!(
+            AgentExitWire::from(Some(&ExitReason::SpawnFailed {
+                last_error: "nope".into()
+            })),
+            AgentExitWire::SpawnFailed
+        ));
+        assert!(matches!(AgentExitWire::from(None), AgentExitWire::Unknown));
+    }
+
+    #[test]
+    fn agent_exit_wire_serializes_snake_case() {
+        let s = serde_json::to_string(&AgentExitWire::Requested).unwrap();
+        assert_eq!(s, "\"requested\"");
+        let s = serde_json::to_string(&AgentExitWire::SpawnFailed).unwrap();
+        assert_eq!(s, "\"spawn_failed\"");
+    }
+
+    #[test]
+    fn stderr_ring_short_input_kept_whole() {
+        let mut r = StderrRing::new();
+        r.append("hi");
+        r.append("there");
+        let snap = r.snapshot();
+        assert!(snap.contains("hi"));
+        assert!(snap.contains("there"));
+    }
+
+    #[test]
+    fn stderr_ring_new_is_empty() {
+        let r = StderrRing::new();
+        assert!(r.snapshot().is_empty());
+    }
+
+    #[test]
+    fn stderr_ring_multibyte_safe_trim() {
+        let mut r = StderrRing::new();
+        // Multi-byte chars (3-byte UTF-8) across the trim boundary. Must not
+        // panic and must keep buffer under STDERR_RING_BYTES + slop.
+        for _ in 0..2000 {
+            r.append("日本語テスト");
+        }
+        let snap = r.snapshot();
+        assert!(snap.len() <= STDERR_RING_BYTES + 16);
+        // The snapshot must be valid UTF-8 (implicit since it's a String),
+        // and the tail should still contain our pattern.
+        assert!(snap.contains("日本語"));
+    }
+
+    #[test]
+    fn pick_latest_versioned_missing_dir() {
+        assert!(pick_latest_versioned(std::path::Path::new("/no/such/versioned/xyz"), "").is_none());
+    }
+
+    #[test]
+    fn spawn_error_display_contains_backend() {
+        let e = SpawnError::AllPlansFailed {
+            backend: Backend::Claude,
+            last_error: "ENOENT".into(),
+        };
+        let s = format!("{e}");
+        assert!(s.contains("Claude") || s.contains("claude"));
+        assert!(s.contains("ENOENT"));
+    }
+
+    #[test]
+    fn agent_send_error_display() {
+        let e = AgentSendError::SessionClosed;
+        assert!(format!("{e}").contains("closed"));
+        let e = AgentSendError::MissingConversationId;
+        assert!(format!("{e}").contains("conversation_id"));
+        let e = AgentSendError::BuildFailed("oops".into());
+        assert!(format!("{e}").contains("oops"));
+    }
+
+    #[test]
+    fn codex_builder_base64_only() {
+        let input = SendUserMessageInput {
+            text: "x".into(),
+            attachments: vec![AgentAttachment::Base64 {
+                data: "YWJj".into(),
+                media_type: "image/gif".into(),
+            }],
+        };
+        let v = parse(&build_codex_send_user_message("c", 7, &input).unwrap());
+        let items = v["params"]["items"].as_array().unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0]["type"], "image");
+        assert_eq!(items[0]["data"]["image_url"], "data:image/gif;base64,YWJj");
+    }
+
+    #[test]
+    fn claude_builder_localpath_read_error_surfaces() {
+        let input = SendUserMessageInput {
+            text: "x".into(),
+            attachments: vec![AgentAttachment::LocalPath {
+                path: "/definitely/not/a/file/xyz-9999.png".into(),
+                media_type: "image/png".into(),
+            }],
+        };
+        let err = build_claude_user_message(&input).unwrap_err();
+        assert!(err.contains("read") || err.contains("No such"));
+    }
+
+    #[tokio::test]
+    async fn maybe_note_claude_resume_id_no_double_notify() {
+        let router = AgentRouter::new();
+        let mut noted = true;
+        // already_noted=true must early-return; nothing should change.
+        maybe_note_claude_resume_id(
+            &router,
+            "agent-x",
+            r#"{"type":"system","session_id":"S"}"#,
+            &mut noted,
+        )
+        .await;
+        assert!(noted);
+    }
+
+    #[tokio::test]
+    async fn maybe_note_claude_resume_id_skips_non_system() {
+        let router = AgentRouter::new();
+        let mut noted = false;
+        maybe_note_claude_resume_id(
+            &router,
+            "agent-x",
+            r#"{"type":"other","session_id":"S"}"#,
+            &mut noted,
+        )
+        .await;
+        assert!(!noted);
+    }
+
+    #[tokio::test]
+    async fn maybe_note_claude_resume_id_skips_malformed_json() {
+        let router = AgentRouter::new();
+        let mut noted = false;
+        // Substring check passes ("type":"system") but JSON parse fails.
+        maybe_note_claude_resume_id(
+            &router,
+            "agent-x",
+            r#"garbage "type":"system" not real json"#,
+            &mut noted,
+        )
+        .await;
+        assert!(!noted);
+    }
+
+    #[tokio::test]
+    async fn maybe_note_claude_resume_id_skips_missing_session_id() {
+        let router = AgentRouter::new();
+        let mut noted = false;
+        maybe_note_claude_resume_id(
+            &router,
+            "agent-x",
+            r#"{"type":"system"}"#,
+            &mut noted,
+        )
+        .await;
+        assert!(!noted);
+    }
+
+    #[tokio::test]
+    async fn agent_router_empty_send_returns_session_closed() {
+        let router = AgentRouter::new();
+        let err = router.send_line("ghost", "hi".into()).await.unwrap_err();
+        assert!(matches!(err, AgentSendError::SessionClosed));
+        assert!(!router.contains("ghost").await);
+    }
+
+    #[tokio::test]
+    async fn agent_router_detach_unknown_is_noop() {
+        let router = AgentRouter::new();
+        router.detach("nope").await; // must not panic
+        assert!(!router.contains("nope").await);
+    }
+
+    #[tokio::test]
+    async fn agent_manager_list_empty() {
+        let mgr = AgentManager::new();
+        assert!(mgr.list().await.is_empty());
+        assert!(mgr.get("none").await.is_none());
+        assert!(!mgr.close("none").await);
+    }
+
+    #[tokio::test]
+    async fn codex_hub_current_starts_none() {
+        let hub = CodexHub::new();
+        assert!(hub.current().await.is_none());
+        hub.clear_sink().await; // idempotent on empty
+        hub.shutdown().await; // idempotent on empty
+    }
+
     #[tokio::test]
     #[ignore]
     async fn claude_real_turn() {

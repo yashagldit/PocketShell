@@ -271,3 +271,203 @@ impl SessionDiscovery {
         sessions
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+    use crate::test_support::HOME_LOCK;
+
+    fn sample_session(name: &str, attached: bool) -> AvailableSession {
+        AvailableSession {
+            name: name.to_string(),
+            session_type: "tmux".to_string(),
+            attached,
+            created_at: Some(Utc.with_ymd_and_hms(2026, 1, 15, 12, 0, 0).unwrap()),
+            windows: 3,
+            pty_path: None,
+        }
+    }
+
+    #[test]
+    fn available_session_serde_roundtrip() {
+        let s = sample_session("dev", true);
+        let json = serde_json::to_string(&s).unwrap();
+        let back: AvailableSession = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.name, "dev");
+        assert_eq!(back.session_type, "tmux");
+        assert!(back.attached);
+        assert_eq!(back.windows, 3);
+        assert_eq!(back.pty_path, None);
+    }
+
+    #[test]
+    fn available_session_skips_none_pty_path() {
+        let s = sample_session("dev", false);
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(!json.contains("pty_path"));
+    }
+
+    #[test]
+    fn available_session_includes_some_pty_path() {
+        let mut s = sample_session("shellA", false);
+        s.session_type = "shell".to_string();
+        s.pty_path = Some("/dev/ttys004".to_string());
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(json.contains("/dev/ttys004"));
+        let back: AvailableSession = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.pty_path.as_deref(), Some("/dev/ttys004"));
+    }
+
+    #[test]
+    fn available_session_accepts_missing_pty_path_on_deserialize() {
+        // Deserialize JSON that omits the optional pty_path field.
+        let json = r#"{
+            "name": "s1",
+            "session_type": "screen",
+            "attached": false,
+            "created_at": null,
+            "windows": 1
+        }"#;
+        let s: AvailableSession = serde_json::from_str(json).unwrap();
+        assert_eq!(s.name, "s1");
+        assert_eq!(s.session_type, "screen");
+        assert!(!s.attached);
+        assert!(s.created_at.is_none());
+        assert_eq!(s.windows, 1);
+        assert!(s.pty_path.is_none());
+    }
+
+    #[test]
+    fn tmux_session_exists_returns_false_for_unlikely_name() {
+        // An implausibly named session should not exist. Even if tmux is not
+        // installed, the helper swallows the error and returns false.
+        let name = "ps-nonexistent-test-session-xyz-9999";
+        assert!(!SessionDiscovery::tmux_session_exists(name));
+    }
+
+    #[test]
+    fn register_and_discover_exposed_roundtrip() {
+        let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Redirect $HOME to a temp dir so exposed_dir points somewhere isolated.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // SAFETY: tests run in-process; setting HOME is acceptable for this
+        // single-threaded read path inside exposed_dir(). Tests that depend on
+        // the real HOME are not present in this module.
+        let prev_home = std::env::var_os("HOME");
+        unsafe {
+            std::env::set_var("HOME", tmp.path());
+        }
+
+        let name = "ps-test-register-roundtrip-unique";
+        // register_exposed creates $HOME/.pocketshell/exposed/<name>
+        SessionDiscovery::register_exposed(name).expect("register");
+
+        let marker = tmp.path().join(".pocketshell").join("exposed").join(name);
+        assert!(marker.exists(), "marker file should exist at {:?}", marker);
+
+        let content = std::fs::read_to_string(&marker).unwrap();
+        let mut lines = content.lines();
+        let first = lines.next().unwrap();
+        // First line is an RFC3339 timestamp.
+        assert!(
+            DateTime::parse_from_rfc3339(first).is_ok(),
+            "first line should parse as rfc3339, got {:?}",
+            first
+        );
+
+        // Unregister removes the marker.
+        SessionDiscovery::unregister_exposed(name).expect("unregister");
+        assert!(!marker.exists());
+
+        // Unregister is idempotent: calling again should not error.
+        SessionDiscovery::unregister_exposed(name).expect("unregister idempotent");
+
+        // Restore HOME.
+        unsafe {
+            match prev_home {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+    }
+
+    #[test]
+    fn discover_exposed_parses_marker_files() {
+        let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let prev_home = std::env::var_os("HOME");
+        unsafe {
+            std::env::set_var("HOME", tmp.path());
+        }
+
+        // Manually create the exposed dir + two marker files with distinct contents.
+        let dir = tmp.path().join(".pocketshell").join("exposed");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Marker 1: timestamp + pty path
+        let m1 = dir.join("ps-test-parse-alpha");
+        std::fs::write(&m1, "2026-01-15T12:00:00+00:00\n/dev/ttys007\n").unwrap();
+
+        // Marker 2: timestamp only (no pty path)
+        let m2 = dir.join("ps-test-parse-beta");
+        std::fs::write(&m2, "2026-02-20T08:30:00+00:00\n").unwrap();
+
+        let all = SessionDiscovery::discover();
+        let alpha = all
+            .iter()
+            .find(|s| s.name == "ps-test-parse-alpha")
+            .expect("alpha");
+        assert_eq!(alpha.session_type, "shell");
+        assert!(!alpha.attached);
+        assert_eq!(alpha.windows, 1);
+        assert_eq!(alpha.pty_path.as_deref(), Some("/dev/ttys007"));
+        assert!(alpha.created_at.is_some());
+
+        let beta = all
+            .iter()
+            .find(|s| s.name == "ps-test-parse-beta")
+            .expect("beta");
+        assert_eq!(beta.session_type, "shell");
+        assert!(beta.pty_path.is_none());
+        assert!(beta.created_at.is_some());
+
+        // Cleanup markers so other tests using the shared HOME don't see them.
+        let _ = std::fs::remove_file(&m1);
+        let _ = std::fs::remove_file(&m2);
+
+        unsafe {
+            match prev_home {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+    }
+
+    #[test]
+    fn discover_exposed_returns_empty_when_dir_missing() {
+        let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let prev_home = std::env::var_os("HOME");
+        unsafe {
+            std::env::set_var("HOME", tmp.path());
+        }
+
+        // With a fresh HOME and no .pocketshell/exposed dir, discover() should
+        // return an empty list of "shell"-type sessions.
+        let all = SessionDiscovery::discover();
+        let shells: Vec<_> = all.iter().filter(|s| s.session_type == "shell").collect();
+        assert!(
+            shells.is_empty(),
+            "expected no shell sessions, got {:?}",
+            shells
+        );
+
+        unsafe {
+            match prev_home {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+    }
+}

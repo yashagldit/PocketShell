@@ -895,3 +895,375 @@ pub fn resolve_file_path_for_transfer(path_str: &str) -> Result<PathBuf> {
 pub fn file_mime_type(path: &Path) -> &'static str {
     mime_from_extension(path)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::Engine;
+    use tempfile::tempdir;
+
+    fn b64(data: &[u8]) -> String {
+        base64::engine::general_purpose::STANDARD.encode(data)
+    }
+
+    #[test]
+    fn is_glob_detects_glob_chars() {
+        assert!(is_glob("foo*"));
+        assert!(is_glob("f?o"));
+        assert!(is_glob("*.rs"));
+        assert!(!is_glob("plain"));
+        assert!(!is_glob(""));
+    }
+
+    #[test]
+    fn glob_to_regex_escapes_meta_and_handles_wildcards() {
+        assert_eq!(glob_to_regex("*.rs"), "^.*\\.rs$");
+        assert_eq!(glob_to_regex("a?b"), "^a.b$");
+        assert_eq!(glob_to_regex("a+b"), "^a\\+b$");
+        assert_eq!(glob_to_regex("(x)"), "^\\(x\\)$");
+    }
+
+    #[test]
+    fn search_matcher_substring_and_glob() {
+        let sub = SearchMatcher::new("Hello").unwrap();
+        assert!(sub.matches("say hello world"));
+        assert!(sub.matches("HELLO"));
+        assert!(!sub.matches("goodbye"));
+
+        let glob = SearchMatcher::new("*.RS").unwrap();
+        assert!(glob.matches("main.rs"));
+        assert!(glob.matches("LIB.RS"));
+        assert!(!glob.matches("main.txt"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn format_permissions_is_posix_style() {
+        assert_eq!(format_permissions(0o755), "rwxr-xr-x");
+        assert_eq!(format_permissions(0o644), "rw-r--r--");
+        assert_eq!(format_permissions(0o000), "---------");
+        assert_eq!(format_permissions(0o777), "rwxrwxrwx");
+    }
+
+    #[test]
+    fn mime_from_extension_maps_known_types() {
+        assert_eq!(mime_from_extension(Path::new("a.json")), "application/json");
+        assert_eq!(mime_from_extension(Path::new("a.PNG")), "image/png");
+        assert_eq!(mime_from_extension(Path::new("a.md")), "text/plain");
+        assert_eq!(mime_from_extension(Path::new("a.rs")), "text/x-rust");
+        assert_eq!(
+            mime_from_extension(Path::new("a.unknown")),
+            "application/octet-stream"
+        );
+        assert_eq!(
+            mime_from_extension(Path::new("noext")),
+            "application/octet-stream"
+        );
+    }
+
+    #[test]
+    fn safe_resolve_dest_errors_when_ancestor_unresolvable() {
+        // Paths containing `..` in a non-existent segment cause the
+        // resolver's file_name() to return None and the canonicalize step
+        // to fail — exercising the "path not found" error branch.
+        let dir = tempdir().unwrap();
+        let raw = format!("{}/doesnotexist/../escape", dir.path().display());
+        let err = safe_resolve_dest(&raw).unwrap_err();
+        match err {
+            HostError::Backend(m) => assert!(
+                m.contains("path not found") || m.contains("traversal"),
+                "got {m}"
+            ),
+            other => panic!("expected Backend, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn safe_resolve_dest_joins_nonexistent_tail_onto_canonical() {
+        let dir = tempdir().unwrap();
+        let raw = format!("{}/new_sub/file.txt", dir.path().display());
+        let resolved = safe_resolve_dest(&raw).unwrap();
+        assert!(resolved.ends_with("new_sub/file.txt"));
+    }
+
+    #[test]
+    fn write_file_creates_and_reports_bytes() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("out.txt");
+        let res = write_file(&p.to_string_lossy(), &b64(b"hello"), false).unwrap();
+        assert_eq!(res["bytes_written"], 5);
+        assert_eq!(fs::read(&p).unwrap(), b"hello");
+    }
+
+    #[test]
+    fn write_file_append_mode() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("a.txt");
+        write_file(&p.to_string_lossy(), &b64(b"abc"), false).unwrap();
+        write_file(&p.to_string_lossy(), &b64(b"DEF"), true).unwrap();
+        assert_eq!(fs::read(&p).unwrap(), b"abcDEF");
+    }
+
+    #[test]
+    fn write_file_invalid_base64_errors() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("bad.txt");
+        let err = write_file(&p.to_string_lossy(), "!!!not-base64!!!", false).unwrap_err();
+        match err {
+            HostError::Backend(m) => assert!(m.contains("base64")),
+            other => panic!("expected Backend, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn read_file_honors_offset_and_limit_and_truncation_flag() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("r.bin");
+        fs::write(&p, b"0123456789").unwrap();
+
+        let res = read_file(&p.to_string_lossy(), 0, 4).unwrap();
+        let data = base64::engine::general_purpose::STANDARD
+            .decode(res["data_b64"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(data, b"0123");
+        assert_eq!(res["size"], 10);
+        assert_eq!(res["truncated"], true);
+
+        let res2 = read_file(&p.to_string_lossy(), 8, 100).unwrap();
+        let data2 = base64::engine::general_purpose::STANDARD
+            .decode(res2["data_b64"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(data2, b"89");
+        assert_eq!(res2["truncated"], false);
+    }
+
+    #[test]
+    fn read_file_rejects_directories() {
+        let dir = tempdir().unwrap();
+        let err = read_file(&dir.path().to_string_lossy(), 0, 10).unwrap_err();
+        match err {
+            HostError::Backend(m) => assert!(m.contains("directory")),
+            other => panic!("expected Backend, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn list_dir_sorts_dirs_first_and_paginates() {
+        let dir = tempdir().unwrap();
+        fs::create_dir(dir.path().join("zdir")).unwrap();
+        fs::write(dir.path().join("afile"), b"").unwrap();
+        fs::write(dir.path().join("bfile"), b"").unwrap();
+        fs::write(dir.path().join("cfile"), b"").unwrap();
+
+        let res = list_dir(&dir.path().to_string_lossy(), 0, 2).unwrap();
+        assert_eq!(res["total"], 4);
+        let entries = res["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        // First entry should be the directory (dirs-first)
+        assert_eq!(entries[0]["name"], "zdir");
+        assert_eq!(entries[0]["is_dir"], true);
+        assert_eq!(entries[1]["name"], "afile");
+        assert_eq!(res["has_more"], true);
+        assert_eq!(res["next_offset"], 2);
+
+        let res2 = list_dir(&dir.path().to_string_lossy(), 2, 100).unwrap();
+        let entries2 = res2["entries"].as_array().unwrap();
+        assert_eq!(entries2.len(), 2);
+        assert_eq!(res2["has_more"], false);
+    }
+
+    #[test]
+    fn list_dir_limit_is_clamped() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("a"), b"").unwrap();
+        let res = list_dir(&dir.path().to_string_lossy(), 0, 0).unwrap();
+        assert_eq!(res["limit"], 1); // clamped min 1
+        let res2 = list_dir(&dir.path().to_string_lossy(), 0, 10_000).unwrap();
+        assert_eq!(res2["limit"], MAX_LIST_DIR_PAGE_SIZE as u64);
+    }
+
+    #[test]
+    fn stat_path_returns_fields() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("s.txt");
+        fs::write(&p, b"abc").unwrap();
+        let res = stat_path(&p.to_string_lossy()).unwrap();
+        assert_eq!(res["name"], "s.txt");
+        assert_eq!(res["is_dir"], false);
+        assert_eq!(res["size"], 3);
+        assert_eq!(res["is_symlink"], false);
+        assert!(res["permissions"].as_str().unwrap().len() == 9);
+    }
+
+    #[test]
+    fn mkdir_and_delete_roundtrip() {
+        let dir = tempdir().unwrap();
+        let new = dir.path().join("nested/a/b");
+        mkdir(&new.to_string_lossy()).unwrap();
+        assert!(new.exists());
+        delete_path(&new.to_string_lossy()).unwrap();
+        assert!(!new.exists());
+    }
+
+    #[test]
+    fn delete_handles_dir_recursively() {
+        let dir = tempdir().unwrap();
+        let sub = dir.path().join("rm");
+        fs::create_dir(&sub).unwrap();
+        fs::write(sub.join("x"), b"x").unwrap();
+        delete_path(&sub.to_string_lossy()).unwrap();
+        assert!(!sub.exists());
+    }
+
+    #[test]
+    fn rename_path_moves_file() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src.txt");
+        let dst = dir.path().join("dst.txt");
+        fs::write(&src, b"x").unwrap();
+        rename_path(&src.to_string_lossy(), &dst.to_string_lossy()).unwrap();
+        assert!(!src.exists());
+        assert!(dst.exists());
+    }
+
+    #[test]
+    fn rename_path_requires_new_path() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("s");
+        fs::write(&src, b"x").unwrap();
+        let err = rename_path(&src.to_string_lossy(), "").unwrap_err();
+        assert!(matches!(err, HostError::Backend(_)));
+    }
+
+    #[test]
+    fn copy_path_copies_file_and_respects_overwrite_flag() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("s.txt");
+        let dst = dir.path().join("d.txt");
+        fs::write(&src, b"hello").unwrap();
+        copy_path(&src.to_string_lossy(), &dst.to_string_lossy(), false).unwrap();
+        assert_eq!(fs::read(&dst).unwrap(), b"hello");
+
+        // Exists, overwrite=false -> error
+        let err = copy_path(&src.to_string_lossy(), &dst.to_string_lossy(), false).unwrap_err();
+        match err {
+            HostError::Backend(m) => assert!(m.contains("FILE_EXISTS")),
+            other => panic!("expected Backend, got {other:?}"),
+        }
+
+        // overwrite=true -> ok
+        fs::write(&src, b"world").unwrap();
+        copy_path(&src.to_string_lossy(), &dst.to_string_lossy(), true).unwrap();
+        assert_eq!(fs::read(&dst).unwrap(), b"world");
+    }
+
+    #[test]
+    fn copy_path_copies_directory_recursively() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("sdir");
+        fs::create_dir(&src).unwrap();
+        fs::write(src.join("a.txt"), b"A").unwrap();
+        fs::create_dir(src.join("sub")).unwrap();
+        fs::write(src.join("sub/b.txt"), b"B").unwrap();
+        let dst = dir.path().join("ddir");
+        copy_path(&src.to_string_lossy(), &dst.to_string_lossy(), false).unwrap();
+        assert_eq!(fs::read(dst.join("a.txt")).unwrap(), b"A");
+        assert_eq!(fs::read(dst.join("sub/b.txt")).unwrap(), b"B");
+    }
+
+    #[test]
+    fn move_path_moves_file_and_removes_source() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("mv.txt");
+        fs::write(&src, b"m").unwrap();
+        let dst = dir.path().join("dst.txt");
+        move_path(&src.to_string_lossy(), &dst.to_string_lossy(), false).unwrap();
+        assert!(!src.exists());
+        assert_eq!(fs::read(&dst).unwrap(), b"m");
+    }
+
+    #[test]
+    fn download_file_rejects_directory() {
+        let dir = tempdir().unwrap();
+        let err = download_file(&dir.path().to_string_lossy()).unwrap_err();
+        match err {
+            HostError::Backend(m) => assert!(m.contains("directory")),
+            other => panic!("expected Backend, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn download_file_returns_data_and_mime() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("info.json");
+        fs::write(&p, b"{\"a\":1}").unwrap();
+        let res = download_file(&p.to_string_lossy()).unwrap();
+        assert_eq!(res["name"], "info.json");
+        assert_eq!(res["mime_type"], "application/json");
+        assert_eq!(res["size"], 7);
+        let data = base64::engine::general_purpose::STANDARD
+            .decode(res["data_b64"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(data, b"{\"a\":1}");
+    }
+
+    #[test]
+    fn search_files_finds_matches_substring_and_respects_max_results() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("alpha.rs"), b"").unwrap();
+        fs::write(dir.path().join("beta.rs"), b"").unwrap();
+        fs::write(dir.path().join("gamma.txt"), b"").unwrap();
+        fs::create_dir(dir.path().join("sub")).unwrap();
+        fs::write(dir.path().join("sub/alphabet.rs"), b"").unwrap();
+
+        let res = search_files(&dir.path().to_string_lossy(), "alpha", 10, 5).unwrap();
+        assert_eq!(res["total"], 2);
+
+        let res2 = search_files(&dir.path().to_string_lossy(), "*.rs", 10, 5).unwrap();
+        assert_eq!(res2["total"], 3);
+
+        let res3 = search_files(&dir.path().to_string_lossy(), "*.rs", 1, 5).unwrap();
+        assert_eq!(res3["total"], 1);
+    }
+
+    #[test]
+    fn search_files_skips_heavy_dirs_at_root() {
+        let dir = tempdir().unwrap();
+        fs::create_dir(dir.path().join("node_modules")).unwrap();
+        fs::write(dir.path().join("node_modules/match.rs"), b"").unwrap();
+        fs::write(dir.path().join("keep.rs"), b"").unwrap();
+        let res = search_files(&dir.path().to_string_lossy(), "*.rs", 50, 5).unwrap();
+        assert_eq!(res["total"], 1);
+    }
+
+    #[test]
+    fn search_files_requires_query() {
+        let dir = tempdir().unwrap();
+        let err = search_files(&dir.path().to_string_lossy(), "", 10, 5).unwrap_err();
+        assert!(matches!(err, HostError::Backend(_)));
+    }
+
+    #[tokio::test]
+    async fn handle_files_action_unknown_action_errors() {
+        let v = serde_json::json!({"action": "does_not_exist", "path": "/tmp"});
+        let err = handle_files_action(&v).await.unwrap_err();
+        match err {
+            HostError::Backend(m) => assert!(m.contains("unknown files action")),
+            other => panic!("expected Backend, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_files_action_dispatches_stat() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("hi.txt");
+        fs::write(&p, b"hi").unwrap();
+        let v = serde_json::json!({
+            "action": "stat",
+            "path": p.to_string_lossy(),
+        });
+        let res = handle_files_action(&v).await.unwrap();
+        assert_eq!(res["size"], 2);
+        assert_eq!(res["is_dir"], false);
+    }
+}

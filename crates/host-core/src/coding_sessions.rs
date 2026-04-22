@@ -415,4 +415,241 @@ mod tests {
         let s = serde_json::to_string(&Source::Claude).unwrap();
         assert_eq!(s, "\"claude\"");
     }
+
+    #[test]
+    fn source_codex_serializes_lowercase() {
+        let s = serde_json::to_string(&Source::Codex).unwrap();
+        assert_eq!(s, "\"codex\"");
+    }
+
+    #[test]
+    fn extract_title_rejects_too_short() {
+        let content = serde_json::json!("hi");
+        assert!(extract_title(&content).is_none());
+    }
+
+    #[test]
+    fn extract_title_collapses_whitespace_and_newlines() {
+        let content = serde_json::json!("line one\nline  two\t\tthree");
+        assert_eq!(
+            extract_title(&content).as_deref(),
+            Some("line one line two three"),
+        );
+    }
+
+    #[test]
+    fn extract_title_skips_empty_array_blocks() {
+        let content = serde_json::json!([
+            { "type": "text", "text": "   " },
+            { "type": "text", "text": "the real title" },
+        ]);
+        assert_eq!(extract_title(&content).as_deref(), Some("the real title"));
+    }
+
+    #[test]
+    fn extract_title_handles_string_array_items() {
+        let content = serde_json::json!(["  ", "picked this one"]);
+        assert_eq!(extract_title(&content).as_deref(), Some("picked this one"));
+    }
+
+    #[test]
+    fn extract_title_rejects_all_system_markers() {
+        for marker in &[
+            "<command-name>foo</command-name> yes indeed",
+            "prefix <local-command-stdout> ignore",
+            "<tool_use_id> whatever",
+            "<ide_opened_file> path",
+            "<ide_selection> selection",
+        ] {
+            let content = serde_json::json!(marker);
+            assert!(
+                extract_title(&content).is_none(),
+                "expected system marker rejected: {marker}"
+            );
+        }
+    }
+
+    #[test]
+    fn extract_title_input_text_block_variant() {
+        let content = serde_json::json!([
+            { "type": "input_text", "text": "input text block picked" }
+        ]);
+        assert_eq!(
+            extract_title(&content).as_deref(),
+            Some("input text block picked"),
+        );
+    }
+
+    #[test]
+    fn extract_title_returns_none_for_unsupported_variant() {
+        let content = serde_json::json!(42);
+        assert!(extract_title(&content).is_none());
+    }
+
+    #[test]
+    fn extract_title_truncation_appends_ellipsis() {
+        // Word without spaces longer than TITLE_MAX_CHARS — no word boundary in
+        // the second half, so falls back to hard char truncation with "...".
+        let content = serde_json::json!("a".repeat(200));
+        let title = extract_title(&content).unwrap();
+        assert!(title.ends_with("..."));
+        assert!(title.chars().count() <= TITLE_MAX_CHARS);
+    }
+
+    #[test]
+    fn is_system_message_negative() {
+        assert!(!is_system_message("a normal user message"));
+        assert!(!is_system_message(""));
+    }
+
+    #[test]
+    fn session_info_serde_skips_mtime_system() {
+        let info = SessionInfo {
+            session_id: "abc".into(),
+            source: Source::Claude,
+            file_path: "/tmp/x.jsonl".into(),
+            title: "t".into(),
+            project_path: "/tmp".into(),
+            size_bytes: 42,
+            mtime_system: SystemTime::UNIX_EPOCH,
+            mtime: "1970-01-01T00:00:00+00:00".into(),
+        };
+        let v = serde_json::to_value(&info).unwrap();
+        assert_eq!(v["session_id"], "abc");
+        assert_eq!(v["source"], "claude");
+        assert_eq!(v["size_bytes"], 42);
+        // `mtime_system` has #[serde(skip)]
+        assert!(v.get("mtime_system").is_none());
+    }
+
+    #[test]
+    fn scan_claude_missing_dir_returns_empty() {
+        let dir = std::path::PathBuf::from("/no/such/claude/xyz-missing-9999");
+        assert!(scan_claude(&dir).is_empty());
+    }
+
+    #[test]
+    fn scan_codex_missing_dir_returns_empty() {
+        let dir = std::path::PathBuf::from("/no/such/codex/xyz-missing-9999");
+        assert!(scan_codex(&dir).is_empty());
+    }
+
+    #[test]
+    fn load_codex_index_missing_file_returns_empty() {
+        let p = std::path::PathBuf::from("/no/such/index/xyz-9999.jsonl");
+        assert!(load_codex_index(&p).is_empty());
+    }
+
+    #[test]
+    fn load_codex_index_parses_valid_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("session_index.jsonl");
+        std::fs::write(
+            &p,
+            r#"{"id":"abc","thread_name":"My Chat"}
+{"id":"","thread_name":"bad"}
+not json
+{"id":"def","thread_name":"Other"}
+"#,
+        )
+        .unwrap();
+        let map = load_codex_index(&p);
+        assert_eq!(map.get("abc").map(String::as_str), Some("My Chat"));
+        assert_eq!(map.get("def").map(String::as_str), Some("Other"));
+        assert_eq!(map.len(), 2);
+    }
+
+    #[test]
+    fn parse_codex_session_requires_session_meta() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("rollout-x.jsonl");
+        // First line has wrong type — must return None.
+        std::fs::write(&p, r#"{"type":"other","payload":{"id":"x"}}
+"#).unwrap();
+        let idx = HashMap::new();
+        assert!(parse_codex_session(&p, &idx).is_none());
+    }
+
+    #[test]
+    fn parse_codex_session_uses_index_title() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("rollout-y.jsonl");
+        std::fs::write(
+            &p,
+            r#"{"type":"session_meta","payload":{"id":"sess-1","cwd":"/work/dir"}}
+"#,
+        )
+        .unwrap();
+        let mut idx = HashMap::new();
+        idx.insert("sess-1".into(), "My Session".into());
+        let info = parse_codex_session(&p, &idx).unwrap();
+        assert_eq!(info.session_id, "sess-1");
+        assert_eq!(info.title, "My Session");
+        assert_eq!(info.project_path, "/work/dir");
+    }
+
+    #[test]
+    fn parse_codex_session_falls_back_to_id_title() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("rollout-z.jsonl");
+        std::fs::write(
+            &p,
+            r#"{"type":"session_meta","payload":{"id":"sess-2","cwd":""}}
+"#,
+        )
+        .unwrap();
+        let idx = HashMap::new();
+        let info = parse_codex_session(&p, &idx).unwrap();
+        assert_eq!(info.title, "sess-2");
+    }
+
+    #[test]
+    fn parse_codex_session_empty_id_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("rollout-empty.jsonl");
+        std::fs::write(
+            &p,
+            r#"{"type":"session_meta","payload":{"id":"","cwd":"/x"}}
+"#,
+        )
+        .unwrap();
+        let idx = HashMap::new();
+        assert!(parse_codex_session(&p, &idx).is_none());
+    }
+
+    #[test]
+    fn parse_claude_session_populates_fields_from_first_user_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("claude.jsonl");
+        std::fs::write(
+            &p,
+            r#"{"type":"system","sessionId":"sess-a","cwd":"/work"}
+{"type":"user","isMeta":true,"message":{"content":"skip meta"}}
+{"type":"user","message":{"content":"first real user text"}}
+"#,
+        )
+        .unwrap();
+        let info = parse_claude_session(&p).unwrap();
+        assert_eq!(info.session_id, "sess-a");
+        assert_eq!(info.project_path, "/work");
+        assert_eq!(info.title, "first real user text");
+    }
+
+    #[test]
+    fn parse_claude_session_falls_back_to_file_stem_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("fallback-id.jsonl");
+        // No sessionId anywhere; should fall back to file stem.
+        std::fs::write(&p, "\n").unwrap();
+        let info = parse_claude_session(&p).unwrap();
+        assert_eq!(info.session_id, "fallback-id");
+        assert_eq!(info.title, "Untitled Session");
+    }
+
+    #[test]
+    fn format_mtime_is_rfc3339_utc() {
+        let s = format_mtime(SystemTime::UNIX_EPOCH);
+        // RFC3339 form: "1970-01-01T00:00:00+00:00"
+        assert!(s.starts_with("1970-01-01T00:00:00"));
+    }
 }

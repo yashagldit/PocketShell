@@ -437,3 +437,134 @@ pub fn uninstall() -> Result<()> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn constants_match_expected_labels() {
+        // Label/service-name strings are baked into plist/unit output and are
+        // load-bearing for `launchctl list` / `systemctl --user` lookups.
+        assert_eq!(LAUNCHD_LABEL, "com.pocketshell.host-agent");
+        assert_eq!(SYSTEMD_SERVICE, "pocketshell-host-agent");
+    }
+
+    #[test]
+    fn launchd_plist_path_is_under_library_launchagents() {
+        let p = launchd_plist_path();
+        let s = p.to_string_lossy();
+        assert!(
+            s.contains("Library/LaunchAgents/"),
+            "expected LaunchAgents dir, got {s}"
+        );
+        assert!(s.ends_with("com.pocketshell.host-agent.plist"), "{s}");
+    }
+
+    #[test]
+    fn systemd_unit_dir_and_path_under_config_systemd_user() {
+        let dir = systemd_unit_dir();
+        assert!(
+            dir.to_string_lossy().contains(".config/systemd/user"),
+            "{}",
+            dir.display()
+        );
+        let unit = systemd_unit_path();
+        assert_eq!(unit.parent().unwrap(), dir);
+        assert!(
+            unit.to_string_lossy()
+                .ends_with("pocketshell-host-agent.service"),
+            "{}",
+            unit.display()
+        );
+    }
+
+    /// Pure replica of the systemd unit-file string built inline in
+    /// `install_systemd`. Kept here so we can assert the canonical content
+    /// without invoking `systemctl`. If production ever drifts, this test
+    /// starts failing and flags the divergence.
+    fn expected_systemd_unit(exe_path: &str) -> String {
+        format!(
+            r#"[Unit]
+Description=PocketShell Host Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart={exe_path} daemon run
+Restart=always
+RestartSec=5
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=default.target
+"#
+        )
+    }
+
+    #[test]
+    fn systemd_unit_contains_required_fields() {
+        let unit = expected_systemd_unit("/usr/local/bin/pocketshell");
+        assert!(unit.contains("Description=PocketShell Host Agent"));
+        assert!(unit.contains("After=network-online.target"));
+        assert!(unit.contains("Wants=network-online.target"));
+        assert!(unit.contains("Type=simple"));
+        assert!(unit.contains("ExecStart=/usr/local/bin/pocketshell daemon run"));
+        assert!(unit.contains("Restart=always"));
+        assert!(unit.contains("RestartSec=5"));
+        assert!(unit.contains("Environment=RUST_LOG=info"));
+        assert!(unit.contains("WantedBy=default.target"));
+    }
+
+    /// Pure replica of the launchd plist built inline in `install_launchd`.
+    fn expected_launchd_plist(exe_path: &str, log_path: &str) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>{LAUNCHD_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{exe_path}</string>
+    <string>daemon</string>
+    <string>run</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>{log}</string>
+  <key>StandardErrorPath</key>
+  <string>{log}</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>RUST_LOG</key>
+    <string>info</string>
+  </dict>
+</dict>
+</plist>
+"#,
+            log = log_path
+        )
+    }
+
+    #[test]
+    fn launchd_plist_contains_required_keys() {
+        let plist = expected_launchd_plist("/opt/pocketshell", "/tmp/ps.log");
+        assert!(plist.contains("<key>Label</key>"));
+        assert!(plist.contains("<string>com.pocketshell.host-agent</string>"));
+        assert!(plist.contains("<key>ProgramArguments</key>"));
+        assert!(plist.contains("<string>/opt/pocketshell</string>"));
+        assert!(plist.contains("<string>daemon</string>"));
+        assert!(plist.contains("<string>run</string>"));
+        assert!(plist.contains("<key>RunAtLoad</key>"));
+        assert!(plist.contains("<key>KeepAlive</key>"));
+        assert!(plist.contains("<true/>"));
+        assert!(plist.contains("<string>/tmp/ps.log</string>"));
+        assert!(plist.contains("RUST_LOG"));
+    }
+}

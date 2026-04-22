@@ -787,3 +787,254 @@ impl WebRtcManager {
             .send(WebRtcEvent::ChannelOpened { session_id });
     }
 }
+
+#[cfg(all(test, feature = "webrtc"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn base_mobile_id_strips_files_prefix() {
+        assert_eq!(base_mobile_id("files:abc-123"), "abc-123");
+    }
+
+    #[test]
+    fn base_mobile_id_leaves_plain_key_unchanged() {
+        assert_eq!(base_mobile_id("mobile-device-xyz"), "mobile-device-xyz");
+    }
+
+    #[test]
+    fn base_mobile_id_only_strips_at_prefix() {
+        // The "files:" prefix should only be stripped when it appears at the start.
+        assert_eq!(base_mobile_id("foo-files:bar"), "foo-files:bar");
+    }
+
+    #[test]
+    fn base_mobile_id_handles_empty_after_prefix() {
+        assert_eq!(base_mobile_id("files:"), "");
+    }
+
+    #[test]
+    fn base_mobile_id_handles_empty_input() {
+        assert_eq!(base_mobile_id(""), "");
+    }
+
+    fn make_manager() -> (WebRtcManager, mpsc::UnboundedReceiver<WebRtcEvent>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        (WebRtcManager::new(tx), rx)
+    }
+
+    #[test]
+    fn new_manager_is_empty() {
+        let (mgr, _rx) = make_manager();
+        assert!(mgr.peers.is_empty());
+        assert!(mgr.session_channels.is_empty());
+        assert!(mgr.channel_owners.is_empty());
+        assert!(mgr.stats_channel_owners.is_empty());
+        assert!(mgr.files_channel_owners.is_empty());
+        assert!(mgr.control_channel_owners.is_empty());
+        assert!(mgr.agent_channel_owners.is_empty());
+        assert!(!mgr.has_channel("any-session"));
+        assert!(!mgr.has_stats_channel());
+    }
+
+    #[test]
+    fn has_channel_returns_false_for_missing_session() {
+        let (mgr, _rx) = make_manager();
+        assert!(!mgr.has_channel("nope"));
+    }
+
+    #[test]
+    fn has_channel_returns_false_for_empty_vec() {
+        // A session entry with an empty channel list should report no channel.
+        let (mut mgr, _rx) = make_manager();
+        mgr.session_channels.insert("sess-1".to_string(), Vec::new());
+        assert!(!mgr.has_channel("sess-1"));
+    }
+
+    #[test]
+    fn close_session_on_empty_manager_is_noop() {
+        let (mut mgr, _rx) = make_manager();
+        mgr.close_session("does-not-exist");
+        assert!(mgr.session_channels.is_empty());
+        assert!(mgr.channel_owners.is_empty());
+    }
+
+    #[test]
+    fn prune_session_channels_removes_empty_session_map_entry() {
+        let (mut mgr, _rx) = make_manager();
+        // Seed an empty channel list — prune should drop the map entry.
+        mgr.session_channels.insert("sess-empty".to_string(), Vec::new());
+        // Note: prune iterates only if the entry exists. An empty Vec stays unless
+        // retain removes nothing and then we check is_empty. The code removes the
+        // map entry when channels becomes empty after retain.
+        mgr.prune_session_channels("sess-empty");
+        assert!(!mgr.session_channels.contains_key("sess-empty"));
+    }
+
+    #[test]
+    fn prune_session_channels_noop_for_unknown_session() {
+        let (mut mgr, _rx) = make_manager();
+        mgr.prune_session_channels("nope");
+        assert!(mgr.session_channels.is_empty());
+        assert!(mgr.channel_owners.is_empty());
+    }
+
+    #[test]
+    fn prune_stats_channels_on_empty_is_noop() {
+        let (mut mgr, _rx) = make_manager();
+        mgr.prune_stats_channels();
+        assert!(mgr.stats_channel_owners.is_empty());
+    }
+
+    #[test]
+    fn prune_files_channels_on_empty_is_noop() {
+        let (mut mgr, _rx) = make_manager();
+        mgr.prune_files_channels();
+        assert!(mgr.files_channel_owners.is_empty());
+    }
+
+    #[test]
+    fn prune_control_channels_on_empty_is_noop() {
+        let (mut mgr, _rx) = make_manager();
+        mgr.prune_control_channels();
+        assert!(mgr.control_channel_owners.is_empty());
+    }
+
+    #[test]
+    fn prune_agent_channels_on_empty_is_noop() {
+        let (mut mgr, _rx) = make_manager();
+        mgr.prune_agent_channels();
+        assert!(mgr.agent_channel_owners.is_empty());
+    }
+
+    #[test]
+    fn webrtc_event_debug_input_hides_data_contents() {
+        let ev = WebRtcEvent::Input {
+            session_id: "sess".to_string(),
+            mobile_device_id: "mob".to_string(),
+            data: vec![1, 2, 3, 4, 5],
+        };
+        let dbg = format!("{:?}", ev);
+        assert!(dbg.contains("Input"));
+        assert!(dbg.contains("sess"));
+        assert!(dbg.contains("mob"));
+        assert!(dbg.contains("data_len"));
+        assert!(dbg.contains('5'));
+        // The raw bytes should not appear verbatim as a Vec.
+        assert!(!dbg.contains("[1, 2, 3, 4, 5]"));
+    }
+
+    #[test]
+    fn webrtc_event_debug_channel_opened() {
+        let ev = WebRtcEvent::ChannelOpened {
+            session_id: "abc".to_string(),
+        };
+        let dbg = format!("{:?}", ev);
+        assert!(dbg.contains("ChannelOpened"));
+        assert!(dbg.contains("abc"));
+    }
+
+    #[test]
+    fn webrtc_event_debug_channel_closed() {
+        let ev = WebRtcEvent::ChannelClosed {
+            session_id: "xyz".to_string(),
+        };
+        let dbg = format!("{:?}", ev);
+        assert!(dbg.contains("ChannelClosed"));
+        assert!(dbg.contains("xyz"));
+    }
+
+    #[test]
+    fn webrtc_event_debug_ice_candidate_omits_sdp() {
+        let ev = WebRtcEvent::IceCandidate {
+            peer_key: "pk".to_string(),
+            mobile_device_id: "mid".to_string(),
+            candidate_json: "{\"candidate\":\"super-secret-sdp\"}".to_string(),
+        };
+        let dbg = format!("{:?}", ev);
+        assert!(dbg.contains("IceCandidate"));
+        assert!(dbg.contains("pk"));
+        assert!(dbg.contains("mid"));
+        // Candidate JSON is intentionally excluded from Debug output.
+        assert!(!dbg.contains("super-secret-sdp"));
+    }
+
+    #[test]
+    fn webrtc_event_debug_stats_channel_closed() {
+        let ev = WebRtcEvent::StatsChannelClosed {
+            host_id: "h1".to_string(),
+            mobile_device_id: "m1".to_string(),
+        };
+        let dbg = format!("{:?}", ev);
+        assert!(dbg.contains("StatsChannelClosed"));
+        assert!(dbg.contains("h1"));
+        assert!(dbg.contains("m1"));
+    }
+
+    #[test]
+    fn webrtc_event_debug_files_channel_closed() {
+        let ev = WebRtcEvent::FilesChannelClosed {
+            mobile_device_id: "m2".to_string(),
+        };
+        let dbg = format!("{:?}", ev);
+        assert!(dbg.contains("FilesChannelClosed"));
+        assert!(dbg.contains("m2"));
+    }
+
+    #[test]
+    fn webrtc_event_debug_control_channel_closed() {
+        let ev = WebRtcEvent::ControlChannelClosed {
+            mobile_device_id: "m3".to_string(),
+        };
+        let dbg = format!("{:?}", ev);
+        assert!(dbg.contains("ControlChannelClosed"));
+        assert!(dbg.contains("m3"));
+    }
+
+    #[test]
+    fn webrtc_event_debug_agent_channel_closed() {
+        let ev = WebRtcEvent::AgentChannelClosed {
+            agent_id: "agent-42".to_string(),
+            mobile_device_id: "m4".to_string(),
+        };
+        let dbg = format!("{:?}", ev);
+        assert!(dbg.contains("AgentChannelClosed"));
+        assert!(dbg.contains("agent-42"));
+        assert!(dbg.contains("m4"));
+    }
+
+    #[tokio::test]
+    async fn poll_events_on_empty_manager_is_noop() {
+        let (mut mgr, mut rx) = make_manager();
+        mgr.poll_events().await;
+        // No events produced because there are no peers.
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn send_output_returns_false_when_no_channels() {
+        let (mut mgr, _rx) = make_manager();
+        assert!(!mgr.send_output("missing", b"hello").await);
+    }
+
+    #[tokio::test]
+    async fn send_stats_returns_false_when_no_channels() {
+        let (mut mgr, _rx) = make_manager();
+        assert!(!mgr.send_stats(b"stats-payload").await);
+    }
+
+    #[tokio::test]
+    async fn close_all_on_empty_manager_is_noop() {
+        let (mut mgr, _rx) = make_manager();
+        mgr.close_all().await;
+        assert!(mgr.peers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn close_peer_on_unknown_key_is_noop() {
+        let (mut mgr, _rx) = make_manager();
+        mgr.close_peer("unknown").await;
+        assert!(mgr.peers.is_empty());
+        assert!(mgr.channel_owners.is_empty());
+    }
+}

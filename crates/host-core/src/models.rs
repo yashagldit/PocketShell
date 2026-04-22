@@ -394,3 +394,350 @@ pub struct SignalEnvelope {
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+    use serde_json::json;
+
+    fn sample_time() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2024, 1, 2, 3, 4, 5).unwrap()
+    }
+
+    #[test]
+    fn agent_state_default_is_empty() {
+        let state = AgentState::default();
+        assert!(state.auth.is_none());
+        assert!(state.host.is_none());
+        assert!(state.pending_devices.is_empty());
+        assert!(state.trusted_devices.is_empty());
+        assert!(state.sessions.is_empty());
+        assert!(state.alert_thresholds.is_empty());
+    }
+
+    #[test]
+    fn agent_state_missing_alert_thresholds_defaults_to_empty() {
+        // alert_thresholds has #[serde(default)] — old state files lack it.
+        let raw = r#"{
+            "auth": null,
+            "host": null,
+            "pending_devices": [],
+            "trusted_devices": [],
+            "sessions": []
+        }"#;
+        let state: AgentState = serde_json::from_str(raw).unwrap();
+        assert!(state.alert_thresholds.is_empty());
+    }
+
+    #[test]
+    fn auth_state_roundtrip_preserves_fields() {
+        let auth = AuthState {
+            access_token: "acc".into(),
+            refresh_token: "ref".into(),
+            access_expires_at: Some(sample_time()),
+        };
+        let json = serde_json::to_string(&auth).unwrap();
+        let back: AuthState = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.access_token, "acc");
+        assert_eq!(back.refresh_token, "ref");
+        assert_eq!(back.access_expires_at, Some(sample_time()));
+    }
+
+    #[test]
+    fn auth_state_null_expiry_is_accepted() {
+        let raw = r#"{"access_token":"a","refresh_token":"b","access_expires_at":null}"#;
+        let auth: AuthState = serde_json::from_str(raw).unwrap();
+        assert!(auth.access_expires_at.is_none());
+    }
+
+    #[test]
+    fn session_state_snake_case_serialization() {
+        assert_eq!(
+            serde_json::to_string(&SessionState::Connected).unwrap(),
+            "\"connected\""
+        );
+        assert_eq!(
+            serde_json::to_string(&SessionState::Requested).unwrap(),
+            "\"requested\""
+        );
+        let parsed: SessionState = serde_json::from_str("\"detached\"").unwrap();
+        assert_eq!(parsed, SessionState::Detached);
+    }
+
+    #[test]
+    fn session_state_as_str_matches_serialization() {
+        for state in [
+            SessionState::Requested,
+            SessionState::Approved,
+            SessionState::Connecting,
+            SessionState::Connected,
+            SessionState::Detached,
+            SessionState::Ended,
+            SessionState::Failed,
+        ] {
+            let via_serde: String = serde_json::from_value(
+                serde_json::to_value(&state).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(via_serde, state.as_str());
+        }
+    }
+
+    #[test]
+    fn session_state_unknown_variant_errors() {
+        let err = serde_json::from_str::<SessionState>("\"nonsense\"");
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn pairing_validate_request_skips_none_host_id() {
+        let req = PairingValidateRequest {
+            code: "ABC".into(),
+            hostname: "box".into(),
+            platform: "linux".into(),
+            public_key: "pk".into(),
+            app_version: None,
+            host_id: None,
+        };
+        let v: serde_json::Value = serde_json::to_value(&req).unwrap();
+        assert!(v.get("host_id").is_none(), "host_id should be skipped when None");
+        // app_version doesn't have skip_serializing_if, so it should be present as null.
+        assert!(v.get("app_version").is_some());
+        assert!(v["app_version"].is_null());
+    }
+
+    #[test]
+    fn pairing_validate_request_includes_host_id_when_some() {
+        let req = PairingValidateRequest {
+            code: "C".into(),
+            hostname: "h".into(),
+            platform: "p".into(),
+            public_key: "k".into(),
+            app_version: Some("1.0".into()),
+            host_id: Some("host-123".into()),
+        };
+        let v = serde_json::to_value(&req).unwrap();
+        assert_eq!(v["host_id"], "host-123");
+    }
+
+    #[test]
+    fn pairing_validate_response_flattens_host_fields() {
+        // The flattened HostApiResponse means `id`, `user_id`, etc. live at the
+        // top level alongside access_token.
+        let raw = json!({
+            "id": "host-1",
+            "user_id": "user-1",
+            "hostname": "box",
+            "platform": "linux",
+            "public_key": "pk",
+            "app_version": "1.0",
+            "created_at": "2024-01-01T00:00:00Z",
+            "last_seen_at": null,
+            "status": "online",
+            "access_token": "at",
+            "refresh_token": "rt",
+            "token_type": "bearer"
+        });
+        let resp: PairingValidateResponse = serde_json::from_value(raw).unwrap();
+        assert_eq!(resp.host.id, "host-1");
+        assert_eq!(resp.host.user_id, "user-1");
+        assert_eq!(resp.access_token, "at");
+        assert!(!resp.already_paired); // default
+        assert!(resp.device_public_key.is_none());
+        assert!(resp.mobile_device_id.is_none());
+    }
+
+    #[test]
+    fn host_identity_private_key_defaults_to_empty() {
+        let raw = json!({
+            "host_id": "h",
+            "user_id": "u",
+            "hostname": "hn",
+            "platform": "linux",
+            "app_version": "1",
+            "public_key": "pk",
+            "registered_at": "2024-01-01T00:00:00Z"
+        });
+        let id: HostIdentity = serde_json::from_value(raw).unwrap();
+        assert_eq!(id.private_key, "");
+    }
+
+    #[test]
+    fn session_record_defaults_for_optional_fields() {
+        let raw = json!({
+            "session_id": "s1",
+            "mobile_device_id": "m1",
+            "state": "connected",
+            "updated_at": "2024-01-01T00:00:00Z"
+        });
+        let rec: SessionRecord = serde_json::from_value(raw).unwrap();
+        assert!(!rec.persistent);
+        assert!(rec.tmux_session_name.is_none());
+    }
+
+    #[test]
+    fn session_record_skips_none_tmux_name() {
+        let rec = SessionRecord {
+            session_id: "s".into(),
+            mobile_device_id: "m".into(),
+            state: SessionState::Connected,
+            updated_at: sample_time(),
+            persistent: true,
+            tmux_session_name: None,
+        };
+        let v = serde_json::to_value(&rec).unwrap();
+        assert!(v.get("tmux_session_name").is_none());
+        assert_eq!(v["persistent"], true);
+    }
+
+    #[test]
+    fn session_request_roundtrip() {
+        let req = SessionRequest {
+            session_id: "s".into(),
+            mobile_device_id: "m".into(),
+            cols: 80,
+            rows: 24,
+            attach_target: Some(AttachTarget {
+                session_type: "tmux".into(),
+                name: "main".into(),
+            }),
+        };
+        let json_str = serde_json::to_string(&req).unwrap();
+        let back: SessionRequest = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(back.cols, 80);
+        assert_eq!(back.rows, 24);
+        let target = back.attach_target.unwrap();
+        assert_eq!(target.session_type, "tmux");
+        assert_eq!(target.name, "main");
+    }
+
+    #[test]
+    fn session_request_null_attach_target() {
+        let raw = r#"{"session_id":"s","mobile_device_id":"m","cols":80,"rows":24,"attach_target":null}"#;
+        let req: SessionRequest = serde_json::from_str(raw).unwrap();
+        assert!(req.attach_target.is_none());
+    }
+
+    #[test]
+    fn process_info_skips_none_options() {
+        let p = ProcessInfo {
+            pid: 1,
+            name: "init".into(),
+            cpu_percent: 0.5,
+            memory_bytes: 1024,
+            status: "running".into(),
+            parent_pid: None,
+            user: None,
+            command: None,
+            run_time_secs: None,
+        };
+        let v = serde_json::to_value(&p).unwrap();
+        let obj = v.as_object().unwrap();
+        assert!(!obj.contains_key("parent_pid"));
+        assert!(!obj.contains_key("user"));
+        assert!(!obj.contains_key("command"));
+        assert!(!obj.contains_key("run_time_secs"));
+        assert_eq!(obj["pid"], 1);
+    }
+
+    #[test]
+    fn signal_envelope_uses_type_rename_and_flattens_extras() {
+        let raw = json!({
+            "type": "offer",
+            "session_id": "s1",
+            "payload": {"sdp": "xxx"},
+            "state": null,
+            "accepted": null,
+            "reason": null,
+            "custom_field": "custom_value",
+            "count": 7
+        });
+        let env: SignalEnvelope = serde_json::from_value(raw).unwrap();
+        assert_eq!(env.message_type, "offer");
+        assert_eq!(env.session_id.as_deref(), Some("s1"));
+        assert_eq!(env.extra.get("custom_field").unwrap(), "custom_value");
+        assert_eq!(env.extra.get("count").unwrap(), 7);
+
+        // Serializing back should emit "type" (not "message_type").
+        let back = serde_json::to_value(&env).unwrap();
+        assert!(back.get("type").is_some());
+        assert!(back.get("message_type").is_none());
+        assert_eq!(back["custom_field"], "custom_value");
+    }
+
+    #[test]
+    fn trusted_device_skips_none_public_key() {
+        let rec = TrustedDeviceRecord {
+            id: "id".into(),
+            host_id: "h".into(),
+            mobile_device_id: "m".into(),
+            approved_at: None,
+            revoked_at: None,
+            permissions_json: None,
+            device_public_key: None,
+            created_at: sample_time(),
+        };
+        let v = serde_json::to_value(&rec).unwrap();
+        assert!(v.get("device_public_key").is_none());
+    }
+
+    #[test]
+    fn host_initiated_status_response_defaults() {
+        let raw = json!({"status": "pending"});
+        let resp: HostInitiatedStatusResponse = serde_json::from_value(raw).unwrap();
+        assert_eq!(resp.status, "pending");
+        assert!(resp.mode.is_none());
+        assert!(resp.host.is_none());
+        assert!(resp.access_token.is_none());
+    }
+
+    #[test]
+    fn stats_snapshot_skips_all_none_optionals() {
+        let snap = StatsSnapshot {
+            cpu_usage_percent: 1.0,
+            memory_total_bytes: 1,
+            memory_used_bytes: 1,
+            memory_available_bytes: 1,
+            memory_free_bytes: 1,
+            disk_total_bytes: 1,
+            disk_used_bytes: 1,
+            swap_total_bytes: 0,
+            swap_used_bytes: 0,
+            uptime_secs: 0,
+            load_one: 0.0,
+            load_five: 0.0,
+            load_fifteen: 0.0,
+            battery_percent: None,
+            collected_at: sample_time(),
+            processes: None,
+            network_io: None,
+            disk_io: None,
+            temperatures: None,
+            network_connections: None,
+            logged_in_users: None,
+            os_info: None,
+            cpu_per_core: None,
+            task_counts: None,
+            cpu_times: None,
+        };
+        let v = serde_json::to_value(&snap).unwrap();
+        let obj = v.as_object().unwrap();
+        for skipped in [
+            "processes",
+            "network_io",
+            "disk_io",
+            "temperatures",
+            "network_connections",
+            "logged_in_users",
+            "os_info",
+            "cpu_per_core",
+            "task_counts",
+            "cpu_times",
+        ] {
+            assert!(!obj.contains_key(skipped), "{} should be skipped", skipped);
+        }
+        // battery_percent has no skip_serializing_if, so it's present as null.
+        assert!(obj.contains_key("battery_percent"));
+    }
+}

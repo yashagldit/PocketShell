@@ -328,4 +328,128 @@ mod tests {
     fn parse_request_rejects_junk() {
         assert!(parse_request(b"not json").is_none());
     }
+
+    #[test]
+    fn parse_request_rejects_non_utf8() {
+        // 0xFF is not valid UTF-8.
+        assert!(parse_request(&[0xFFu8, 0xFEu8, 0xFDu8]).is_none());
+    }
+
+    #[test]
+    fn parse_request_rejects_missing_required_fields() {
+        // Missing `method` (required by serde).
+        assert!(parse_request(br#"{"id":"x"}"#).is_none());
+        // Missing `id`.
+        assert!(parse_request(br#"{"method":"ping"}"#).is_none());
+    }
+
+    #[test]
+    fn parse_request_defaults_params_to_null() {
+        let req = parse_request(br#"{"id":"x","method":"ping"}"#).unwrap();
+        assert_eq!(req.params, Value::Null);
+    }
+
+    #[test]
+    fn rpc_error_constructors_set_code() {
+        assert_eq!(RpcError::not_found("m").code, "not_found");
+        assert_eq!(RpcError::permission_denied("m").code, "permission_denied");
+        assert_eq!(RpcError::invalid_params("m").code, "invalid_params");
+        assert_eq!(RpcError::unknown_method("m").code, "unknown_method");
+        assert_eq!(RpcError::internal("m").code, "internal");
+    }
+
+    #[test]
+    fn rpc_response_serialization_skips_none() {
+        let ok = RpcResponse::ok("a".into(), serde_json::json!({"x": 1}));
+        let v = serde_json::to_value(&ok).unwrap();
+        assert!(v.get("result").is_some());
+        assert!(v.get("error").is_none());
+
+        let err = RpcResponse::err("b".into(), RpcError::not_found("nope"));
+        let v = serde_json::to_value(&err).unwrap();
+        assert!(v.get("result").is_none());
+        assert_eq!(v["error"]["code"], "not_found");
+        assert_eq!(v["error"]["message"], "nope");
+    }
+
+    #[tokio::test]
+    async fn kill_rejects_negative_pid() {
+        let req = RpcRequest {
+            id: "k".into(),
+            method: "system/kill_process".into(),
+            params: serde_json::json!({"pid": -5, "signal": "TERM"}),
+        };
+        let resp = dispatch(req).await;
+        let err = resp.error.unwrap();
+        assert_eq!(err.code, "invalid_params");
+        assert!(err.message.to_lowercase().contains("process group")
+            || err.message.to_lowercase().contains("non-positive"));
+    }
+
+    #[tokio::test]
+    async fn kill_rejects_zero_pid() {
+        let req = RpcRequest {
+            id: "k".into(),
+            method: "system/kill_process".into(),
+            params: serde_json::json!({"pid": 0, "signal": "TERM"}),
+        };
+        let resp = dispatch(req).await;
+        let err = resp.error.unwrap();
+        assert_eq!(err.code, "invalid_params");
+    }
+
+    #[tokio::test]
+    async fn kill_rejects_non_integer_pid() {
+        let req = RpcRequest {
+            id: "k".into(),
+            method: "system/kill_process".into(),
+            params: serde_json::json!({"pid": "abc"}),
+        };
+        let resp = dispatch(req).await;
+        let err = resp.error.unwrap();
+        assert_eq!(err.code, "invalid_params");
+    }
+
+    #[tokio::test]
+    async fn kill_nonexistent_pid_maps_to_not_found_or_permission() {
+        // PID 9_999_999 almost certainly does not exist; the underlying
+        // `kill(1)` writes "No such process" → mapped to `not_found`. If
+        // the platform surfaces a different error string we fall through
+        // to `internal`; we only care that it's an error, not a success.
+        let req = RpcRequest {
+            id: "k".into(),
+            method: "system/kill_process".into(),
+            params: serde_json::json!({"pid": 9_999_999i64, "signal": "TERM"}),
+        };
+        let resp = dispatch(req).await;
+        assert!(resp.result.is_none());
+        assert!(resp.error.is_some());
+    }
+
+    #[tokio::test]
+    async fn kill_accepts_numeric_signal_aliases() {
+        // Signal "15" is accepted as TERM. Using a non-existent pid so the
+        // kill command itself errors, but the signal validation must pass.
+        let req = RpcRequest {
+            id: "k".into(),
+            method: "system/kill_process".into(),
+            params: serde_json::json!({"pid": 9_999_998i64, "signal": "15"}),
+        };
+        let resp = dispatch(req).await;
+        let err = resp.error.unwrap();
+        // Should not be invalid_params — the signal "15" is valid.
+        assert_ne!(err.code, "invalid_params");
+    }
+
+    #[tokio::test]
+    async fn dispatch_echoes_request_id() {
+        let req = RpcRequest {
+            id: "custom-id-42".into(),
+            method: "ping".into(),
+            params: Value::Null,
+        };
+        let resp = dispatch(req).await;
+        assert_eq!(resp.id, "custom-id-42");
+    }
+
 }

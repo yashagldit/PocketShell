@@ -37,6 +37,11 @@ zeroize = "1"
 default = ["webrtc"]
 webrtc = ["dep:webrtc"]
 
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "signal", "process", "net", "io-util", "test-util"] }
+wiremock = "0.6"
+
 [dependencies.webrtc]
 workspace = true
 optional = true

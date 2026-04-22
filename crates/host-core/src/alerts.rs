@@ -106,3 +106,181 @@ impl AlertChecker {
         alerts
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{AlertThreshold, StatsSnapshot};
+    use chrono::Utc;
+
+    fn empty_snapshot() -> StatsSnapshot {
+        StatsSnapshot {
+            cpu_usage_percent: 0.0,
+            memory_total_bytes: 0,
+            memory_used_bytes: 0,
+            memory_available_bytes: 0,
+            memory_free_bytes: 0,
+            disk_total_bytes: 0,
+            disk_used_bytes: 0,
+            swap_total_bytes: 0,
+            swap_used_bytes: 0,
+            uptime_secs: 0,
+            load_one: 0.0,
+            load_five: 0.0,
+            load_fifteen: 0.0,
+            battery_percent: None,
+            collected_at: Utc::now(),
+            processes: None,
+            network_io: None,
+            disk_io: None,
+            temperatures: None,
+            network_connections: None,
+            logged_in_users: None,
+            os_info: None,
+            cpu_per_core: None,
+            task_counts: None,
+            cpu_times: None,
+        }
+    }
+
+    fn threshold(metric: &str, value: f64, comparison: &str, cooldown: u64) -> AlertThreshold {
+        AlertThreshold {
+            metric: metric.to_string(),
+            threshold_value: value,
+            comparison: comparison.to_string(),
+            cooldown_minutes: cooldown,
+        }
+    }
+
+    #[test]
+    fn cpu_threshold_fires_when_exceeded() {
+        let mut checker = AlertChecker::new();
+        let mut snap = empty_snapshot();
+        snap.cpu_usage_percent = 95.0;
+        let alerts = checker.check(&snap, &[threshold("cpu", 80.0, "gt", 5)]);
+        assert_eq!(alerts.len(), 1);
+        let a = &alerts[0];
+        assert_eq!(a.metric, "cpu");
+        assert_eq!(a.threshold_value, 80.0);
+        assert!((a.actual_value - 95.0).abs() < 0.001);
+        assert!(a.message.contains("CPU usage"));
+        assert!(a.message.contains("exceeds"));
+    }
+
+    #[test]
+    fn cpu_threshold_does_not_fire_when_under() {
+        let mut checker = AlertChecker::new();
+        let mut snap = empty_snapshot();
+        snap.cpu_usage_percent = 50.0;
+        let alerts = checker.check(&snap, &[threshold("cpu", 80.0, "gt", 5)]);
+        assert!(alerts.is_empty());
+    }
+
+    #[test]
+    fn cooldown_suppresses_repeated_alerts() {
+        let mut checker = AlertChecker::new();
+        let mut snap = empty_snapshot();
+        snap.cpu_usage_percent = 95.0;
+        let t = threshold("cpu", 80.0, "gt", 5);
+        let first = checker.check(&snap, std::slice::from_ref(&t));
+        assert_eq!(first.len(), 1);
+        let second = checker.check(&snap, std::slice::from_ref(&t));
+        assert!(
+            second.is_empty(),
+            "second call within cooldown window should be silent"
+        );
+    }
+
+    #[test]
+    fn memory_threshold_skipped_when_total_zero() {
+        let mut checker = AlertChecker::new();
+        let snap = empty_snapshot();
+        let alerts = checker.check(&snap, &[threshold("memory", 50.0, "gt", 5)]);
+        assert!(alerts.is_empty());
+    }
+
+    #[test]
+    fn memory_threshold_computes_percentage() {
+        let mut checker = AlertChecker::new();
+        let mut snap = empty_snapshot();
+        snap.memory_total_bytes = 1000;
+        snap.memory_used_bytes = 900; // 90%
+        let alerts = checker.check(&snap, &[threshold("memory", 80.0, "gt", 5)]);
+        assert_eq!(alerts.len(), 1);
+        assert!((alerts[0].actual_value - 90.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn battery_lt_comparison_fires_when_below() {
+        let mut checker = AlertChecker::new();
+        let mut snap = empty_snapshot();
+        snap.battery_percent = Some(15.0);
+        let alerts = checker.check(&snap, &[threshold("battery", 20.0, "lt", 5)]);
+        assert_eq!(alerts.len(), 1);
+        assert!(alerts[0].message.contains("below"));
+        assert!(alerts[0].message.contains("Battery"));
+    }
+
+    #[test]
+    fn battery_skipped_when_absent() {
+        let mut checker = AlertChecker::new();
+        let snap = empty_snapshot();
+        let alerts = checker.check(&snap, &[threshold("battery", 20.0, "lt", 5)]);
+        assert!(alerts.is_empty());
+    }
+
+    #[test]
+    fn unknown_metric_is_skipped() {
+        let mut checker = AlertChecker::new();
+        let snap = empty_snapshot();
+        let alerts = checker.check(&snap, &[threshold("frobnicator", 1.0, "gt", 5)]);
+        assert!(alerts.is_empty());
+    }
+
+    #[test]
+    fn temperature_uses_max_reading() {
+        use crate::models::TemperatureReading;
+        let mut checker = AlertChecker::new();
+        let mut snap = empty_snapshot();
+        snap.temperatures = Some(vec![
+            TemperatureReading {
+                label: "cpu".into(),
+                temp_celsius: 40.0,
+                max_celsius: None,
+            },
+            TemperatureReading {
+                label: "gpu".into(),
+                temp_celsius: 85.0,
+                max_celsius: None,
+            },
+        ]);
+        let alerts = checker.check(&snap, &[threshold("temperature", 80.0, "gt", 5)]);
+        assert_eq!(alerts.len(), 1);
+        assert!((alerts[0].actual_value - 85.0).abs() < 0.001);
+        assert!(alerts[0].message.contains("°C"));
+    }
+
+    #[test]
+    fn disk_and_swap_skipped_when_total_zero() {
+        let mut checker = AlertChecker::new();
+        let snap = empty_snapshot();
+        let alerts = checker.check(
+            &snap,
+            &[
+                threshold("disk", 50.0, "gt", 5),
+                threshold("swap", 50.0, "gt", 5),
+            ],
+        );
+        assert!(alerts.is_empty());
+    }
+
+    #[test]
+    fn load_metric_fires_on_load_five() {
+        let mut checker = AlertChecker::new();
+        let mut snap = empty_snapshot();
+        snap.load_five = 4.5;
+        let alerts = checker.check(&snap, &[threshold("load", 2.0, "gt", 5)]);
+        assert_eq!(alerts.len(), 1);
+        assert!(alerts[0].message.contains("Load average"));
+    }
+}

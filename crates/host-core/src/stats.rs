@@ -639,3 +639,316 @@ impl StatsCollector {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{
+        CpuCoreInfo, CpuTimes, DiskIOStats, LoggedInUser, NetworkConnection, NetworkIOStats,
+        OsInfo, ProcessInfo, StatsSnapshot, TaskCounts, TemperatureReading,
+    };
+    use chrono::TimeZone;
+
+    fn sample_snapshot() -> StatsSnapshot {
+        StatsSnapshot {
+            cpu_usage_percent: 12.5,
+            memory_total_bytes: 16 * 1024 * 1024 * 1024,
+            memory_used_bytes: 4 * 1024 * 1024 * 1024,
+            memory_available_bytes: 12 * 1024 * 1024 * 1024,
+            memory_free_bytes: 8 * 1024 * 1024 * 1024,
+            disk_total_bytes: 500_000_000_000,
+            disk_used_bytes: 250_000_000_000,
+            swap_total_bytes: 0,
+            swap_used_bytes: 0,
+            uptime_secs: 3600,
+            load_one: 0.5,
+            load_five: 0.4,
+            load_fifteen: 0.3,
+            battery_percent: Some(88.0),
+            collected_at: Utc.with_ymd_and_hms(2026, 1, 15, 12, 0, 0).unwrap(),
+            processes: None,
+            network_io: None,
+            disk_io: None,
+            temperatures: None,
+            network_connections: None,
+            logged_in_users: None,
+            os_info: None,
+            cpu_per_core: None,
+            task_counts: None,
+            cpu_times: None,
+        }
+    }
+
+    #[test]
+    fn stats_snapshot_serde_roundtrip() {
+        let snap = sample_snapshot();
+        let json = serde_json::to_string(&snap).unwrap();
+        let back: StatsSnapshot = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.cpu_usage_percent, 12.5);
+        assert_eq!(back.memory_total_bytes, snap.memory_total_bytes);
+        assert_eq!(back.uptime_secs, 3600);
+        assert_eq!(back.battery_percent, Some(88.0));
+        assert_eq!(back.load_one, 0.5);
+    }
+
+    #[test]
+    fn stats_snapshot_skips_none_optional_fields() {
+        let snap = sample_snapshot();
+        let json = serde_json::to_string(&snap).unwrap();
+        // None-valued optional fields should be omitted via skip_serializing_if
+        assert!(!json.contains("\"processes\""));
+        assert!(!json.contains("\"network_io\""));
+        assert!(!json.contains("\"disk_io\""));
+        assert!(!json.contains("\"temperatures\""));
+        assert!(!json.contains("\"cpu_times\""));
+        // battery_percent has no skip attr, so it should appear.
+        assert!(json.contains("\"battery_percent\""));
+    }
+
+    #[test]
+    fn network_io_stats_roundtrip() {
+        let nio = NetworkIOStats {
+            bytes_sent: 1_000_000,
+            bytes_recv: 2_000_000,
+            packets_sent: 500,
+            packets_recv: 900,
+            bytes_sent_per_sec: Some(1024),
+            bytes_recv_per_sec: Some(2048),
+        };
+        let json = serde_json::to_string(&nio).unwrap();
+        let back: NetworkIOStats = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.bytes_sent, 1_000_000);
+        assert_eq!(back.bytes_recv_per_sec, Some(2048));
+    }
+
+    #[test]
+    fn network_io_stats_skips_none_rates() {
+        let nio = NetworkIOStats {
+            bytes_sent: 10,
+            bytes_recv: 20,
+            packets_sent: 1,
+            packets_recv: 2,
+            bytes_sent_per_sec: None,
+            bytes_recv_per_sec: None,
+        };
+        let json = serde_json::to_string(&nio).unwrap();
+        assert!(!json.contains("bytes_sent_per_sec"));
+        assert!(!json.contains("bytes_recv_per_sec"));
+    }
+
+    #[test]
+    fn disk_io_stats_roundtrip() {
+        let dio = DiskIOStats {
+            read_bytes: 9000,
+            write_bytes: 12000,
+            read_bytes_per_sec: Some(300),
+            write_bytes_per_sec: Some(400),
+        };
+        let back: DiskIOStats = serde_json::from_str(&serde_json::to_string(&dio).unwrap()).unwrap();
+        assert_eq!(back.read_bytes, 9000);
+        assert_eq!(back.write_bytes_per_sec, Some(400));
+    }
+
+    #[test]
+    fn cpu_times_roundtrip() {
+        let t = CpuTimes {
+            user_percent: 20.0,
+            system_percent: 10.0,
+            idle_percent: 65.0,
+            iowait_percent: 5.0,
+        };
+        let back: CpuTimes = serde_json::from_str(&serde_json::to_string(&t).unwrap()).unwrap();
+        assert_eq!(back.user_percent, 20.0);
+        assert_eq!(back.system_percent, 10.0);
+        assert_eq!(back.idle_percent, 65.0);
+        assert_eq!(back.iowait_percent, 5.0);
+    }
+
+    #[test]
+    fn task_counts_roundtrip() {
+        let tc = TaskCounts {
+            total: 300,
+            running: 4,
+            sleeping: 290,
+            stopped: 1,
+            zombie: 5,
+        };
+        let back: TaskCounts =
+            serde_json::from_str(&serde_json::to_string(&tc).unwrap()).unwrap();
+        assert_eq!(back.total, 300);
+        assert_eq!(back.running, 4);
+        assert_eq!(back.sleeping, 290);
+        assert_eq!(back.stopped, 1);
+        assert_eq!(back.zombie, 5);
+    }
+
+    #[test]
+    fn temperature_reading_skips_none_max() {
+        let t = TemperatureReading {
+            label: "cpu".to_string(),
+            temp_celsius: 42.5,
+            max_celsius: None,
+        };
+        let json = serde_json::to_string(&t).unwrap();
+        assert!(!json.contains("max_celsius"));
+        assert!(json.contains("42.5"));
+        assert!(json.contains("cpu"));
+    }
+
+    #[test]
+    fn network_connection_totals_match_serde() {
+        let nc = NetworkConnection {
+            tcp_established: 10,
+            tcp_time_wait: 4,
+            tcp_close_wait: 1,
+            tcp_listen: 3,
+            tcp_total: 18,
+        };
+        let back: NetworkConnection =
+            serde_json::from_str(&serde_json::to_string(&nc).unwrap()).unwrap();
+        assert_eq!(back.tcp_established, 10);
+        assert_eq!(back.tcp_total, 18);
+    }
+
+    #[test]
+    fn logged_in_user_optional_remote_host() {
+        let u = LoggedInUser {
+            username: "yash".to_string(),
+            terminal: "ttys000".to_string(),
+            remote_host: None,
+        };
+        let json = serde_json::to_string(&u).unwrap();
+        assert!(!json.contains("remote_host"));
+
+        let u2 = LoggedInUser {
+            username: "yash".to_string(),
+            terminal: "ttys001".to_string(),
+            remote_host: Some("192.168.1.10".to_string()),
+        };
+        let json2 = serde_json::to_string(&u2).unwrap();
+        assert!(json2.contains("192.168.1.10"));
+        let back: LoggedInUser = serde_json::from_str(&json2).unwrap();
+        assert_eq!(back.remote_host, Some("192.168.1.10".to_string()));
+    }
+
+    #[test]
+    fn os_info_and_cpu_core_roundtrip() {
+        let os = OsInfo {
+            os_name: "Darwin".to_string(),
+            os_version: "14.0".to_string(),
+            kernel_version: "23.0.0".to_string(),
+            hostname: "mac.local".to_string(),
+            arch: "arm64".to_string(),
+        };
+        let back_os: OsInfo = serde_json::from_str(&serde_json::to_string(&os).unwrap()).unwrap();
+        assert_eq!(back_os.arch, "arm64");
+
+        let core = CpuCoreInfo {
+            name: "cpu0".to_string(),
+            usage_percent: 15.0,
+            frequency_mhz: 3200,
+        };
+        let back_core: CpuCoreInfo =
+            serde_json::from_str(&serde_json::to_string(&core).unwrap()).unwrap();
+        assert_eq!(back_core.frequency_mhz, 3200);
+        assert_eq!(back_core.usage_percent, 15.0);
+    }
+
+    #[test]
+    fn process_info_skips_none_optionals() {
+        let p = ProcessInfo {
+            pid: 42,
+            name: "rustc".to_string(),
+            cpu_percent: 5.0,
+            memory_bytes: 1024 * 1024,
+            status: "Run".to_string(),
+            parent_pid: None,
+            user: None,
+            command: None,
+            run_time_secs: None,
+        };
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(!json.contains("parent_pid"));
+        assert!(!json.contains("\"user\""));
+        assert!(!json.contains("\"command\""));
+        assert!(!json.contains("run_time_secs"));
+        assert!(json.contains("\"pid\":42"));
+    }
+
+    #[test]
+    fn stats_snapshot_full_roundtrip_with_nested_options() {
+        let mut snap = sample_snapshot();
+        snap.network_io = Some(NetworkIOStats {
+            bytes_sent: 1,
+            bytes_recv: 2,
+            packets_sent: 3,
+            packets_recv: 4,
+            bytes_sent_per_sec: Some(10),
+            bytes_recv_per_sec: Some(20),
+        });
+        snap.disk_io = Some(DiskIOStats {
+            read_bytes: 100,
+            write_bytes: 200,
+            read_bytes_per_sec: None,
+            write_bytes_per_sec: None,
+        });
+        snap.cpu_times = Some(CpuTimes {
+            user_percent: 10.0,
+            system_percent: 5.0,
+            idle_percent: 84.0,
+            iowait_percent: 1.0,
+        });
+        snap.task_counts = Some(TaskCounts {
+            total: 5,
+            running: 1,
+            sleeping: 3,
+            stopped: 0,
+            zombie: 1,
+        });
+        let json = serde_json::to_string(&snap).unwrap();
+        let back: StatsSnapshot = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.network_io.as_ref().unwrap().bytes_sent, 1);
+        assert_eq!(back.disk_io.as_ref().unwrap().read_bytes, 100);
+        assert_eq!(back.cpu_times.as_ref().unwrap().idle_percent, 84.0);
+        assert_eq!(back.task_counts.as_ref().unwrap().total, 5);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cpu_times_delta_returns_none_on_first_sample() {
+        // No previous jiffies: delta should be None.
+        assert!(compute_cpu_times_delta(None, (10, 20, 70, 0, 100)).is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cpu_times_delta_zero_total_returns_none() {
+        let prev = (10, 20, 70, 0, 100);
+        // identical current → total delta 0 → None
+        assert!(compute_cpu_times_delta(Some(prev), prev).is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cpu_times_delta_computes_percentages() {
+        // Prev totals: user=100, sys=50, idle=800, iow=50, total=1000
+        // Curr totals: user=200, sys=100, idle=1600, iow=100, total=2000
+        // Deltas:       user=100,  sys=50,   idle=800,  iow=50,  total=1000
+        let prev = (100u64, 50u64, 800u64, 50u64, 1000u64);
+        let curr = (200u64, 100u64, 1600u64, 100u64, 2000u64);
+        let t = compute_cpu_times_delta(Some(prev), curr).expect("some delta");
+        assert!((t.user_percent - 10.0).abs() < 0.001);
+        assert!((t.system_percent - 5.0).abs() < 0.001);
+        assert!((t.idle_percent - 80.0).abs() < 0.001);
+        assert!((t.iowait_percent - 5.0).abs() < 0.001);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cpu_times_delta_saturates_on_counter_rollback() {
+        // curr < prev (would be a counter rollback): saturating_sub keeps deltas at 0 → None
+        let prev = (500u64, 500u64, 500u64, 500u64, 2000u64);
+        let curr = (100u64, 100u64, 100u64, 100u64, 400u64);
+        assert!(compute_cpu_times_delta(Some(prev), curr).is_none());
+    }
+}

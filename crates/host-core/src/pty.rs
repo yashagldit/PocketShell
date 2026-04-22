@@ -617,7 +617,7 @@ fn append_scrollback(scrollback: &mut VecDeque<u8>, chunk: &[u8]) {
 
 #[cfg(test)]
 mod tests {
-    use super::{append_scrollback, MAX_SCROLLBACK_BYTES};
+    use super::{append_scrollback, SessionManager, MAX_SCROLLBACK_BYTES};
     use std::collections::VecDeque;
 
     #[test]
@@ -629,5 +629,173 @@ mod tests {
         let v: Vec<u8> = scrollback.iter().copied().collect();
         assert_eq!(&v[..4], b"aaaa");
         assert_eq!(&v[v.len() - 4..], b"cdef");
+    }
+
+    #[test]
+    fn scrollback_appends_below_limit_without_trim() {
+        let mut scrollback: VecDeque<u8> = VecDeque::new();
+        append_scrollback(&mut scrollback, b"hello");
+        append_scrollback(&mut scrollback, b" world");
+        assert_eq!(scrollback.len(), 11);
+        let v: Vec<u8> = scrollback.iter().copied().collect();
+        assert_eq!(&v, b"hello world");
+    }
+
+    #[test]
+    fn validate_session_name_accepts_allowed_chars() {
+        assert!(SessionManager::validate_session_name("abc").is_ok());
+        assert!(SessionManager::validate_session_name("My-Session_1.2:tab/left+x@host,y").is_ok());
+        assert!(SessionManager::validate_session_name("UPPERCASE123").is_ok());
+    }
+
+    #[test]
+    fn validate_session_name_rejects_empty() {
+        assert!(SessionManager::validate_session_name("").is_err());
+    }
+
+    #[test]
+    fn validate_session_name_rejects_too_long() {
+        let long = "a".repeat(257);
+        assert!(SessionManager::validate_session_name(&long).is_err());
+    }
+
+    #[test]
+    fn validate_session_name_rejects_shell_metacharacters() {
+        for bad in &[
+            "evil;rm", "a|b", "a&b", "$(x)", "`x`", "a b", "a'b", "a\"b",
+            "a\\b", "a(b", "a>b", "a<b", "a!b", "a?b", "a*b", "a~b", "a#b",
+            "a\nb",
+        ] {
+            assert!(
+                SessionManager::validate_session_name(bad).is_err(),
+                "expected {:?} to be rejected",
+                bad
+            );
+        }
+    }
+
+    #[test]
+    fn new_manager_is_empty() {
+        let m = SessionManager::new(4);
+        assert_eq!(m.active_count(), 0);
+        assert!(!m.is_active("anything"));
+        assert!(!m.is_persistent("anything"));
+        assert!(m.tmux_session_name("anything").is_none());
+    }
+
+    #[test]
+    fn reconnect_session_unknown_errors() {
+        let mut m = SessionManager::new(4);
+        let err = m.reconnect_session("no-such".into(), 80, 24);
+        assert!(err.is_err());
+        let msg = format!("{:?}", err.unwrap_err());
+        assert!(msg.contains("no-such"));
+    }
+
+    #[test]
+    fn close_session_unknown_errors() {
+        let mut m = SessionManager::new(4);
+        assert!(m.close_session("nope").is_err());
+    }
+
+    #[test]
+    fn write_input_unknown_errors() {
+        let m = SessionManager::new(4);
+        assert!(m.write_input("nope", vec![1, 2, 3]).is_err());
+    }
+
+    #[test]
+    fn resize_unknown_errors() {
+        let m = SessionManager::new(4);
+        assert!(m.resize("nope", 80, 24).is_err());
+    }
+
+    #[test]
+    fn capture_scrollback_unknown_errors() {
+        let m = SessionManager::new(4);
+        assert!(m.capture_scrollback("nope").is_err());
+    }
+
+    #[test]
+    fn create_attached_session_unsupported_type_errors() {
+        let mut m = SessionManager::new(4);
+        let err = m
+            .create_attached_session("s1".into(), "weird", "target", 80, 24)
+            .unwrap_err();
+        let msg = format!("{:?}", err);
+        assert!(msg.contains("unsupported session type"));
+        assert_eq!(m.active_count(), 0);
+    }
+
+    #[test]
+    fn create_attached_tmux_validates_name() {
+        let mut m = SessionManager::new(4);
+        // Shell metacharacter must be rejected BEFORE any tmux spawn attempt.
+        let err = m
+            .create_attached_session("s1".into(), "tmux", "evil;rm", 80, 24)
+            .unwrap_err();
+        let msg = format!("{:?}", err);
+        assert!(msg.contains("invalid characters"));
+        assert_eq!(m.active_count(), 0);
+    }
+
+    #[test]
+    fn create_attached_pocketshell_missing_errors() {
+        // "pocketshell" type dispatches to reconnect_session which fails for
+        // unknown ids — gives us coverage of the branch without spawning a PTY.
+        let mut m = SessionManager::new(4);
+        let err = m
+            .create_attached_session("s1".into(), "pocketshell", "missing-id", 80, 24)
+            .unwrap_err();
+        let msg = format!("{:?}", err);
+        assert!(msg.contains("missing-id"));
+    }
+
+    #[test]
+    fn create_pty_relay_empty_path_errors() {
+        let mut m = SessionManager::new(4);
+        assert!(m.create_pty_relay_session("s1".into(), "").is_err());
+    }
+
+    #[test]
+    fn create_pty_relay_nonexistent_path_errors() {
+        let mut m = SessionManager::new(4);
+        let err = m
+            .create_pty_relay_session("s1".into(), "/dev/definitely-not-a-real-pty-xyz-9999")
+            .unwrap_err();
+        let msg = format!("{:?}", err);
+        assert!(msg.contains("cannot resolve PTY path") || msg.contains("PTY path"));
+    }
+
+    #[test]
+    fn detach_nonexistent_session_errors() {
+        let mut m = SessionManager::new(4);
+        assert!(m.detach_session("no-such").is_err());
+    }
+
+    #[test]
+    fn detach_all_on_empty_returns_empty() {
+        let mut m = SessionManager::new(4);
+        let detached = m.detach_all();
+        assert!(detached.is_empty());
+    }
+
+    #[test]
+    fn reap_exited_on_empty_returns_empty() {
+        let mut m = SessionManager::new(4);
+        assert!(m.reap_exited_sessions().is_empty());
+    }
+
+    #[test]
+    fn close_all_on_empty_is_noop() {
+        let mut m = SessionManager::new(4);
+        m.close_all();
+        assert_eq!(m.active_count(), 0);
+    }
+
+    #[test]
+    fn drain_output_on_empty_returns_empty() {
+        let m = SessionManager::new(4);
+        assert!(m.drain_output().is_empty());
     }
 }

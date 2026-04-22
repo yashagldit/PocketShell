@@ -24,3 +24,9 @@ pub mod transport;
 pub mod webrtc_manager;
 #[cfg(feature = "webrtc")]
 pub mod webrtc_peer;
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::sync::Mutex;
+    pub static HOME_LOCK: Mutex<()> = Mutex::new(());
+}

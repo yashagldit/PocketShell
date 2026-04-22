@@ -161,4 +161,75 @@ mod tests {
         let mut state = TailState::default();
         assert!(read_delta(&path, &mut state).unwrap().is_empty());
     }
+
+    #[test]
+    fn initial_offset_returns_zero_for_missing_file() {
+        let path = tmp("initial_missing");
+        assert_eq!(initial_offset(&path), 0);
+    }
+
+    #[test]
+    fn initial_offset_returns_file_size() {
+        let path = tmp("initial_size");
+        std::fs::write(&path, b"hello\n").unwrap();
+        assert_eq!(initial_offset(&path), 6);
+    }
+
+    #[test]
+    fn starting_at_sets_offset() {
+        let s = TailState::starting_at(42);
+        assert_eq!(s.last_size, 42);
+        assert!(s.partial.is_empty());
+    }
+
+    #[test]
+    fn multiple_lines_in_one_tick() {
+        let path = tmp("multi");
+        std::fs::write(&path, "").unwrap();
+        let mut state = TailState::default();
+        std::fs::write(&path, "a\nb\nc\nd\n").unwrap();
+        let got = read_delta(&path, &mut state).unwrap();
+        assert_eq!(got, vec!["a", "b", "c", "d"]);
+        assert_eq!(state.partial, "");
+    }
+
+    #[test]
+    fn empty_lines_are_filtered_out() {
+        let path = tmp("empties");
+        std::fs::write(&path, "").unwrap();
+        let mut state = TailState::default();
+        std::fs::write(&path, "one\n\n\ntwo\n").unwrap();
+        let got = read_delta(&path, &mut state).unwrap();
+        assert_eq!(got, vec!["one", "two"]);
+    }
+
+    #[test]
+    fn no_growth_yields_no_lines() {
+        let path = tmp("no_growth");
+        std::fs::write(&path, "hello\n").unwrap();
+        let mut state = TailState::starting_at(initial_offset(&path));
+        let got = read_delta(&path, &mut state).unwrap();
+        assert!(got.is_empty());
+    }
+
+    #[test]
+    fn partial_followed_by_more_partial_accumulates() {
+        let path = tmp("partial_accum");
+        std::fs::write(&path, "").unwrap();
+        let mut state = TailState::default();
+
+        std::fs::write(&path, "foo").unwrap();
+        assert!(read_delta(&path, &mut state).unwrap().is_empty());
+        assert_eq!(state.partial, "foo");
+
+        // Overwrite with same prefix plus more — but since we seek from
+        // last_size the "foo" prefix is consumed as partial already; appending
+        // "bar\n" as a whole file rewrite means size equals 7, last_size is 3,
+        // so we read "bar\n" from offset 3.
+        std::fs::write(&path, "foobar\n").unwrap();
+        let got = read_delta(&path, &mut state).unwrap();
+        assert_eq!(got, vec!["foobar"]);
+        assert_eq!(state.partial, "");
+    }
+
 }
