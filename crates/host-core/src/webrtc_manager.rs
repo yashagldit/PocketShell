@@ -4,8 +4,15 @@ use crate::error::{HostError, Result};
 use crate::webrtc_peer::{DataChannelEvent, WebRtcPeer};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::mpsc;
 use tokio::time::{timeout, Duration};
+
+/// How long a peer may sit in `Disconnected` before we tear it down. Matches
+/// the spec-recommended grace period: shorter than the ~30s the browser takes
+/// to reach `Failed`, but long enough that a transient network blip or mobile
+/// ICE-restart attempt can recover without losing the peer.
+const DISCONNECTED_GRACE: Duration = Duration::from_secs(20);
 use tracing::{info, warn};
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
 use webrtc::data_channel::RTCDataChannel;
@@ -198,6 +205,9 @@ pub struct WebRtcManager {
     /// Tracked by `(peer_key, agent_id, channel)` so we can prune by either
     /// peer disconnect or session close.
     agent_channel_owners: Vec<(String, String, Arc<RTCDataChannel>)>,
+    /// First time we observed each peer in `Disconnected` state. Cleared once
+    /// the peer recovers; used to enforce `DISCONNECTED_GRACE` before teardown.
+    disconnected_since: HashMap<String, Instant>,
     event_tx: mpsc::UnboundedSender<WebRtcEvent>,
 }
 
@@ -215,6 +225,7 @@ impl WebRtcManager {
             files_channel_owners: Vec::new(),
             control_channel_owners: Vec::new(),
             agent_channel_owners: Vec::new(),
+            disconnected_since: HashMap::new(),
             event_tx,
         }
     }
@@ -261,6 +272,7 @@ impl WebRtcManager {
                 );
                 old.close().await;
             }
+            self.disconnected_since.remove(peer_key);
             let peer = WebRtcPeer::new(turn_uris, username, credential).await?;
             self.peers.insert(peer_key.to_string(), peer);
             info!("created WebRTC peer for peer_key={}", peer_key);
@@ -310,6 +322,26 @@ impl WebRtcManager {
                     );
                     peers_to_close.push(peer_key.clone());
                     continue;
+                }
+                if matches!(state, RTCPeerConnectionState::Disconnected) {
+                    let entered = self
+                        .disconnected_since
+                        .entry(peer_key.clone())
+                        .or_insert_with(Instant::now);
+                    if entered.elapsed() >= DISCONNECTED_GRACE {
+                        warn!(
+                            "closing WebRTC peer for peer_key={} after {:?} in Disconnected",
+                            peer_key,
+                            entered.elapsed()
+                        );
+                        peers_to_close.push(peer_key.clone());
+                        continue;
+                    }
+                } else if self.disconnected_since.remove(&peer_key).is_some() {
+                    info!(
+                        "WebRTC peer for peer_key={} recovered from Disconnected (state={:?})",
+                        peer_key, state
+                    );
                 }
                 while let Ok(dc_event) = peer.channel_rx.try_recv() {
                     dc_events.push(dc_event);
@@ -463,6 +495,7 @@ impl WebRtcManager {
         if let Some(peer) = self.peers.remove(peer_key) {
             peer.close().await;
         }
+        self.disconnected_since.remove(peer_key);
 
         // Close terminal channels owned by this specific peer.
         let (to_close, remaining): (Vec<_>, Vec<_>) = self
