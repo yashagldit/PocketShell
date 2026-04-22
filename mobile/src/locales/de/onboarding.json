@@ -1,0 +1,17 @@
+{
+  "step_pair.title": "Host koppeln",
+  "step_pair.subtitle": "In Sekunden verbunden",
+  "step_pair.description": "Installiere den PocketShell-Agent auf einem beliebigen Rechner, erstelle in der App einen Kopplungscode und führe `pocketshell pair <CODE>` auf deinem Host aus. Fertig — sichere P2P-Verbindung hergestellt.",
+  "step_terminal.title": "Vollständiger Terminal-Zugriff",
+  "step_terminal.subtitle": "Echte Shell, volle Power",
+  "step_terminal.description": "Nutze ein vollwertiges Terminal mit Ctrl-Tasten, Pfeilnavigation, Tab-Vervollständigung, Suche und Zwischenablage. Verbinde dich nahtlos mit tmux- oder screen-Sessions.",
+  "step_workspaces.title": "Arbeitsbereiche & Dateien",
+  "step_workspaces.subtitle": "Organisiere deinen Workflow",
+  "step_workspaces.description": "Erstelle Arbeitsbereiche mit mehreren Terminal-Tabs und Datei-Browser-Panels. Durchsuche, bearbeite und übertrage Dateien direkt zwischen Handy und Remote-Host.",
+  "step_monitor.title": "Live-Monitoring",
+  "step_monitor.subtitle": "Kenne deine Systeme",
+  "step_monitor.description": "Beobachte CPU-, RAM-, Festplatten- und Netzwerkwerte in Echtzeit. Lege Schwellwerte für Alarme fest und werde benachrichtigt, wenn etwas Aufmerksamkeit braucht — alles über einen sicheren WebRTC-Kanal.",
+  "skip": "Überspringen",
+  "next": "Weiter",
+  "get_started": "Loslegen"
+}

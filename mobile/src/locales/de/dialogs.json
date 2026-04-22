@@ -1,0 +1,8 @@
+{
+  "sign_out_title": "Abmelden",
+  "sign_out_description": "Du musst dich erneut anmelden, um auf deine Hosts zuzugreifen.",
+  "replace_device_key_title": "Geräteschlüssel ersetzen?",
+  "replace_device_key_description": "Dies ersetzt deinen aktuellen Geräteschlüssel. Bei Hosts, die den importierten Schlüssel nicht kennen, musst du dich eventuell neu koppeln.",
+  "delete_rule_title": "Regel löschen",
+  "delete_rule_description": "Diese Benachrichtigungsregel entfernen?"
+}

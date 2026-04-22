@@ -1,0 +1,15 @@
+{
+  "screen.title": "Vertrauenswürdige Geräte",
+  "empty.title": "Keine vertrauenswürdigen Geräte",
+  "empty.subtitle": "Geräte, die sich mit diesem Host verbinden, erscheinen hier.",
+  "device.revoke": "Gerät widerrufen",
+  "device.revokeMessage": "Dadurch wird der Host-Zugriff für dieses mobile Gerät entzogen.",
+  "device.revokeButton": "Widerrufen",
+  "permission.shell": "Shell-Zugriff",
+  "permission.stats": "Statistik-Zugriff",
+  "permission.sessions": "Session-Zugriff",
+  "badge.revoked": "widerrufen",
+  "badge.approved": "freigegeben",
+  "badge.pending": "ausstehend",
+  "device.never_used": "nie verwendet"
+}

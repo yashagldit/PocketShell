@@ -1,0 +1,6 @@
+{
+  "open_to_setup": "PocketShellを開いて設定",
+  "stale_indicator": "更新遅延",
+  "fleet_overview": "フリート概要",
+  "online_count": "{{online}}/{{total}} オンライン"
+}

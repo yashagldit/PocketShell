@@ -1,0 +1,8 @@
+{
+  "sign_out_title": "サインアウト",
+  "sign_out_description": "ホストにアクセスするには再度サインインする必要があります。",
+  "replace_device_key_title": "デバイス鍵を置き換えますか？",
+  "replace_device_key_description": "現在のデバイス鍵が置き換わります。インポート後の鍵を認識しないホストとは再ペアリングが必要になる場合があります。",
+  "delete_rule_title": "ルールを削除",
+  "delete_rule_description": "このアラートルールを削除しますか？"
+}

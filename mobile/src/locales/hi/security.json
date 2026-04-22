@@ -1,0 +1,15 @@
+{
+  "screen.title": "विश्वसनीय डिवाइस",
+  "empty.title": "कोई विश्वसनीय डिवाइस नहीं",
+  "empty.subtitle": "इस होस्ट से कनेक्ट होने वाले डिवाइस यहाँ दिखाई देंगे।",
+  "device.revoke": "डिवाइस रद्द करें",
+  "device.revokeMessage": "यह इस मोबाइल डिवाइस के लिए होस्ट एक्सेस हटा देगा।",
+  "device.revokeButton": "रद्द करें",
+  "permission.shell": "शेल एक्सेस",
+  "permission.stats": "आँकड़े एक्सेस",
+  "permission.sessions": "सेशन एक्सेस",
+  "badge.revoked": "रद्द किया गया",
+  "badge.approved": "स्वीकृत",
+  "badge.pending": "लंबित",
+  "device.never_used": "कभी उपयोग नहीं"
+}

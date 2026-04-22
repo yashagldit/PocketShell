@@ -1,0 +1,5 @@
+{
+  "host_online": "{{host}} がオンラインになりました",
+  "host_offline": "{{host}} がオフラインになりました",
+  "alert_triggered": "{{host}} の {{metric}} が {{value}}{{unit}} に到達しました（しきい値 {{threshold}}{{unit}}）"
+}

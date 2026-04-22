@@ -1,0 +1,15 @@
+{
+  "requesting": "セッションをリクエスト中…",
+  "connecting": "P2P接続を確立中…",
+  "reconnecting": "ホストに再接続中…",
+  "failed": "接続に失敗しました",
+  "closed": "セッションを終了しました",
+  "progress.requested": "セッションをリクエストしました",
+  "progress.connecting": "P2Pを確立中",
+  "progress.reconnecting": "再接続中…",
+  "new_session": "新しいセッション",
+  "uploading_image": "画像をアップロード中",
+  "upload_success": "アップロードに成功しました",
+  "upload_failed": "アップロードに失敗しました",
+  "selection_modal_subtitle": "デバイス標準のテキスト選択ハンドルを使用してください。"
+}

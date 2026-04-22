@@ -1,0 +1,15 @@
+{
+  "screen.title": "信頼済みデバイス",
+  "empty.title": "信頼済みデバイスはありません",
+  "empty.subtitle": "このホストに接続するデバイスがここに表示されます。",
+  "device.revoke": "デバイスを失効",
+  "device.revokeMessage": "このモバイルデバイスからのホストアクセスを無効にします。",
+  "device.revokeButton": "失効",
+  "permission.shell": "シェルアクセス",
+  "permission.stats": "統計アクセス",
+  "permission.sessions": "セッションアクセス",
+  "badge.revoked": "失効済み",
+  "badge.approved": "承認済み",
+  "badge.pending": "保留中",
+  "device.never_used": "未使用"
+}

@@ -1,0 +1,15 @@
+{
+  "screen.title": "Trusted Devices",
+  "empty.title": "No trusted devices",
+  "empty.subtitle": "Devices that connect to this host will appear here.",
+  "device.revoke": "Revoke device",
+  "device.revokeMessage": "This will remove host access for this mobile device.",
+  "device.revokeButton": "Revoke",
+  "permission.shell": "Shell access",
+  "permission.stats": "Stats access",
+  "permission.sessions": "Sessions access",
+  "badge.revoked": "revoked",
+  "badge.approved": "approved",
+  "badge.pending": "pending",
+  "device.never_used": "never used"
+}

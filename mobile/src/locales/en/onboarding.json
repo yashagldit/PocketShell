@@ -1,0 +1,17 @@
+{
+  "step_pair.title": "Pair Your Host",
+  "step_pair.subtitle": "Connect in seconds",
+  "step_pair.description": "Install the PocketShell agent on any machine, generate a pairing code in the app, and run `pocketshell pair <CODE>` on your host. That's it — secure P2P connection established.",
+  "step_terminal.title": "Full Terminal Access",
+  "step_terminal.subtitle": "Real shell, real power",
+  "step_terminal.description": "Get a complete terminal with Ctrl keys, arrow navigation, tab completion, search, and clipboard support. Attach to tmux or screen sessions seamlessly.",
+  "step_workspaces.title": "Workspaces & Files",
+  "step_workspaces.subtitle": "Organize your workflow",
+  "step_workspaces.description": "Create workspaces with multiple terminal tabs and file browser panels. Browse, edit, and transfer files directly between your phone and remote host.",
+  "step_monitor.title": "Live Monitoring",
+  "step_monitor.subtitle": "Know your systems",
+  "step_monitor.description": "Watch CPU, memory, disk, and network stats in real time. Set alert thresholds and get notified when something needs attention — all over a secure WebRTC channel.",
+  "skip": "Skip",
+  "next": "Next",
+  "get_started": "Get Started"
+}

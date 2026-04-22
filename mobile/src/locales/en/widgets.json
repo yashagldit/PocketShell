@@ -1,0 +1,6 @@
+{
+  "open_to_setup": "Open PocketShell to set up",
+  "stale_indicator": "Stale",
+  "fleet_overview": "Fleet Overview",
+  "online_count": "{{online}}/{{total}} Online"
+}

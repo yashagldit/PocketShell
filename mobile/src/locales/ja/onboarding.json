@@ -1,0 +1,17 @@
+{
+  "step_pair.title": "ホストをペアリング",
+  "step_pair.subtitle": "数秒で接続",
+  "step_pair.description": "任意のマシンにPocketShellエージェントをインストールし、アプリでペアリングコードを生成して、ホスト側で `pocketshell pair <CODE>` を実行します。これで安全なP2P接続が完了です。",
+  "step_terminal.title": "フルターミナルアクセス",
+  "step_terminal.subtitle": "本物のシェル、本物のパワー",
+  "step_terminal.description": "Ctrlキー、矢印キー、タブ補完、検索、クリップボードに対応した完全なターミナル。tmuxやscreenセッションにもシームレスに接続できます。",
+  "step_workspaces.title": "ワークスペースとファイル",
+  "step_workspaces.subtitle": "ワークフローを整理",
+  "step_workspaces.description": "複数のターミナルタブとファイルブラウザを1つのワークスペースにまとめられます。端末とリモートホスト間でファイルを閲覧、編集、転送。",
+  "step_monitor.title": "ライブモニタリング",
+  "step_monitor.subtitle": "システムを常に把握",
+  "step_monitor.description": "CPU、メモリ、ディスク、ネットワークをリアルタイムで確認。しきい値を設定すれば、異変があったときに通知が届きます——すべて安全なWebRTC経由で。",
+  "skip": "スキップ",
+  "next": "次へ",
+  "get_started": "はじめる"
+}

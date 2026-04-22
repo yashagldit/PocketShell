@@ -1,0 +1,5 @@
+{
+  "host_online": "{{host}} ऑनलाइन है",
+  "host_offline": "{{host}} ऑफ़लाइन हो गया",
+  "alert_triggered": "{{host}} पर {{metric}} {{value}}{{unit}} तक पहुँचा (थ्रेशोल्ड {{threshold}}{{unit}})"
+}
