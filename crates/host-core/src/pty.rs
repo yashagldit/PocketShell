@@ -662,9 +662,8 @@ mod tests {
     #[test]
     fn validate_session_name_rejects_shell_metacharacters() {
         for bad in &[
-            "evil;rm", "a|b", "a&b", "$(x)", "`x`", "a b", "a'b", "a\"b",
-            "a\\b", "a(b", "a>b", "a<b", "a!b", "a?b", "a*b", "a~b", "a#b",
-            "a\nb",
+            "evil;rm", "a|b", "a&b", "$(x)", "`x`", "a b", "a'b", "a\"b", "a\\b", "a(b", "a>b",
+            "a<b", "a!b", "a?b", "a*b", "a~b", "a#b", "a\nb",
         ] {
             assert!(
                 SessionManager::validate_session_name(bad).is_err(),

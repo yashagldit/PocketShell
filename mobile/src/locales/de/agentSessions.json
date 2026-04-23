@@ -21,5 +21,7 @@
   "alert.sessionFallbackTitle": "Session",
   "group.noProject": "Kein Projekt",
   "badge.live": "Live",
-  "badge.paused": "Pausiert"
+  "badge.paused": "Pausiert",
+  "project.showAll": "{{count}} weitere anzeigen",
+  "project.showLess": "Weniger anzeigen"
 }

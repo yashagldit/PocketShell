@@ -21,5 +21,7 @@
   "alert.sessionFallbackTitle": "セッション",
   "group.noProject": "プロジェクトなし",
   "badge.live": "ライブ",
-  "badge.paused": "一時停止"
+  "badge.paused": "一時停止",
+  "project.showAll": "さらに{{count}}件を表示",
+  "project.showLess": "表示を減らす"
 }

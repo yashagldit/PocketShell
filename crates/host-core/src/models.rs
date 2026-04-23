@@ -476,10 +476,8 @@ mod tests {
             SessionState::Ended,
             SessionState::Failed,
         ] {
-            let via_serde: String = serde_json::from_value(
-                serde_json::to_value(&state).unwrap(),
-            )
-            .unwrap();
+            let via_serde: String =
+                serde_json::from_value(serde_json::to_value(&state).unwrap()).unwrap();
             assert_eq!(via_serde, state.as_str());
         }
     }
@@ -501,7 +499,10 @@ mod tests {
             host_id: None,
         };
         let v: serde_json::Value = serde_json::to_value(&req).unwrap();
-        assert!(v.get("host_id").is_none(), "host_id should be skipped when None");
+        assert!(
+            v.get("host_id").is_none(),
+            "host_id should be skipped when None"
+        );
         // app_version doesn't have skip_serializing_if, so it should be present as null.
         assert!(v.get("app_version").is_some());
         assert!(v["app_version"].is_null());
@@ -614,7 +615,8 @@ mod tests {
 
     #[test]
     fn session_request_null_attach_target() {
-        let raw = r#"{"session_id":"s","mobile_device_id":"m","cols":80,"rows":24,"attach_target":null}"#;
+        let raw =
+            r#"{"session_id":"s","mobile_device_id":"m","cols":80,"rows":24,"attach_target":null}"#;
         let req: SessionRequest = serde_json::from_str(raw).unwrap();
         assert!(req.attach_target.is_none());
     }

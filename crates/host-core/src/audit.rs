@@ -77,7 +77,9 @@ mod tests {
 
     #[test]
     fn write_audit_event_appends_json_line_to_audit_file() {
-        let _g = crate::test_support::HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::test_support::HOME_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
         let prev_home = std::env::var_os("HOME");
         std::env::set_var("HOME", tmp.path());

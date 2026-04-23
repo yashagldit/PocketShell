@@ -275,8 +275,8 @@ impl SessionDiscovery {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
     use crate::test_support::HOME_LOCK;
+    use chrono::TimeZone;
 
     fn sample_session(name: &str, attached: bool) -> AvailableSession {
         AvailableSession {

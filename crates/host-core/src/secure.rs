@@ -34,7 +34,8 @@ mod tests {
     use base64::Engine;
 
     fn make_token(payload: &serde_json::Value) -> String {
-        let header = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b"{\"alg\":\"HS256\"}");
+        let header =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b"{\"alg\":\"HS256\"}");
         let body = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(serde_json::to_vec(payload).unwrap());
         format!("{header}.{body}.signature")

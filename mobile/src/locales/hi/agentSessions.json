@@ -21,5 +21,7 @@
   "alert.sessionFallbackTitle": "सेशन",
   "group.noProject": "कोई प्रोजेक्ट नहीं",
   "badge.live": "लाइव",
-  "badge.paused": "रुका हुआ"
+  "badge.paused": "रुका हुआ",
+  "project.showAll": "{{count}} और दिखाएँ",
+  "project.showLess": "कम दिखाएँ"
 }

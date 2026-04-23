@@ -77,7 +77,9 @@ mod tests {
 
     #[test]
     fn socket_path_ends_with_daemon_sock_under_pocketshell_dir() {
-        let _g = crate::test_support::HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::test_support::HOME_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
         let prev_home = std::env::var_os("HOME");
         std::env::set_var("HOME", tmp.path());
@@ -90,9 +92,14 @@ mod tests {
         }
 
         let path = result.expect("socket_path should succeed");
-        assert_eq!(path.file_name().and_then(|s| s.to_str()), Some("daemon.sock"));
         assert_eq!(
-            path.parent().and_then(|p| p.file_name()).and_then(|s| s.to_str()),
+            path.file_name().and_then(|s| s.to_str()),
+            Some("daemon.sock")
+        );
+        assert_eq!(
+            path.parent()
+                .and_then(|p| p.file_name())
+                .and_then(|s| s.to_str()),
             Some(".pocketshell")
         );
         assert!(path.starts_with(tmp.path()));

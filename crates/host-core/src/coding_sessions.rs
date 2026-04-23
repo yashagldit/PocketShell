@@ -4,7 +4,7 @@
 use crate::error::{HostError, Result};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -33,11 +33,17 @@ pub struct SessionInfo {
     #[serde(skip)]
     mtime_system: SystemTime,
     pub mtime: String,
+    /// True if a host-side agent child for this session_id is currently
+    /// running. Mobile uses this to badge rows as "live" so the user can tap
+    /// them and reattach instead of spawning a new `--resume` child.
+    pub alive: bool,
 }
 
-pub async fn list_sessions(limit: Option<usize>) -> Result<serde_json::Value> {
-    let home = dirs::home_dir()
-        .ok_or_else(|| HostError::Backend("home dir not found".into()))?;
+pub async fn list_sessions(
+    limit: Option<usize>,
+    alive_ids: HashSet<String>,
+) -> Result<serde_json::Value> {
+    let home = dirs::home_dir().ok_or_else(|| HostError::Backend("home dir not found".into()))?;
 
     let claude_dir = home.join(".claude");
     let codex_dir = home.join(".codex");
@@ -48,6 +54,10 @@ pub async fn list_sessions(limit: Option<usize>) -> Result<serde_json::Value> {
     let (claude_res, codex_res) = tokio::join!(claude_task, codex_task);
     let mut sessions = claude_res.map_err(task_err)?;
     sessions.extend(codex_res.map_err(task_err)?);
+
+    for s in &mut sessions {
+        s.alive = alive_ids.contains(&s.session_id);
+    }
 
     sessions.sort_by(|a, b| b.mtime_system.cmp(&a.mtime_system));
     let total = sessions.len();
@@ -145,10 +155,7 @@ fn parse_claude_session(file_path: &Path) -> Option<SessionInfo> {
 
         if title.is_none() {
             let is_user = raw.get("type").and_then(|v| v.as_str()) == Some("user");
-            let is_meta = raw
-                .get("isMeta")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
+            let is_meta = raw.get("isMeta").and_then(|v| v.as_bool()).unwrap_or(false);
             if is_user && !is_meta {
                 if let Some(content) = raw.get("message").and_then(|m| m.get("content")) {
                     if let Some(t) = extract_title(content) {
@@ -180,6 +187,7 @@ fn parse_claude_session(file_path: &Path) -> Option<SessionInfo> {
         size_bytes,
         mtime_system,
         mtime: format_mtime(mtime_system),
+        alive: false,
     })
 }
 
@@ -252,10 +260,7 @@ fn load_codex_index(index_path: &Path) -> HashMap<String, String> {
     map
 }
 
-fn parse_codex_session(
-    file_path: &Path,
-    index: &HashMap<String, String>,
-) -> Option<SessionInfo> {
+fn parse_codex_session(file_path: &Path, index: &HashMap<String, String>) -> Option<SessionInfo> {
     let file = fs::File::open(file_path).ok()?;
     let metadata = file.metadata().ok()?;
     let size_bytes = metadata.len();
@@ -302,6 +307,7 @@ fn parse_codex_session(
         size_bytes,
         mtime_system,
         mtime: format_mtime(mtime_system),
+        alive: false,
     })
 }
 
@@ -392,7 +398,10 @@ mod tests {
         let content = serde_json::json!([
             { "type": "text", "text": "first real message" }
         ]);
-        assert_eq!(extract_title(&content).as_deref(), Some("first real message"));
+        assert_eq!(
+            extract_title(&content).as_deref(),
+            Some("first real message")
+        );
     }
 
     #[test]
@@ -513,6 +522,7 @@ mod tests {
             size_bytes: 42,
             mtime_system: SystemTime::UNIX_EPOCH,
             mtime: "1970-01-01T00:00:00+00:00".into(),
+            alive: false,
         };
         let v = serde_json::to_value(&info).unwrap();
         assert_eq!(v["session_id"], "abc");
@@ -564,8 +574,12 @@ not json
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("rollout-x.jsonl");
         // First line has wrong type — must return None.
-        std::fs::write(&p, r#"{"type":"other","payload":{"id":"x"}}
-"#).unwrap();
+        std::fs::write(
+            &p,
+            r#"{"type":"other","payload":{"id":"x"}}
+"#,
+        )
+        .unwrap();
         let idx = HashMap::new();
         assert!(parse_codex_session(&p, &idx).is_none());
     }

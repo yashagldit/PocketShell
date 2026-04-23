@@ -176,10 +176,7 @@ fn devices_unknown_subcommand_fails() {
 #[test]
 fn daemon_unknown_subcommand_fails() {
     let tmp = TempDir::new().unwrap();
-    cmd(&tmp)
-        .args(["daemon", "explode"])
-        .assert()
-        .failure();
+    cmd(&tmp).args(["daemon", "explode"]).assert().failure();
 }
 
 #[test]
@@ -187,9 +184,8 @@ fn stats_snapshot_prints_json() {
     let tmp = TempDir::new().unwrap();
     // `stats` without --watch collects one snapshot and exits. It does not
     // touch auth or the network, so it's safe to exercise end-to-end.
-    cmd(&tmp)
-        .arg("stats")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("cpu_usage_percent").or(predicate::str::contains("memory_total_bytes")));
+    cmd(&tmp).arg("stats").assert().success().stdout(
+        predicate::str::contains("cpu_usage_percent")
+            .or(predicate::str::contains("memory_total_bytes")),
+    );
 }

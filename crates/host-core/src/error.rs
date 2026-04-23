@@ -50,10 +50,7 @@ mod tests {
             HostError::HostGone.to_string(),
             "host no longer exists on the backend (removed from account)"
         );
-        assert_eq!(
-            HostError::Pty("x".into()).to_string(),
-            "pty error: x"
-        );
+        assert_eq!(HostError::Pty("x".into()).to_string(), "pty error: x");
         assert_eq!(
             HostError::Version("old".into()).to_string(),
             "unsupported host version: old"

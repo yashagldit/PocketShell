@@ -234,15 +234,9 @@ pub struct SpawnConfig {
 pub enum AgentAttachment {
     /// Zero-copy: host filesystem path. Codex consumes this as `localImage`;
     /// Claude has no path form so the path is read + base64-encoded at send time.
-    LocalPath {
-        path: String,
-        media_type: String,
-    },
+    LocalPath { path: String, media_type: String },
     /// Already-base64-encoded bytes (no `data:` prefix).
-    Base64 {
-        data: String,
-        media_type: String,
-    },
+    Base64 { data: String, media_type: String },
 }
 
 /// Input for `AgentSession::send_user_message`.
@@ -769,7 +763,10 @@ pub async fn spawn_session(config: SpawnConfig) -> Result<Arc<AgentSession>, Spa
     let (stdin_tx, stdin_rx) = mpsc::channel::<String>(STDIN_CHANNEL_CAPACITY);
     let (stdout_tx, stdout_rx_internal) = mpsc::channel::<String>(STDOUT_CHANNEL_CAPACITY);
 
-    let id = config.id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
+    let id = config
+        .id
+        .clone()
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
     let exit_slot: Arc<Mutex<Option<ExitReason>>> = Arc::new(Mutex::new(None));
     let shutdown_requested = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stderr_ring = Arc::new(Mutex::new(StderrRing::new()));
@@ -1154,10 +1151,12 @@ impl AgentManager {
         if let Some(rid) = config.resume_id.clone() {
             let prev = {
                 let state = self.state.lock().await;
-                state
-                    .by_resume_id
-                    .get(&rid)
-                    .and_then(|pid| state.by_id.get(pid).map(|e| (pid.clone(), e.session.clone())))
+                state.by_resume_id.get(&rid).and_then(|pid| {
+                    state
+                        .by_id
+                        .get(pid)
+                        .map(|e| (pid.clone(), e.session.clone()))
+                })
             };
             if let Some((prev_id, session)) = prev {
                 if session.exit_reason().await.is_none() {
@@ -1165,7 +1164,11 @@ impl AgentManager {
                         let mut state = self.state.lock().await;
                         if state.rekey(&prev_id, agent_id.clone()).is_some() {
                             info!(prev = %prev_id, "claude rebound existing session");
-                            return Ok(BindOutcome { session, stdout_rx: rx, reattached: true });
+                            return Ok(BindOutcome {
+                                session,
+                                stdout_rx: rx,
+                                reattached: true,
+                            });
                         }
                     }
                 }
@@ -1179,10 +1182,13 @@ impl AgentManager {
         spawn_cfg.id = Some(agent_id.clone());
         let resume_id = spawn_cfg.resume_id.clone();
         let session = spawn_session(spawn_cfg).await?;
-        let rx = session.take_stdout().await.ok_or_else(|| SpawnError::AllPlansFailed {
-            backend: Backend::Claude,
-            last_error: "stdout unavailable after spawn".into(),
-        })?;
+        let rx = session
+            .take_stdout()
+            .await
+            .ok_or_else(|| SpawnError::AllPlansFailed {
+                backend: Backend::Claude,
+                last_error: "stdout unavailable after spawn".into(),
+            })?;
         self.state.lock().await.insert(
             agent_id,
             ClaudeEntry {
@@ -1191,7 +1197,11 @@ impl AgentManager {
                 last_detached_at: None,
             },
         );
-        Ok(BindOutcome { session, stdout_rx: rx, reattached: false })
+        Ok(BindOutcome {
+            session,
+            stdout_rx: rx,
+            reattached: false,
+        })
     }
 
     /// Channel closed — drop the sink and mark the session as idle. The child
@@ -1239,7 +1249,12 @@ impl AgentManager {
     }
 
     pub async fn get(&self, agent_id: &str) -> Option<Arc<AgentSession>> {
-        self.state.lock().await.by_id.get(agent_id).map(|e| e.session.clone())
+        self.state
+            .lock()
+            .await
+            .by_id
+            .get(agent_id)
+            .map(|e| e.session.clone())
     }
 
     /// Record the session's Claude-minted `session_id` once it's been
@@ -1248,7 +1263,9 @@ impl AgentManager {
     /// learn the id from the child's first `system` event.
     pub async fn note_resume_id(&self, agent_id: &str, resume_id: String) {
         let mut state = self.state.lock().await;
-        let Some(entry) = state.by_id.get_mut(agent_id) else { return };
+        let Some(entry) = state.by_id.get_mut(agent_id) else {
+            return;
+        };
         if entry.resume_id.is_some() {
             return;
         }
@@ -1326,10 +1343,7 @@ impl CodexHub {
             let s = spawn_session(spawn_cfg).await?;
             *guard = Some(s);
         }
-        let session = guard
-            .as_ref()
-            .expect("singleton was just ensured")
-            .clone();
+        let session = guard.as_ref().expect("singleton was just ensured").clone();
         drop(guard);
         let stdout_rx = session
             .take_stdout()
@@ -1338,7 +1352,11 @@ impl CodexHub {
                 backend: Backend::Codex,
                 last_error: "codex hub session closed during bind".into(),
             })?;
-        Ok(BindOutcome { session, stdout_rx, reattached })
+        Ok(BindOutcome {
+            session,
+            stdout_rx,
+            reattached,
+        })
     }
 
     /// Drop the current stdout sink without touching the child. Idempotent.
@@ -1397,11 +1415,7 @@ impl AgentRouter {
 
     /// Send one stdin line to whichever session backs `agent_id`. Returns
     /// `SessionClosed` if there's no live binding.
-    pub async fn send_line(
-        &self,
-        agent_id: &str,
-        line: String,
-    ) -> Result<(), AgentSendError> {
+    pub async fn send_line(&self, agent_id: &str, line: String) -> Result<(), AgentSendError> {
         let backend = self.backends.lock().await.get(agent_id).copied();
         let session = match backend {
             Some(Backend::Codex) => self.codex.current().await,
@@ -1451,6 +1465,31 @@ impl AgentRouter {
         self.backends.lock().await.contains_key(agent_id)
     }
 
+    /// Claude resume ids for sessions whose child is currently alive (not yet
+    /// exited). Used by the coding-sessions scan to badge rows as running.
+    pub async fn alive_claude_resume_ids(&self) -> std::collections::HashSet<String> {
+        let candidates: Vec<(String, Arc<AgentSession>)> = {
+            let state = self.manager.state.lock().await;
+            state
+                .by_resume_id
+                .iter()
+                .filter_map(|(rid, aid)| {
+                    state
+                        .by_id
+                        .get(aid)
+                        .map(|e| (rid.clone(), e.session.clone()))
+                })
+                .collect()
+        };
+        let mut out = std::collections::HashSet::new();
+        for (rid, session) in candidates {
+            if session.exit_reason().await.is_none() {
+                out.insert(rid);
+            }
+        }
+        out
+    }
+
     /// Terminate every live agent session and clear the routing index.
     pub async fn close_all(&self) {
         let claude_ids = self.manager.list().await;
@@ -1483,12 +1522,18 @@ pub async fn maybe_note_claude_resume_id(
     if !line.contains("\"type\":\"system\"") {
         return;
     }
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { return };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+        return;
+    };
     if v.get("type").and_then(|t| t.as_str()) != Some("system") {
         return;
     }
-    let Some(sid) = v.get("session_id").and_then(|s| s.as_str()) else { return };
-    router.note_claude_resume_id(agent_id, sid.to_string()).await;
+    let Some(sid) = v.get("session_id").and_then(|s| s.as_str()) else {
+        return;
+    };
+    router
+        .note_claude_resume_id(agent_id, sid.to_string())
+        .await;
     *already_noted = true;
 }
 
@@ -1539,10 +1584,7 @@ mod tests {
         assert_eq!(items[0]["type"], "localImage");
         assert_eq!(items[0]["data"]["path"], "/tmp/a.png");
         assert_eq!(items[1]["type"], "image");
-        assert_eq!(
-            items[1]["data"]["image_url"],
-            "data:image/jpeg;base64,QUJD"
-        );
+        assert_eq!(items[1]["data"]["image_url"], "data:image/jpeg;base64,QUJD");
         assert_eq!(items[2]["type"], "text");
         assert_eq!(items[2]["data"]["text"], "describe");
     }
@@ -1620,7 +1662,9 @@ mod tests {
             backend: Backend::Codex,
             cwd: None,
             resume_id: None,
-            bundled_binary: Some(PathBuf::from("/Applications/Codex.app/Contents/Resources/codex")),
+            bundled_binary: Some(PathBuf::from(
+                "/Applications/Codex.app/Contents/Resources/codex",
+            )),
             id: None,
             model: None,
             reasoning_effort: None,
@@ -1649,7 +1693,9 @@ mod tests {
         assert_eq!(plans.len(), 1);
         assert!(plans[0].args.contains(&"--resume".to_string()));
         assert!(plans[0].args.contains(&"abc-123".to_string()));
-        assert!(plans[0].args.contains(&"--include-partial-messages".to_string()));
+        assert!(plans[0]
+            .args
+            .contains(&"--include-partial-messages".to_string()));
         assert!(plans[0].args.contains(&"--verbose".to_string()));
     }
 
@@ -1676,12 +1722,20 @@ mod tests {
         let res = discover_bundled(Backend::Codex);
         if let Some(p) = &res {
             assert!(p.exists(), "discovered path should exist: {}", p.display());
-            assert!(is_executable_file(p), "discovered path must be executable: {}", p.display());
+            assert!(
+                is_executable_file(p),
+                "discovered path must be executable: {}",
+                p.display()
+            );
         }
         let res = discover_bundled(Backend::Claude);
         if let Some(p) = &res {
             assert!(p.exists(), "discovered path should exist: {}", p.display());
-            assert!(is_executable_file(p), "discovered path must be executable: {}", p.display());
+            assert!(
+                is_executable_file(p),
+                "discovered path must be executable: {}",
+                p.display()
+            );
         }
     }
 
@@ -1732,7 +1786,9 @@ mod tests {
         for plan in &plans {
             let mut cmd = Command::new(&plan.program);
             cmd.args(&plan.args);
-            cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+            cmd.stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
             match cmd.spawn() {
                 Ok(_) => {
                     ok = true;
@@ -1894,7 +1950,10 @@ mod tests {
     #[test]
     fn backend_serde_lowercase() {
         assert_eq!(serde_json::to_string(&Backend::Codex).unwrap(), "\"codex\"");
-        assert_eq!(serde_json::to_string(&Backend::Claude).unwrap(), "\"claude\"");
+        assert_eq!(
+            serde_json::to_string(&Backend::Claude).unwrap(),
+            "\"claude\""
+        );
         let b: Backend = serde_json::from_str("\"codex\"").unwrap();
         assert_eq!(b, Backend::Codex);
         let b: Backend = serde_json::from_str("\"claude\"").unwrap();
@@ -2081,7 +2140,9 @@ mod tests {
 
     #[test]
     fn pick_latest_versioned_missing_dir() {
-        assert!(pick_latest_versioned(std::path::Path::new("/no/such/versioned/xyz"), "").is_none());
+        assert!(
+            pick_latest_versioned(std::path::Path::new("/no/such/versioned/xyz"), "").is_none()
+        );
     }
 
     #[test]
@@ -2182,13 +2243,7 @@ mod tests {
     async fn maybe_note_claude_resume_id_skips_missing_session_id() {
         let router = AgentRouter::new();
         let mut noted = false;
-        maybe_note_claude_resume_id(
-            &router,
-            "agent-x",
-            r#"{"type":"system"}"#,
-            &mut noted,
-        )
-        .await;
+        maybe_note_claude_resume_id(&router, "agent-x", r#"{"type":"system"}"#, &mut noted).await;
         assert!(!noted);
     }
 

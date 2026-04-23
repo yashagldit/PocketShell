@@ -338,7 +338,10 @@ mod tests {
     #[test]
     fn host_id_and_access_token_error_without_login() {
         let store = make_store(PathBuf::from("/tmp/unused"));
-        assert!(matches!(store.host_id().unwrap_err(), HostError::NotLoggedIn));
+        assert!(matches!(
+            store.host_id().unwrap_err(),
+            HostError::NotLoggedIn
+        ));
         assert!(matches!(
             store.access_token().unwrap_err(),
             HostError::NotLoggedIn
@@ -470,7 +473,11 @@ mod tests {
         let mut store = make_store(PathBuf::from("/tmp/unused"));
         store.upsert_session(session_record("old-ended", SessionState::Ended, 1000));
         store.upsert_session(session_record("recent-ended", SessionState::Ended, 10));
-        store.upsert_session(session_record("old-connected", SessionState::Connected, 1000));
+        store.upsert_session(session_record(
+            "old-connected",
+            SessionState::Connected,
+            1000,
+        ));
 
         let (native, expired) = store.clear_ended_sessions(300, 100_000);
         assert!(native.is_empty());
@@ -494,7 +501,10 @@ mod tests {
         store.upsert_session(s);
 
         let (native, expired) = store.clear_ended_sessions(300, 100);
-        assert!(native.is_empty(), "non-persistent should not request PTY kill");
+        assert!(
+            native.is_empty(),
+            "non-persistent should not request PTY kill"
+        );
         assert_eq!(expired, vec!["det".to_string()]);
         assert!(store.state.sessions.is_empty());
     }

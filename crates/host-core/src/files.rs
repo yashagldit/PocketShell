@@ -22,7 +22,10 @@ struct FileEntry {
 }
 
 /// Top-level dispatcher for file channel actions.
-pub async fn handle_files_action(payload: &serde_json::Value) -> Result<serde_json::Value> {
+pub async fn handle_files_action(
+    payload: &serde_json::Value,
+    agent_router: &crate::agent_session::AgentRouter,
+) -> Result<serde_json::Value> {
     let action = payload
         .get("action")
         .and_then(|v| v.as_str())
@@ -34,7 +37,8 @@ pub async fn handle_files_action(payload: &serde_json::Value) -> Result<serde_js
             .get("limit")
             .and_then(|v| v.as_u64())
             .map(|n| n as usize);
-        return crate::coding_sessions::list_sessions(limit).await;
+        let alive = agent_router.alive_claude_resume_ids().await;
+        return crate::coding_sessions::list_sessions(limit, alive).await;
     }
 
     let path_str = payload
@@ -164,9 +168,7 @@ fn safe_resolve_dest(raw: &str) -> Result<PathBuf> {
         }
         if let Some(name) = existing.file_name() {
             tail_components.push(name);
-            existing = existing
-                .parent()
-                .unwrap_or_else(|| Path::new("/"));
+            existing = existing.parent().unwrap_or_else(|| Path::new("/"));
         } else {
             // Reached root or something unexpected — just use expanded as-is
             break;
@@ -1246,7 +1248,8 @@ mod tests {
     #[tokio::test]
     async fn handle_files_action_unknown_action_errors() {
         let v = serde_json::json!({"action": "does_not_exist", "path": "/tmp"});
-        let err = handle_files_action(&v).await.unwrap_err();
+        let router = crate::agent_session::AgentRouter::new();
+        let err = handle_files_action(&v, &router).await.unwrap_err();
         match err {
             HostError::Backend(m) => assert!(m.contains("unknown files action")),
             other => panic!("expected Backend, got {other:?}"),
@@ -1262,7 +1265,8 @@ mod tests {
             "action": "stat",
             "path": p.to_string_lossy(),
         });
-        let res = handle_files_action(&v).await.unwrap();
+        let router = crate::agent_session::AgentRouter::new();
+        let res = handle_files_action(&v, &router).await.unwrap();
         assert_eq!(res["size"], 2);
         assert_eq!(res["is_dir"], false);
     }

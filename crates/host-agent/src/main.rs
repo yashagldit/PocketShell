@@ -5,7 +5,9 @@ use host_core::audit::{write_audit_event, AuditEvent};
 use host_core::config::AppConfig;
 use host_core::daemon;
 use host_core::discovery::SessionDiscovery;
-use host_core::models::{AuthState, HostIdentity, HostInitiatedPollOutcome, PairingValidateRequest};
+use host_core::models::{
+    AuthState, HostIdentity, HostInitiatedPollOutcome, PairingValidateRequest,
+};
 use host_core::secure::{parse_jwt_exp, require_refresh_token, token_is_expiring};
 use host_core::stats::StatsCollector;
 use host_core::store::StateStore;
@@ -119,7 +121,11 @@ async fn main() -> Result<()> {
     let config = AppConfig::from_env();
 
     match cli.command {
-        Commands::Pair { code, reset, show_qr: _ } => {
+        Commands::Pair {
+            code,
+            reset,
+            show_qr: _,
+        } => {
             // QR is now the default. --show-qr is accepted (no-op) for backward compat.
             // `code.is_some()` → legacy code-entry flow (preserves existing behavior).
             // Otherwise → QR flow, which auto-picks new-host vs device-add from state.
@@ -273,13 +279,13 @@ async fn pair(config: AppConfig, code: Option<String>, reset: bool) -> Result<()
         if let Ok(devices) = backend.list_trusted_devices(&token, &host_id).await {
             // Find the exact device record that was just paired
             if let Some(mut paired_device) = devices.into_iter().find(|d| {
-                d.mobile_device_id == *mid
-                    && d.approved_at.is_some()
-                    && d.revoked_at.is_none()
+                d.mobile_device_id == *mid && d.approved_at.is_some() && d.revoked_at.is_none()
             }) {
                 paired_device.device_public_key = Some(device_key.clone());
                 store.add_trusted_device(paired_device);
-                store.save().context("persisting paired device with pinned key")?;
+                store
+                    .save()
+                    .context("persisting paired device with pinned key")?;
             }
         }
     }
@@ -300,7 +306,9 @@ async fn pair(config: AppConfig, code: Option<String>, reset: bool) -> Result<()
             Ok(host_core::service::ServiceStatus::StartedDaemon) => {
                 println!(" done");
                 println!("daemon started in background");
-                println!("note: service install was not available — daemon won't auto-start on reboot");
+                println!(
+                    "note: service install was not available — daemon won't auto-start on reboot"
+                );
                 println!("you can start it manually with: pocketshell daemon start");
             }
             Err(e) => {
@@ -422,9 +430,8 @@ async fn pair_qr_new_host(config: AppConfig, mut store: StateStore) -> Result<()
         }
     }
 
-    let response = claimed.ok_or_else(|| {
-        anyhow!("timed out waiting for mobile device to scan — please retry")
-    })?;
+    let response = claimed
+        .ok_or_else(|| anyhow!("timed out waiting for mobile device to scan — please retry"))?;
 
     let host = response
         .host
@@ -468,9 +475,7 @@ async fn pair_qr_new_host(config: AppConfig, mut store: StateStore) -> Result<()
     ) {
         if let Ok(devices) = backend.list_trusted_devices(&access_token, &host_id).await {
             if let Some(mut paired_device) = devices.into_iter().find(|d| {
-                d.mobile_device_id == *mid
-                    && d.approved_at.is_some()
-                    && d.revoked_at.is_none()
+                d.mobile_device_id == *mid && d.approved_at.is_some() && d.revoked_at.is_none()
             }) {
                 paired_device.device_public_key = Some(device_key.clone());
                 store.add_trusted_device(paired_device);
@@ -519,11 +524,11 @@ async fn pair_qr_device_add(config: AppConfig, mut store: StateStore) -> Result<
     let backend = BackendClient::new(config.backend_base_url.clone());
 
     // Refresh host access token if it's expiring — mirrors daemon logic.
-    refresh_auth_if_needed(&backend, &mut store).await.map_err(|e| {
-        anyhow!(
-            "host auth expired — re-pair with: pocketshell pair --reset (detail: {e})"
-        )
-    })?;
+    refresh_auth_if_needed(&backend, &mut store)
+        .await
+        .map_err(|e| {
+            anyhow!("host auth expired — re-pair with: pocketshell pair --reset (detail: {e})")
+        })?;
 
     let host = store
         .state
@@ -674,10 +679,7 @@ async fn pair_qr_device_add(config: AppConfig, mut store: StateStore) -> Result<
 /// Refresh the host's access token if it's close to expiring. Mirrors the
 /// daemon's `refresh_auth_if_needed` so CLI device-add works when the daemon
 /// isn't the one driving refresh.
-async fn refresh_auth_if_needed(
-    backend: &BackendClient,
-    store: &mut StateStore,
-) -> Result<()> {
+async fn refresh_auth_if_needed(backend: &BackendClient, store: &mut StateStore) -> Result<()> {
     let Some(auth) = store.state.auth.clone() else {
         return Err(anyhow!("not logged in"));
     };
@@ -721,7 +723,9 @@ fn logout(reset: bool) -> Result<()> {
         if pid_running(pid) {
             let _ = kill(Pid::from_raw(pid), Signal::SIGTERM);
             for _ in 0..20 {
-                if !pid_running(pid) { break; }
+                if !pid_running(pid) {
+                    break;
+                }
                 std::thread::sleep(Duration::from_millis(100));
             }
         }
@@ -846,7 +850,9 @@ async fn devices(config: AppConfig, command: DeviceCommands) -> Result<()> {
             // In the new security model, devices can only be approved via `pocketshell pair`.
             // The approve command is kept for backward compatibility but now instructs the user.
             println!("device approval is now done via `pocketshell pair <CODE>`");
-            println!("have the mobile user generate a new pairing code, then run pair on this host");
+            println!(
+                "have the mobile user generate a new pairing code, then run pair on this host"
+            );
         }
         DeviceCommands::Revoke { device_id } => {
             let revoked = backend
@@ -921,8 +927,7 @@ fn daemon_stop() -> Result<()> {
 
     // Try stopping via service manager first (does not uninstall — keeps auto-start)
     if host_core::service::is_service_running() {
-        host_core::service::uninstall()
-            .map_err(|e| anyhow!("failed to stop service: {e}"))?;
+        host_core::service::uninstall().map_err(|e| anyhow!("failed to stop service: {e}"))?;
         stopped = true;
     }
 
@@ -932,7 +937,9 @@ fn daemon_stop() -> Result<()> {
         if pid_running(pid) {
             let _ = kill(Pid::from_raw(pid), Signal::SIGTERM);
             for _ in 0..20 {
-                if !pid_running(pid) { break; }
+                if !pid_running(pid) {
+                    break;
+                }
                 std::thread::sleep(Duration::from_millis(100));
             }
             stopped = true;
@@ -1065,8 +1072,8 @@ async fn sessions_attach(session_id: String) -> Result<()> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::UnixStream;
 
-    let sock_path = local_attach::socket_path()
-        .map_err(|e| anyhow!("failed to determine socket path: {e}"))?;
+    let sock_path =
+        local_attach::socket_path().map_err(|e| anyhow!("failed to determine socket path: {e}"))?;
 
     let stream = UnixStream::connect(&sock_path)
         .await
@@ -1075,15 +1082,18 @@ async fn sessions_attach(session_id: String) -> Result<()> {
     let (mut reader, mut writer) = stream.into_split();
 
     // Send ATTACH frame with session_id
-    let frame = local_attach::encode_frame(
-        local_attach::FRAME_ATTACH,
-        session_id.as_bytes(),
-    );
-    writer.write_all(&frame).await.context("failed to send attach request")?;
+    let frame = local_attach::encode_frame(local_attach::FRAME_ATTACH, session_id.as_bytes());
+    writer
+        .write_all(&frame)
+        .await
+        .context("failed to send attach request")?;
 
     // Read response frame
     let mut header = [0u8; 5];
-    reader.read_exact(&mut header).await.context("daemon closed connection")?;
+    reader
+        .read_exact(&mut header)
+        .await
+        .context("daemon closed connection")?;
     let frame_type = header[0];
     let len = u32::from_be_bytes([header[1], header[2], header[3], header[4]]) as usize;
     if len > local_attach::MAX_FRAME_SIZE {
@@ -1091,7 +1101,10 @@ async fn sessions_attach(session_id: String) -> Result<()> {
     }
     let mut payload = vec![0u8; len];
     if len > 0 {
-        reader.read_exact(&mut payload).await.context("daemon closed connection")?;
+        reader
+            .read_exact(&mut payload)
+            .await
+            .context("daemon closed connection")?;
     }
 
     if frame_type == local_attach::FRAME_ERROR {
@@ -1104,7 +1117,8 @@ async fn sessions_attach(session_id: String) -> Result<()> {
 
     // Put terminal in raw mode
     let stdin_handle = std::io::stdin();
-    let original_termios = termios::tcgetattr(&stdin_handle).context("failed to get terminal attributes")?;
+    let original_termios =
+        termios::tcgetattr(&stdin_handle).context("failed to get terminal attributes")?;
     let mut raw = original_termios.clone();
     termios::cfmakeraw(&mut raw);
     termios::tcsetattr(&stdin_handle, termios::SetArg::TCSANOW, &raw)
@@ -1117,7 +1131,10 @@ async fn sessions_attach(session_id: String) -> Result<()> {
         let _ = stdout.flush().await;
     }
 
-    eprintln!("\r\x1b[2K[attached to session {}. Press Ctrl+\\ to detach]", session_id);
+    eprintln!(
+        "\r\x1b[2K[attached to session {}. Press Ctrl+\\ to detach]",
+        session_id
+    );
 
     // Send initial terminal size
     {
@@ -1130,8 +1147,9 @@ async fn sessions_attach(session_id: String) -> Result<()> {
     }
 
     // Set up SIGWINCH handler
-    let mut sigwinch = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::window_change())
-        .context("failed to register SIGWINCH handler")?;
+    let mut sigwinch =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::window_change())
+            .context("failed to register SIGWINCH handler")?;
 
     let mut stdin = tokio::io::stdin();
     let mut stdout = tokio::io::stdout();

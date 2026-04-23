@@ -65,9 +65,7 @@ pub fn derive_session_key(
     session_id: &str,
 ) -> Result<[u8; 32]> {
     // info = protocol_prefix || mobile_pub || host_pub || session_id
-    let mut info = Vec::with_capacity(
-        PROTOCOL_INFO_PREFIX.len() + 32 + 32 + session_id.len(),
-    );
+    let mut info = Vec::with_capacity(PROTOCOL_INFO_PREFIX.len() + 32 + 32 + session_id.len());
     info.extend_from_slice(PROTOCOL_INFO_PREFIX);
     info.extend_from_slice(mobile_x25519_pub);
     info.extend_from_slice(host_x25519_pub);
@@ -154,8 +152,12 @@ impl SessionCipher {
             DIRECTION_HOST_TO_MOBILE
         };
 
-        let msg_direction =
-            u32::from_be_bytes([nonce_bytes[0], nonce_bytes[1], nonce_bytes[2], nonce_bytes[3]]);
+        let msg_direction = u32::from_be_bytes([
+            nonce_bytes[0],
+            nonce_bytes[1],
+            nonce_bytes[2],
+            nonce_bytes[3],
+        ]);
         if msg_direction != expected_direction {
             return Err(anyhow!(
                 "unexpected nonce direction: expected {}, got {}",
@@ -165,11 +167,16 @@ impl SessionCipher {
         }
 
         // Extract counter and check for replay
-        let msg_counter =
-            u64::from_be_bytes([
-                nonce_bytes[4], nonce_bytes[5], nonce_bytes[6], nonce_bytes[7],
-                nonce_bytes[8], nonce_bytes[9], nonce_bytes[10], nonce_bytes[11],
-            ]);
+        let msg_counter = u64::from_be_bytes([
+            nonce_bytes[4],
+            nonce_bytes[5],
+            nonce_bytes[6],
+            nonce_bytes[7],
+            nonce_bytes[8],
+            nonce_bytes[9],
+            nonce_bytes[10],
+            nonce_bytes[11],
+        ]);
         if msg_counter < self.recv_counter {
             return Err(anyhow!(
                 "replay detected: counter {} < expected {}",
@@ -283,7 +290,8 @@ mod tests {
         let vk: VerifyingKey = sk.verifying_key();
 
         let sk_b64 = base64::engine::general_purpose::STANDARD.encode(sk.to_bytes());
-        let sdp = "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=fingerprint:sha-256 AA:BB\r\n";
+        let sdp =
+            "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=fingerprint:sha-256 AA:BB\r\n";
 
         let signed = sign_sdp(&sk_b64, sdp, "answer").unwrap();
 
@@ -381,9 +389,8 @@ mod tests {
         let shared = host_kp.diffie_hellman(&PublicKey::from(mobile_pub));
         let auth_nonce = b"replay-test-nonce-32-bytes-pad!!";
 
-        let key =
-            derive_session_key(shared.as_bytes(), auth_nonce, &mobile_pub, &host_pub, "s1")
-                .unwrap();
+        let key = derive_session_key(shared.as_bytes(), auth_nonce, &mobile_pub, &host_pub, "s1")
+            .unwrap();
 
         let mut host_cipher = SessionCipher::new_host(key);
         let mut mobile_cipher = SessionCipher::new_mobile(key);
@@ -413,9 +420,8 @@ mod tests {
         let shared = host_kp.diffie_hellman(&PublicKey::from(mobile_pub));
         let auth_nonce = b"direction-test-nonce-32-pad!!!!!";
 
-        let key =
-            derive_session_key(shared.as_bytes(), auth_nonce, &mobile_pub, &host_pub, "s2")
-                .unwrap();
+        let key = derive_session_key(shared.as_bytes(), auth_nonce, &mobile_pub, &host_pub, "s2")
+            .unwrap();
 
         let mut host_cipher = SessionCipher::new_host(key);
         let mut host_cipher2 = SessionCipher::new_host(key);
@@ -440,9 +446,8 @@ mod tests {
         let shared = host_kp.diffie_hellman(&PublicKey::from(mobile_pub));
         let auth_nonce = b"tamper-test-nonce-32-bytes-pad!!";
 
-        let key =
-            derive_session_key(shared.as_bytes(), auth_nonce, &mobile_pub, &host_pub, "s3")
-                .unwrap();
+        let key = derive_session_key(shared.as_bytes(), auth_nonce, &mobile_pub, &host_pub, "s3")
+            .unwrap();
 
         let mut host_cipher = SessionCipher::new_host(key);
         let mut mobile_cipher = SessionCipher::new_mobile(key);
@@ -454,7 +459,10 @@ mod tests {
 
         let result = mobile_cipher.decrypt(&nonce, &ct);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("decryption failed"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("decryption failed"));
     }
 
     #[test]
@@ -474,10 +482,15 @@ mod tests {
         let shared = host_kp.diffie_hellman(&PublicKey::from(mobile_pub));
         let salt = b"same-salt-for-both-sessions!!!!!";
 
-        let key1 = derive_session_key(shared.as_bytes(), salt, &mobile_pub, &host_pub, "session-A").unwrap();
-        let key2 = derive_session_key(shared.as_bytes(), salt, &mobile_pub, &host_pub, "session-B").unwrap();
+        let key1 = derive_session_key(shared.as_bytes(), salt, &mobile_pub, &host_pub, "session-A")
+            .unwrap();
+        let key2 = derive_session_key(shared.as_bytes(), salt, &mobile_pub, &host_pub, "session-B")
+            .unwrap();
 
-        assert_ne!(key1, key2, "different session_ids must produce different keys");
+        assert_ne!(
+            key1, key2,
+            "different session_ids must produce different keys"
+        );
     }
 
     #[test]
@@ -488,8 +501,22 @@ mod tests {
         let mobile_pub = mobile_kp.public_key_bytes();
         let shared = host_kp.diffie_hellman(&PublicKey::from(mobile_pub));
 
-        let key1 = derive_session_key(shared.as_bytes(), b"salt-one-32-bytes-pad!!!!!!!!!", &mobile_pub, &host_pub, "s").unwrap();
-        let key2 = derive_session_key(shared.as_bytes(), b"salt-two-32-bytes-pad!!!!!!!!!", &mobile_pub, &host_pub, "s").unwrap();
+        let key1 = derive_session_key(
+            shared.as_bytes(),
+            b"salt-one-32-bytes-pad!!!!!!!!!",
+            &mobile_pub,
+            &host_pub,
+            "s",
+        )
+        .unwrap();
+        let key2 = derive_session_key(
+            shared.as_bytes(),
+            b"salt-two-32-bytes-pad!!!!!!!!!",
+            &mobile_pub,
+            &host_pub,
+            "s",
+        )
+        .unwrap();
 
         assert_ne!(key1, key2, "different salts must produce different keys");
     }
@@ -532,7 +559,7 @@ mod tests {
 
         // Receive out of order: 3, then 1 skipped, then replay 3
         mobile.decrypt(&n3, &c3).unwrap(); // counter jumps to 3
-        // n1 has counter 0 which is < recv_counter (3), so rejected
+                                           // n1 has counter 0 which is < recv_counter (3), so rejected
         assert!(mobile.decrypt(&n1, &c1).is_err());
         // n2 has counter 1 which is also < recv_counter (3)
         assert!(mobile.decrypt(&n2, &c2).is_err());

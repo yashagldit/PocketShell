@@ -744,7 +744,8 @@ mod tests {
             read_bytes_per_sec: Some(300),
             write_bytes_per_sec: Some(400),
         };
-        let back: DiskIOStats = serde_json::from_str(&serde_json::to_string(&dio).unwrap()).unwrap();
+        let back: DiskIOStats =
+            serde_json::from_str(&serde_json::to_string(&dio).unwrap()).unwrap();
         assert_eq!(back.read_bytes, 9000);
         assert_eq!(back.write_bytes_per_sec, Some(400));
     }
@@ -773,8 +774,7 @@ mod tests {
             stopped: 1,
             zombie: 5,
         };
-        let back: TaskCounts =
-            serde_json::from_str(&serde_json::to_string(&tc).unwrap()).unwrap();
+        let back: TaskCounts = serde_json::from_str(&serde_json::to_string(&tc).unwrap()).unwrap();
         assert_eq!(back.total, 300);
         assert_eq!(back.running, 4);
         assert_eq!(back.sleeping, 290);

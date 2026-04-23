@@ -1,9 +1,9 @@
 use crate::error::{HostError, Result};
 use crate::models::{
-    BackendSessionInfo, HeartbeatRequest, HostInitiatedCreateRequest,
-    HostInitiatedCreateResponse, HostInitiatedDeviceAddRequest, HostInitiatedPollOutcome,
-    HostInitiatedStatusResponse, PairingValidateRequest, PairingValidateResponse, SessionState,
-    TokenPairResponse, TrustedDeviceRecord,
+    BackendSessionInfo, HeartbeatRequest, HostInitiatedCreateRequest, HostInitiatedCreateResponse,
+    HostInitiatedDeviceAddRequest, HostInitiatedPollOutcome, HostInitiatedStatusResponse,
+    PairingValidateRequest, PairingValidateResponse, SessionState, TokenPairResponse,
+    TrustedDeviceRecord,
 };
 use crate::secure::parse_jwt_exp;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
@@ -744,7 +744,10 @@ mod tests {
             .mount(&server)
             .await;
         let c = BackendClient::new(server.uri());
-        let err = c.start_host_initiated_device_add("tok", "h1").await.unwrap_err();
+        let err = c
+            .start_host_initiated_device_add("tok", "h1")
+            .await
+            .unwrap_err();
         assert!(matches!(err, HostError::AuthRevoked));
 
         // 403 -> HostGone
@@ -776,7 +779,10 @@ mod tests {
             .mount(&server)
             .await;
         let c = BackendClient::new(server.uri());
-        let r = c.start_host_initiated_device_add("tok", "h1").await.unwrap();
+        let r = c
+            .start_host_initiated_device_add("tok", "h1")
+            .await
+            .unwrap();
         assert_eq!(r.claim_token, "ct");
     }
 
@@ -997,7 +1003,9 @@ mod tests {
         Mock::given(method("PATCH"))
             .and(path("/api/v1/sessions/s1"))
             .and(header("authorization", "Bearer tk"))
-            .and(body_json(json!({"state": "connected", "connection_mode": "p2p"})))
+            .and(body_json(
+                json!({"state": "connected", "connection_mode": "p2p"}),
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
             .expect(1)
             .mount(&server)

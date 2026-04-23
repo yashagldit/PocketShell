@@ -60,8 +60,7 @@ pub fn read_delta(path: &Path, state: &mut TailState) -> Result<Vec<String>> {
     }
 
     let want = std::cmp::min(size - state.last_size, MAX_DELTA_BYTES) as usize;
-    let mut file = File::open(path)
-        .map_err(|e| HostError::Backend(format!("open failed: {e}")))?;
+    let mut file = File::open(path).map_err(|e| HostError::Backend(format!("open failed: {e}")))?;
     file.seek(SeekFrom::Start(state.last_size))
         .map_err(|e| HostError::Backend(format!("seek failed: {e}")))?;
     state.read_buf.clear();
@@ -107,7 +106,11 @@ mod tests {
 
     fn tmp(name: &str) -> std::path::PathBuf {
         let mut p = std::env::temp_dir();
-        p.push(format!("pocketshell_tailer_{}_{}.jsonl", name, std::process::id()));
+        p.push(format!(
+            "pocketshell_tailer_{}_{}.jsonl",
+            name,
+            std::process::id()
+        ));
         let _ = std::fs::remove_file(&p);
         p
     }
@@ -119,7 +122,10 @@ mod tests {
         let mut state = TailState::starting_at(initial_offset(&path));
         assert!(read_delta(&path, &mut state).unwrap().is_empty());
 
-        let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
         writeln!(f, "{{\"b\":2}}").unwrap();
         writeln!(f, "{{\"c\":3}}").unwrap();
         drop(f);
@@ -231,5 +237,4 @@ mod tests {
         assert_eq!(got, vec!["foobar"]);
         assert_eq!(state.partial, "");
     }
-
 }

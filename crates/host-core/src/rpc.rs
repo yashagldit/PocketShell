@@ -382,8 +382,10 @@ mod tests {
         let resp = dispatch(req).await;
         let err = resp.error.unwrap();
         assert_eq!(err.code, "invalid_params");
-        assert!(err.message.to_lowercase().contains("process group")
-            || err.message.to_lowercase().contains("non-positive"));
+        assert!(
+            err.message.to_lowercase().contains("process group")
+                || err.message.to_lowercase().contains("non-positive")
+        );
     }
 
     #[tokio::test]
@@ -451,5 +453,4 @@ mod tests {
         let resp = dispatch(req).await;
         assert_eq!(resp.id, "custom-id-42");
     }
-
 }

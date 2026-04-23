@@ -69,4 +69,3 @@ pub async fn recv_signal(ws: &mut WsStream) -> Result<Option<SignalEnvelope>> {
         None => Err(HostError::Backend("ws stream ended".into())),
     }
 }
-

@@ -37,20 +37,17 @@ impl AlertChecker {
                     (snapshot.disk_used_bytes as f64 / snapshot.disk_total_bytes as f64) * 100.0
                 }
                 "load" => snapshot.load_five,
-                "temperature" => {
-                    match &snapshot.temperatures {
-                        Some(temps) if !temps.is_empty() => {
-                            temps.iter().map(|t| t.temp_celsius as f64).fold(f64::NEG_INFINITY, f64::max)
-                        }
-                        _ => continue,
-                    }
-                }
-                "battery" => {
-                    match snapshot.battery_percent {
-                        Some(b) => b as f64,
-                        None => continue,
-                    }
-                }
+                "temperature" => match &snapshot.temperatures {
+                    Some(temps) if !temps.is_empty() => temps
+                        .iter()
+                        .map(|t| t.temp_celsius as f64)
+                        .fold(f64::NEG_INFINITY, f64::max),
+                    _ => continue,
+                },
+                "battery" => match snapshot.battery_percent {
+                    Some(b) => b as f64,
+                    None => continue,
+                },
                 "swap" => {
                     if snapshot.swap_total_bytes == 0 {
                         continue;
@@ -90,8 +87,16 @@ impl AlertChecker {
                 _ => &threshold.metric,
             };
 
-            let unit = if threshold.metric == "temperature" { "°C" } else { "%" };
-            let direction = if threshold.comparison == "lt" { "below" } else { "exceeds" };
+            let unit = if threshold.metric == "temperature" {
+                "°C"
+            } else {
+                "%"
+            };
+            let direction = if threshold.comparison == "lt" {
+                "below"
+            } else {
+                "exceeds"
+            };
             alerts.push(AlertPayload {
                 metric: threshold.metric.clone(),
                 threshold_value: threshold.threshold_value,
