@@ -14,30 +14,33 @@ use crate::models::{
 };
 use crate::pty::SessionManager;
 use crate::secure::{require_refresh_token, token_is_expiring};
-use crate::signaling_crypto::{self, EphemeralKeypair, SessionCipher};
 use crate::session::accept_session;
+use crate::signaling_crypto::{self, EphemeralKeypair, SessionCipher};
 use crate::stats::StatsCollector;
 use crate::store::StateStore;
 use crate::transport::{connect_host_ws, recv_signal, send_signal};
-use crate::webrtc_peer::WebRtcPeer;
-use futures_util::SinkExt;
-use tokio_tungstenite::tungstenite::protocol::Message;
 use crate::webrtc_manager::{WebRtcEvent, WebRtcManager};
+use crate::webrtc_peer::WebRtcPeer;
 use base64::Engine;
 use chrono::Utc;
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use futures_util::SinkExt;
+use rand::RngCore;
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Read, Write};
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-use rand::RngCore;
 use std::path::PathBuf;
-use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::oneshot;
 use tokio::time::{interval, sleep, Duration, Instant};
+use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::{debug, error, info, warn};
-use webrtc::data_channel::RTCDataChannel;
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
+use webrtc::data_channel::RTCDataChannel;
 
 /// Whether the backend kill-action is honored.
 const HONOR_KILL_ACTION: bool = true;
@@ -59,7 +62,10 @@ fn build_signed_sdp_payload(
     extra: Vec<(&str, serde_json::Value)>,
 ) -> serde_json::Value {
     let mut obj = serde_json::Map::new();
-    obj.insert("sdp".to_string(), serde_json::Value::String(sdp.to_string()));
+    obj.insert(
+        "sdp".to_string(),
+        serde_json::Value::String(sdp.to_string()),
+    );
     obj.insert(
         "type".to_string(),
         serde_json::Value::String(sdp_type.to_string()),
@@ -184,15 +190,9 @@ enum FileTransferUpdate {
 /// Events from locally-attached CLI clients over the Unix socket.
 enum LocalClientEvent {
     /// Client wants to attach to a session.
-    Attach {
-        client_id: u64,
-        session_id: String,
-    },
+    Attach { client_id: u64, session_id: String },
     /// Terminal input from a local client.
-    Input {
-        session_id: String,
-        data: Vec<u8>,
-    },
+    Input { session_id: String, data: Vec<u8> },
     /// Resize from a local client.
     Resize {
         session_id: String,
@@ -200,9 +200,7 @@ enum LocalClientEvent {
         rows: u16,
     },
     /// Client disconnected.
-    Disconnected {
-        client_id: u64,
-    },
+    Disconnected { client_id: u64 },
 }
 
 /// Tracks write halves of locally attached clients, keyed by session_id.
@@ -217,7 +215,12 @@ impl LocalAttachClients {
         }
     }
 
-    fn add(&mut self, client_id: u64, session_id: String, writer: tokio::net::unix::OwnedWriteHalf) {
+    fn add(
+        &mut self,
+        client_id: u64,
+        session_id: String,
+        writer: tokio::net::unix::OwnedWriteHalf,
+    ) {
         self.clients.insert(client_id, (session_id, writer));
     }
 
@@ -243,10 +246,7 @@ impl LocalAttachClients {
 
     /// Notify all clients attached to a session that it ended, then remove them.
     async fn end_session(&mut self, session_id: &str) {
-        let frame = local_attach::encode_frame(
-            local_attach::FRAME_ERROR,
-            b"session ended",
-        );
+        let frame = local_attach::encode_frame(local_attach::FRAME_ERROR, b"session ended");
         for (_, (sid, writer)) in &mut self.clients {
             if sid == session_id {
                 let _ = writer.write_all(&frame).await;
@@ -438,8 +438,7 @@ async fn send_framed_files_response(
         .map_err(|e| HostError::Backend(format!("files response end send failed: {e}")))?;
     info!(
         "files WebRTC frame send end response_to={} chunks={}",
-        response_to,
-        total_chunks
+        response_to, total_chunks
     );
 
     Ok(())
@@ -514,10 +513,8 @@ fn bind_inbound_host_transfer_channel(
                                     std::fs::create_dir_all(parent).ok();
                                 }
                                 let tmp_path = match file_path.extension() {
-                                    Some(ext) => file_path.with_extension(format!(
-                                        "{}.pstmp",
-                                        ext.to_string_lossy()
-                                    )),
+                                    Some(ext) => file_path
+                                        .with_extension(format!("{}.pstmp", ext.to_string_lossy())),
                                     None => file_path.with_extension("pstmp"),
                                 };
                                 match OpenOptions::new()
@@ -527,13 +524,14 @@ fn bind_inbound_host_transfer_channel(
                                     .open(&tmp_path)
                                 {
                                     Ok(file) => {
-                                        *upload_state.lock().await = Some(PendingFilesBinaryUpload {
-                                            final_path: file_path,
-                                            tmp_path,
-                                            file,
-                                            bytes_written: 0,
-                                            created_at: Instant::now(),
-                                        });
+                                        *upload_state.lock().await =
+                                            Some(PendingFilesBinaryUpload {
+                                                final_path: file_path,
+                                                tmp_path,
+                                                file,
+                                                bytes_written: 0,
+                                                created_at: Instant::now(),
+                                            });
                                     }
                                     Err(err) => {
                                         send_direct_transfer_result(
@@ -544,9 +542,11 @@ fn bind_inbound_host_transfer_channel(
                                             Some(err.to_string()),
                                         )
                                         .await;
-                                        let _ = event_tx.send(DirectHostTransferEvent::CleanupInbound {
-                                            transfer_id: transfer_id.clone(),
-                                        });
+                                        let _ = event_tx.send(
+                                            DirectHostTransferEvent::CleanupInbound {
+                                                transfer_id: transfer_id.clone(),
+                                            },
+                                        );
                                     }
                                 }
                             }
@@ -620,9 +620,11 @@ fn bind_inbound_host_transfer_channel(
                                             Some(format!("failed to finalize upload: {}", err)),
                                         )
                                         .await;
-                                        let _ = event_tx.send(DirectHostTransferEvent::CleanupInbound {
-                                            transfer_id: transfer_id.clone(),
-                                        });
+                                        let _ = event_tx.send(
+                                            DirectHostTransferEvent::CleanupInbound {
+                                                transfer_id: transfer_id.clone(),
+                                            },
+                                        );
                                     }
                                 }
                             }
@@ -656,9 +658,7 @@ fn bind_inbound_host_transfer_channel(
                 drop(upload.file);
                 let _ = std::fs::remove_file(&upload.tmp_path);
             }
-            let _ = event_tx.send(DirectHostTransferEvent::CleanupInbound {
-                transfer_id,
-            });
+            let _ = event_tx.send(DirectHostTransferEvent::CleanupInbound { transfer_id });
         })
     }));
 }
@@ -684,7 +684,10 @@ fn bind_outbound_host_transfer_channel(
                 let Ok(val) = serde_json::from_slice::<serde_json::Value>(&msg.data) else {
                     return;
                 };
-                let status = val.get("status").and_then(|v| v.as_str()).unwrap_or_default();
+                let status = val
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
                 let mut guard = result_tx.lock().expect("poisoned result sender");
                 if let Some(sender) = guard.take() {
                     let _ = sender.send(if status == "ok" {
@@ -717,9 +720,7 @@ fn bind_outbound_host_transfer_channel(
                 if let Some(sender) = guard.take() {
                     let _ = sender.send(Err("direct transfer channel closed".to_string()));
                 }
-                let _ = event_tx.send(DirectHostTransferEvent::CleanupOutbound {
-                    transfer_id,
-                });
+                let _ = event_tx.send(DirectHostTransferEvent::CleanupOutbound { transfer_id });
             })
         }));
     }
@@ -738,8 +739,10 @@ fn bind_outbound_host_transfer_channel(
                 return;
             }
 
-            let timeout_ms =
-                std::cmp::max(120_000_u64, 120_000_u64 + ((total_size / (1024 * 1024)) * 1_000));
+            let timeout_ms = std::cmp::max(
+                120_000_u64,
+                120_000_u64 + ((total_size / (1024 * 1024)) * 1_000),
+            );
 
             let source_file = match crate::files::resolve_file_path_for_transfer(&source_path) {
                 Ok(path) => path,
@@ -1042,13 +1045,8 @@ fn handle_file_transfer_msg(
                                 // message instead.
                                 if sessions.is_active(session_id) {
                                     let path_bytes = temp_path.as_bytes().to_vec();
-                                    if let Err(e) =
-                                        sessions.write_input(session_id, path_bytes)
-                                    {
-                                        warn!(
-                                            "failed to inject file path into PTY: {}",
-                                            e,
-                                        );
+                                    if let Err(e) = sessions.write_input(session_id, path_bytes) {
+                                        warn!("failed to inject file path into PTY: {}", e,);
                                         return Some(FileTransferUpdate::Error {
                                             request_id: transfer.request_id,
                                             message: format!("pty_inject_failed: {e}"),
@@ -1126,6 +1124,8 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
     let mut peer_session_routes: HashMap<String, String> = HashMap::new();
     let mut files_peer_hosts: HashMap<String, String> = HashMap::new();
     let mut files_peer_offer_ids: HashMap<String, String> = HashMap::new();
+    let mut agent_peer_hosts: HashMap<String, String> = HashMap::new();
+    let mut agent_peer_offer_ids: HashMap<String, String> = HashMap::new();
     let (direct_transfer_event_tx, mut direct_transfer_event_rx) =
         tokio::sync::mpsc::unbounded_channel::<DirectHostTransferEvent>();
     let mut outbound_host_transfers: HashMap<String, OutboundHostTransfer> = HashMap::new();
@@ -1133,7 +1133,8 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
     // Per-session E2E encryption ciphers for signaling-based file operations
     let mut session_ciphers: HashMap<String, SessionCipher> = HashMap::new();
     // Cancellation signals for active download_stream tasks per mobile device
-    let mut files_download_cancels: HashMap<String, tokio::sync::watch::Sender<bool>> = HashMap::new();
+    let mut files_download_cancels: HashMap<String, tokio::sync::watch::Sender<bool>> =
+        HashMap::new();
     // Active JSONL tailers, keyed by (mobile_device_id, subscription_id).
     let mut files_watchers: HashMap<(String, String), tokio::task::JoinHandle<()>> = HashMap::new();
 
@@ -1174,17 +1175,26 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
     let _ = std::fs::remove_file(&local_sock_path);
     let local_listener = match tokio::net::UnixListener::bind(&local_sock_path) {
         Ok(l) => {
-            info!("local attach socket listening at {}", local_sock_path.display());
+            info!(
+                "local attach socket listening at {}",
+                local_sock_path.display()
+            );
             // Make socket accessible only to current user
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(&local_sock_path, std::fs::Permissions::from_mode(0o600));
+                let _ = std::fs::set_permissions(
+                    &local_sock_path,
+                    std::fs::Permissions::from_mode(0o600),
+                );
             }
             Some(l)
         }
         Err(e) => {
-            warn!("failed to bind local attach socket: {} — local attach will be unavailable", e);
+            warn!(
+                "failed to bind local attach socket: {} — local attach will be unavailable",
+                e
+            );
             None
         }
     };
@@ -1256,10 +1266,9 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
         let mut shutdown = Box::pin(async {
             #[cfg(unix)]
             {
-                let mut sigterm = tokio::signal::unix::signal(
-                    tokio::signal::unix::SignalKind::terminate(),
-                )
-                .expect("failed to register SIGTERM handler");
+                let mut sigterm =
+                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                        .expect("failed to register SIGTERM handler");
                 tokio::select! {
                     _ = tokio::signal::ctrl_c() => "SIGINT",
                     _ = sigterm.recv() => "SIGTERM",
@@ -2557,9 +2566,10 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                     // Spawn so file I/O doesn't block the event loop
                                     let action_clone = action.clone();
                                     let req_id_clone = request_id.clone();
+                                    let router = agent_router.clone();
                                     tokio::spawn(async move {
                                         let start = std::time::Instant::now();
-                                        let result = crate::files::handle_files_action(&payload).await;
+                                        let result = crate::files::handle_files_action(&payload, &router).await;
                                         let elapsed = start.elapsed();
 
                                         let (response, status) = match result {
@@ -2998,6 +3008,27 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                         };
                                         let _ = send_signal(&mut ws, &ice_msg).await;
                                     }
+                                } else if peer_key.starts_with("agent:") {
+                                    if let Some(host_id) = agent_peer_hosts.get(&peer_key).cloned() {
+                                        let mut payload = candidate_value;
+                                        if let Some(offer_id) = agent_peer_offer_ids.get(&peer_key).cloned() {
+                                            if let Some(map) = payload.as_object_mut() {
+                                                map.insert("offer_id".to_string(), serde_json::json!(offer_id));
+                                            }
+                                        }
+                                        let mut extra = std::collections::HashMap::new();
+                                        extra.insert("host_id".to_string(), serde_json::json!(host_id));
+                                        let ice_msg = SignalEnvelope {
+                                            message_type: "agent_ice_candidate".to_string(),
+                                            session_id: None,
+                                            payload: Some(payload),
+                                            state: None,
+                                            accepted: None,
+                                            reason: None,
+                                            extra,
+                                        };
+                                        let _ = send_signal(&mut ws, &ice_msg).await;
+                                    }
                                 } else if let Some(session_id) = peer_session_routes.get(&mobile_device_id).cloned() {
                                     let mut extra = std::collections::HashMap::new();
                                     extra.insert(
@@ -3099,6 +3130,8 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                 &mut peer_session_routes,
                                 &mut files_peer_hosts,
                                 &mut files_peer_offer_ids,
+                                &mut agent_peer_hosts,
+                                &mut agent_peer_offer_ids,
                                 &mut outbound_host_transfers,
                                 &mut inbound_host_transfers,
                                 &files_response_tx,
@@ -3220,16 +3253,15 @@ async fn refresh_auth_if_needed(backend: &BackendClient, store: &mut StateStore)
     Ok(())
 }
 
-/// Rewrite a Claude stdout line so that embedded `tool_result` payloads are
-/// stripped down to a short placeholder. The mobile normalizer only needs to
-/// know that the tool call succeeded/failed — it already rendered the tool
-/// name/input from the preceding `tool_use` frame. Raw tool results can be
-/// hundreds of KB (file contents, bash stdout, base64 images) and blow past
-/// the SCTP max message size, killing the data channel mid-turn.
-/// Conservative cap that leaves plenty of SCTP headroom. webrtc-rs defaults to
-/// `SCTP_MAX_MESSAGE_SIZE = 65535`; staying well under lets fragmentation +
-/// overhead breathe.
-const OUTBOUND_LINE_SAFE_MAX: usize = 48 * 1024;
+/// Rewrite a Claude stdout line so that embedded `tool_result` payloads keep a
+/// bounded preview instead of the full body. Raw tool results can be hundreds
+/// of KB (file contents, bash stdout, base64 images) and blow past the SCTP
+/// max message size, killing the data channel mid-turn.
+/// Conservative cap that leaves SCTP headroom while allowing larger streamed
+/// agent frames through before truncation kicks in. webrtc-rs defaults to
+/// `SCTP_MAX_MESSAGE_SIZE = 65535`; keeping a few KB in reserve covers framing
+/// overhead and avoids flirting with the hard ceiling.
+const OUTBOUND_LINE_SAFE_MAX: usize = 60 * 1024;
 /// Longest individual string value we'll keep verbatim before truncating.
 /// 4 KB is more than enough for tool names, paths, short outputs, etc.
 const TRUNCATE_STRING_OVER: usize = 4 * 1024;
@@ -3305,33 +3337,35 @@ fn sanitize_claude_outbound_line(line: &str) -> Option<String> {
     if ty != "user" && ty != "assistant" {
         return None;
     }
-    let stub = serde_json::json!("[stripped by pocketshell]");
     let mut changed = false;
 
     // Inside message.content[] — tool_result items can carry image base64,
-    // file contents, or bash stdout. Replace the body with a compact stub.
+    // file contents, or bash stdout. Preserve a bounded preview by truncating
+    // only oversized string fields inside the result payload.
     if let Some(content) = val
         .get_mut("message")
         .and_then(|m| m.get_mut("content"))
         .and_then(|c| c.as_array_mut())
     {
         for item in content.iter_mut() {
-            let Some(obj) = item.as_object_mut() else { continue };
+            let Some(obj) = item.as_object_mut() else {
+                continue;
+            };
             if obj.get("type").and_then(|v| v.as_str()) != Some("tool_result") {
                 continue;
             }
             if let Some(inner) = obj.get_mut("content") {
-                *inner = stub.clone();
-                changed = true;
+                if truncate_oversized_strings(inner) {
+                    changed = true;
+                }
             }
         }
     }
 
     // Sibling `tool_use_result` field on the frame (Claude -p emits the
     // tool's output here too — redundant copy of message.content[].content).
-    if val.get("tool_use_result").is_some() {
-        if let Some(obj) = val.as_object_mut() {
-            obj.insert("tool_use_result".to_string(), stub.clone());
+    if let Some(tool_use_result) = val.get_mut("tool_use_result") {
+        if truncate_oversized_strings(tool_use_result) {
             changed = true;
         }
     }
@@ -3365,8 +3399,12 @@ async fn spawn_webrtc_agent_pump(
         pump_seq += 1;
         if is_claude {
             agent_session::maybe_note_claude_resume_id(
-                &router, &agent_id, &line, &mut resume_id_noted,
-            ).await;
+                &router,
+                &agent_id,
+                &line,
+                &mut resume_id_noted,
+            )
+            .await;
         }
         let line = if is_claude {
             sanitize_claude_outbound_line(&line).unwrap_or(line)
@@ -3448,8 +3486,12 @@ async fn spawn_ws_agent_pump(
     while let Some(line) = stdout_rx.recv().await {
         if is_claude {
             agent_session::maybe_note_claude_resume_id(
-                &router, &agent_id, &line, &mut resume_id_noted,
-            ).await;
+                &router,
+                &agent_id,
+                &line,
+                &mut resume_id_noted,
+            )
+            .await;
         }
         let line = if is_claude {
             sanitize_claude_outbound_line(&line).unwrap_or(line)
@@ -3526,6 +3568,8 @@ async fn handle_signal(
     peer_session_routes: &mut HashMap<String, String>,
     files_peer_hosts: &mut HashMap<String, String>,
     files_peer_offer_ids: &mut HashMap<String, String>,
+    agent_peer_hosts: &mut HashMap<String, String>,
+    agent_peer_offer_ids: &mut HashMap<String, String>,
     outbound_host_transfers: &mut HashMap<String, OutboundHostTransfer>,
     inbound_host_transfers: &mut HashMap<String, InboundHostTransfer>,
     files_response_tx: &tokio::sync::mpsc::UnboundedSender<SignalEnvelope>,
@@ -3581,7 +3625,11 @@ async fn handle_signal(
                 .unwrap_or_default()
                 .to_string();
 
-            if transfer_id.is_empty() || dst_host_id.is_empty() || src_path.is_empty() || dst_path.is_empty() {
+            if transfer_id.is_empty()
+                || dst_host_id.is_empty()
+                || src_path.is_empty()
+                || dst_path.is_empty()
+            {
                 let _ = direct_transfer_event_tx.send(DirectHostTransferEvent::Result {
                     transfer_id,
                     mobile_device_id,
@@ -3792,13 +3840,14 @@ async fn handle_signal(
             {
                 let transfer_id = transfer_id.clone();
                 let event_tx = direct_transfer_event_tx.clone();
-                peer.peer.on_data_channel(Box::new(move |channel: Arc<RTCDataChannel>| {
-                    let transfer_id = transfer_id.clone();
-                    let event_tx = event_tx.clone();
-                    Box::pin(async move {
-                        bind_inbound_host_transfer_channel(transfer_id, channel, event_tx);
-                    })
-                }));
+                peer.peer
+                    .on_data_channel(Box::new(move |channel: Arc<RTCDataChannel>| {
+                        let transfer_id = transfer_id.clone();
+                        let event_tx = event_tx.clone();
+                        Box::pin(async move {
+                            bind_inbound_host_transfer_channel(transfer_id, channel, event_tx);
+                        })
+                    }));
             }
 
             let answer_sdp = peer.apply_offer(&offer_sdp).await?;
@@ -3814,7 +3863,10 @@ async fn handle_signal(
             );
 
             let mut extra = std::collections::HashMap::new();
-            extra.insert("target_host_id".to_string(), serde_json::json!(source_host_id));
+            extra.insert(
+                "target_host_id".to_string(),
+                serde_json::json!(source_host_id),
+            );
             extra.insert(
                 "mobile_device_id".to_string(),
                 serde_json::json!(mobile_device_id),
@@ -3862,7 +3914,9 @@ async fn handle_signal(
                 if !offer_id.is_empty() && transfer.offer_id != offer_id {
                     return Ok(());
                 }
-                if let Some(mobile_device_id) = msg.extra.get("mobile_device_id").and_then(|v| v.as_str()) {
+                if let Some(mobile_device_id) =
+                    msg.extra.get("mobile_device_id").and_then(|v| v.as_str())
+                {
                     if transfer.mobile_device_id != mobile_device_id {
                         return Ok(());
                     }
@@ -3887,14 +3941,18 @@ async fn handle_signal(
             >(payload.clone())
             {
                 if let Some(transfer) = outbound_host_transfers.get(&transfer_id) {
-                    if let Some(mobile_device_id) = msg.extra.get("mobile_device_id").and_then(|v| v.as_str()) {
+                    if let Some(mobile_device_id) =
+                        msg.extra.get("mobile_device_id").and_then(|v| v.as_str())
+                    {
                         if transfer.mobile_device_id != mobile_device_id {
                             return Ok(());
                         }
                     }
                     let _ = transfer.peer.add_ice_candidate(candidate.clone()).await;
                 } else if let Some(transfer) = inbound_host_transfers.get(&transfer_id) {
-                    if let Some(mobile_device_id) = msg.extra.get("mobile_device_id").and_then(|v| v.as_str()) {
+                    if let Some(mobile_device_id) =
+                        msg.extra.get("mobile_device_id").and_then(|v| v.as_str())
+                    {
                         if transfer.mobile_device_id != mobile_device_id {
                             return Ok(());
                         }
@@ -4237,7 +4295,10 @@ async fn handle_signal(
                 return Ok(());
             }
             if !store.is_trusted(&mobile_device_id) {
-                warn!("agent_init rejected: device {} not trusted", mobile_device_id);
+                warn!(
+                    "agent_init rejected: device {} not trusted",
+                    mobile_device_id
+                );
                 return Ok(());
             }
 
@@ -4339,7 +4400,11 @@ async fn handle_signal(
                     return Ok(());
                 }
             };
-            let agent_session::BindOutcome { session, stdout_rx, reattached } = outcome;
+            let agent_session::BindOutcome {
+                session,
+                stdout_rx,
+                reattached,
+            } = outcome;
 
             // Emit an `agent_ready` so the mobile can run its post-init wiring
             // the same way as over the data channel.
@@ -4545,22 +4610,23 @@ async fn handle_signal(
                         .unwrap_or_default();
                     match action {
                         "host_close_all_sessions" => {
-                            info!("host_close_all_sessions requested by mobile={}", mobile_device_id);
+                            info!(
+                                "host_close_all_sessions requested by mobile={}",
+                                mobile_device_id
+                            );
 
                             let daemon_host_id = match store.host_id() {
                                 Ok(id) => id,
                                 Err(_) => String::new(),
                             };
-                            let active_backend_sessions = match store
-                                .access_token()
-                                .map(|s| s.to_string())
-                            {
-                                Ok(token) => backend
-                                    .list_active_sessions_full(&token, &daemon_host_id)
-                                    .await
-                                    .unwrap_or_default(),
-                                Err(_) => Vec::new(),
-                            };
+                            let active_backend_sessions =
+                                match store.access_token().map(|s| s.to_string()) {
+                                    Ok(token) => backend
+                                        .list_active_sessions_full(&token, &daemon_host_id)
+                                        .await
+                                        .unwrap_or_default(),
+                                    Err(_) => Vec::new(),
+                                };
 
                             peer_session_routes.clear();
                             session_ciphers.clear();
@@ -4589,22 +4655,23 @@ async fn handle_signal(
                             let _ = store.save();
                         }
                         "host_restart_agent" => {
-                            info!("host_restart_agent requested by mobile={}", mobile_device_id);
+                            info!(
+                                "host_restart_agent requested by mobile={}",
+                                mobile_device_id
+                            );
 
                             let daemon_host_id = match store.host_id() {
                                 Ok(id) => id,
                                 Err(_) => String::new(),
                             };
-                            let active_backend_sessions = match store
-                                .access_token()
-                                .map(|s| s.to_string())
-                            {
-                                Ok(token) => backend
-                                    .list_active_sessions_full(&token, &daemon_host_id)
-                                    .await
-                                    .unwrap_or_default(),
-                                Err(_) => Vec::new(),
-                            };
+                            let active_backend_sessions =
+                                match store.access_token().map(|s| s.to_string()) {
+                                    Ok(token) => backend
+                                        .list_active_sessions_full(&token, &daemon_host_id)
+                                        .await
+                                        .unwrap_or_default(),
+                                    Err(_) => Vec::new(),
+                                };
 
                             peer_session_routes.clear();
                             session_ciphers.clear();
@@ -4780,9 +4847,10 @@ async fn handle_signal(
                     let tx = files_response_tx.clone();
                     let action_clone = action.clone();
                     let req_id_clone = request_id.clone();
+                    let router = agent_router.clone();
                     tokio::spawn(async move {
                         let start = std::time::Instant::now();
-                        let result = crate::files::handle_files_action(&payload).await;
+                        let result = crate::files::handle_files_action(&payload, &router).await;
                         let elapsed = start.elapsed();
 
                         let response_payload = match result {
@@ -5228,6 +5296,113 @@ async fn handle_signal(
                 }
             }
         }
+        "agent_offer" => {
+            let mobile_device_id = msg
+                .extra
+                .get("mobile_device_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let host_id = msg
+                .extra
+                .get("host_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+
+            if !store.is_trusted(&mobile_device_id) {
+                warn!(
+                    "agent_offer rejected: device {} is not trusted",
+                    mobile_device_id
+                );
+                return Ok(());
+            }
+
+            let peer_key = format!("agent:{mobile_device_id}");
+            agent_peer_hosts.insert(peer_key.clone(), host_id.clone());
+            let offer_id = msg
+                .payload
+                .as_ref()
+                .and_then(|payload| payload.get("offer_id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            if !offer_id.is_empty() {
+                agent_peer_offer_ids.insert(peer_key.clone(), offer_id.clone());
+            }
+
+            if let Some(payload) = &msg.payload {
+                if let Some(offer_sdp) = payload.get("sdp").and_then(|v| v.as_str()) {
+                    let token = store.access_token()?.to_string();
+                    match backend.turn_credentials(&token).await {
+                        Ok((username, credential, _ttl, uris)) => {
+                            match webrtc_mgr
+                                .handle_offer(
+                                    &peer_key, uris, username, credential, offer_sdp, false,
+                                )
+                                .await
+                            {
+                                Ok(answer_sdp) if !answer_sdp.is_empty() => {
+                                    let mut extra = std::collections::HashMap::new();
+                                    extra.insert("host_id".to_string(), serde_json::json!(host_id));
+                                    let answer_payload = build_signed_sdp_payload(
+                                        store,
+                                        &answer_sdp,
+                                        "answer",
+                                        vec![("offer_id", serde_json::json!(offer_id))],
+                                    );
+                                    let answer_msg = SignalEnvelope {
+                                        message_type: "agent_answer".to_string(),
+                                        session_id: None,
+                                        payload: Some(answer_payload),
+                                        state: None,
+                                        accepted: None,
+                                        reason: None,
+                                        extra,
+                                    };
+                                    let _ = send_signal(ws, &answer_msg).await;
+                                }
+                                Ok(_) => {}
+                                Err(e) => {
+                                    warn!("webrtc agent handle_offer failed: {}", e);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!("failed to fetch TURN credentials for agent: {}", e);
+                        }
+                    }
+                }
+            }
+        }
+        "agent_ice_candidate" => {
+            let mobile_device_id = msg
+                .extra
+                .get("mobile_device_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+
+            if !store.is_trusted(&mobile_device_id) {
+                warn!(
+                    "agent_ice_candidate rejected: device {} is not trusted",
+                    mobile_device_id
+                );
+                return Ok(());
+            }
+
+            if let Some(payload) = &msg.payload {
+                if let Ok(candidate) = serde_json::from_value::<
+                    webrtc::ice_transport::ice_candidate::RTCIceCandidateInit,
+                >(payload.clone())
+                {
+                    let peer_key = format!("agent:{mobile_device_id}");
+                    if let Err(e) = webrtc_mgr.add_ice_candidate(&peer_key, candidate).await {
+                        warn!("webrtc agent add_ice_candidate failed: {}", e);
+                    }
+                }
+            }
+        }
         "files_ice_candidate" => {
             let mobile_device_id = msg
                 .extra
@@ -5332,7 +5507,10 @@ async fn handle_signal(
             let cipher = match session_ciphers.get_mut(&session_id) {
                 Some(c) => c,
                 None => {
-                    warn!("encrypted_file_payload: no cipher for session {}", session_id);
+                    warn!(
+                        "encrypted_file_payload: no cipher for session {}",
+                        session_id
+                    );
                     return Ok(());
                 }
             };
@@ -5402,39 +5580,41 @@ async fn handle_signal(
             );
 
             // Helper: encrypt plaintext and build an encrypted signaling envelope
-            let encrypt_and_build = |cipher: &mut SessionCipher,
-                                      plaintext: &[u8],
-                                      session_id: &str,
-                                      mobile_device_id: &str|
-                -> std::result::Result<SignalEnvelope, anyhow::Error> {
-                let (nonce, ct) = cipher.encrypt(plaintext)?;
-                let mut extra = std::collections::HashMap::new();
-                extra.insert(
-                    "target_mobile_device_id".to_string(),
-                    serde_json::json!(mobile_device_id),
-                );
-                Ok(SignalEnvelope {
-                    message_type: "encrypted_file_payload".to_string(),
-                    session_id: None,
-                    payload: Some(serde_json::json!({
-                        "session_id": session_id,
-                        "nonce": base64::engine::general_purpose::STANDARD.encode(&nonce),
-                        "ciphertext": base64::engine::general_purpose::STANDARD.encode(&ct),
-                    })),
-                    state: None,
-                    accepted: None,
-                    reason: None,
-                    extra,
-                })
-            };
+            let encrypt_and_build =
+                |cipher: &mut SessionCipher,
+                 plaintext: &[u8],
+                 session_id: &str,
+                 mobile_device_id: &str|
+                 -> std::result::Result<SignalEnvelope, anyhow::Error> {
+                    let (nonce, ct) = cipher.encrypt(plaintext)?;
+                    let mut extra = std::collections::HashMap::new();
+                    extra.insert(
+                        "target_mobile_device_id".to_string(),
+                        serde_json::json!(mobile_device_id),
+                    );
+                    Ok(SignalEnvelope {
+                        message_type: "encrypted_file_payload".to_string(),
+                        session_id: None,
+                        payload: Some(serde_json::json!({
+                            "session_id": session_id,
+                            "nonce": base64::engine::general_purpose::STANDARD.encode(&nonce),
+                            "ciphertext": base64::engine::general_purpose::STANDARD.encode(&ct),
+                        })),
+                        state: None,
+                        accepted: None,
+                        reason: None,
+                        extra,
+                    })
+                };
 
             // Spawn file I/O so it doesn't block the signaling event loop
             let (result_tx, result_rx) = tokio::sync::oneshot::channel();
             let action_clone = action.clone();
             let req_id_clone = request_id.clone();
+            let router = agent_router.clone();
             tokio::spawn(async move {
                 let start = std::time::Instant::now();
-                let result = crate::files::handle_files_action(&file_payload).await;
+                let result = crate::files::handle_files_action(&file_payload, &router).await;
                 let elapsed = start.elapsed();
 
                 let response_json = match result {
@@ -5471,7 +5651,10 @@ async fn handle_signal(
             let response_json = match result_rx.await {
                 Ok(v) => v,
                 Err(_) => {
-                    warn!("encrypted files: file op task dropped for req={}", request_id);
+                    warn!(
+                        "encrypted files: file op task dropped for req={}",
+                        request_id
+                    );
                     return Ok(());
                 }
             };
@@ -5496,7 +5679,12 @@ async fn handle_signal(
                 response_plaintext
             };
 
-            match encrypt_and_build(cipher, &plaintext_to_encrypt, &session_id, &mobile_device_id) {
+            match encrypt_and_build(
+                cipher,
+                &plaintext_to_encrypt,
+                &session_id,
+                &mobile_device_id,
+            ) {
                 Ok(envelope) => {
                     let _ = send_signal(ws, &envelope).await;
                 }
@@ -5521,7 +5709,12 @@ async fn handle_signal(
                 return Ok(());
             }
 
-            let session_id = match msg.payload.as_ref().and_then(|p| p.get("session_id")).and_then(|v| v.as_str()) {
+            let session_id = match msg
+                .payload
+                .as_ref()
+                .and_then(|p| p.get("session_id"))
+                .and_then(|v| v.as_str())
+            {
                 Some(sid) => sid.to_string(),
                 None => {
                     warn!("x25519_public_key: missing session_id");
@@ -5529,7 +5722,12 @@ async fn handle_signal(
                 }
             };
 
-            let mobile_pub_b64 = match msg.payload.as_ref().and_then(|p| p.get("public_key")).and_then(|v| v.as_str()) {
+            let mobile_pub_b64 = match msg
+                .payload
+                .as_ref()
+                .and_then(|p| p.get("public_key"))
+                .and_then(|v| v.as_str())
+            {
                 Some(k) => k,
                 None => {
                     warn!("x25519_public_key: missing public_key");
@@ -5632,11 +5830,8 @@ async fn local_attach_reader(
 
     loop {
         // Read frame header with idle timeout to detect crashed clients
-        let read_result = tokio::time::timeout(
-            Duration::from_secs(300),
-            reader.read_exact(&mut header),
-        )
-        .await;
+        let read_result =
+            tokio::time::timeout(Duration::from_secs(300), reader.read_exact(&mut header)).await;
         match read_result {
             Ok(Ok(_)) => {}
             _ => break, // timeout, EOF, or error
@@ -5702,9 +5897,7 @@ async fn local_attach_reader(
         }
     }
 
-    let _ = tx.send(LocalClientEvent::Disconnected {
-        client_id,
-    });
+    let _ = tx.send(LocalClientEvent::Disconnected { client_id });
 }
 
 /// Build a WebRTC auth protocol message with the \x00PSAU sentinel prefix.
@@ -5763,8 +5956,8 @@ fn verify_device_auth(
     let sig_bytes = STANDARD
         .decode(sig_b64)
         .map_err(|e| format!("invalid signature base64: {e}"))?;
-    let signature = Signature::from_slice(&sig_bytes)
-        .map_err(|e| format!("invalid ed25519 signature: {e}"))?;
+    let signature =
+        Signature::from_slice(&sig_bytes).map_err(|e| format!("invalid ed25519 signature: {e}"))?;
 
     // Reconstruct signed payload: nonce || session_id || mobile_device_id
     let nonce_bytes = STANDARD
@@ -5876,8 +6069,7 @@ mod tests {
     #[test]
     fn decode_framed_files_message_returns_utf8_for_non_sentinel() {
         let mut messages = HashMap::new();
-        let out =
-            decode_framed_files_message(&mut messages, "m1", b"hello world");
+        let out = decode_framed_files_message(&mut messages, "m1", b"hello world");
         assert_eq!(out.as_deref(), Some("hello world"));
     }
 
@@ -5945,6 +6137,18 @@ mod tests {
     }
 
     #[test]
+    fn truncate_outbound_line_allows_frames_under_new_safe_cap() {
+        let payload_len = OUTBOUND_LINE_SAFE_MAX - 1_024;
+        let big = "a".repeat(payload_len);
+        let line = serde_json::json!({"type": "out", "text": big}).to_string();
+        assert!(
+            truncate_outbound_line_if_too_large(&line).is_none(),
+            "frame unexpectedly truncated at {} bytes",
+            line.len()
+        );
+    }
+
+    #[test]
     fn truncate_outbound_line_shrinks_large_frame() {
         let big = "a".repeat(OUTBOUND_LINE_SAFE_MAX + 1_000);
         let line = serde_json::json!({"type": "out", "text": big}).to_string();
@@ -5960,12 +6164,13 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_claude_strips_tool_result_content() {
+    fn sanitize_claude_truncates_tool_result_content() {
+        let large = "a".repeat(TRUNCATE_STRING_OVER + 32);
         let line = serde_json::json!({
             "type": "user",
             "message": {
                 "content": [
-                    {"type": "tool_result", "content": "a very large base64 blob..."},
+                    {"type": "tool_result", "content": large},
                     {"type": "text", "text": "keep me"}
                 ]
             }
@@ -5973,28 +6178,33 @@ mod tests {
         .to_string();
         let sanitized = sanitize_claude_outbound_line(&line).expect("rewritten");
         let val: serde_json::Value = serde_json::from_str(&sanitized).unwrap();
-        assert_eq!(
-            val["message"]["content"][0]["content"],
-            serde_json::json!("[stripped by pocketshell]")
-        );
+        assert!(val["message"]["content"][0]["content"]
+            .as_str()
+            .unwrap()
+            .starts_with("[truncated by pocketshell:"));
         // Sibling text item untouched.
-        assert_eq!(val["message"]["content"][1]["text"], serde_json::json!("keep me"));
+        assert_eq!(
+            val["message"]["content"][1]["text"],
+            serde_json::json!("keep me")
+        );
     }
 
     #[test]
-    fn sanitize_claude_strips_tool_use_result_sibling() {
+    fn sanitize_claude_truncates_tool_use_result_sibling() {
+        let large = "x".repeat(TRUNCATE_STRING_OVER + 64);
         let line = serde_json::json!({
             "type": "assistant",
-            "tool_use_result": {"stdout": "huge"},
+            "tool_use_result": {"stdout": large, "code": 0},
             "message": {"content": []}
         })
         .to_string();
         let sanitized = sanitize_claude_outbound_line(&line).expect("rewritten");
         let val: serde_json::Value = serde_json::from_str(&sanitized).unwrap();
-        assert_eq!(
-            val["tool_use_result"],
-            serde_json::json!("[stripped by pocketshell]")
-        );
+        assert!(val["tool_use_result"]["stdout"]
+            .as_str()
+            .unwrap()
+            .starts_with("[truncated by pocketshell:"));
+        assert_eq!(val["tool_use_result"]["code"], serde_json::json!(0));
     }
 
     #[test]

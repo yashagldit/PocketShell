@@ -121,17 +121,28 @@ impl std::fmt::Debug for WebRtcEvent {
                 .field("peer_key", peer_key)
                 .field("mobile_device_id", mobile_device_id)
                 .finish(),
-            Self::StatsChannelOpened { host_id, mobile_device_id, .. } => f
+            Self::StatsChannelOpened {
+                host_id,
+                mobile_device_id,
+                ..
+            } => f
                 .debug_struct("StatsChannelOpened")
                 .field("host_id", host_id)
                 .field("mobile_device_id", mobile_device_id)
                 .finish(),
-            Self::StatsChannelClosed { host_id, mobile_device_id } => f
+            Self::StatsChannelClosed {
+                host_id,
+                mobile_device_id,
+            } => f
                 .debug_struct("StatsChannelClosed")
                 .field("host_id", host_id)
                 .field("mobile_device_id", mobile_device_id)
                 .finish(),
-            Self::StatsMessage { mobile_device_id, data, .. } => f
+            Self::StatsMessage {
+                mobile_device_id,
+                data,
+                ..
+            } => f
                 .debug_struct("StatsMessage")
                 .field("mobile_device_id", mobile_device_id)
                 .field("data_len", &data.len())
@@ -155,7 +166,9 @@ impl std::fmt::Debug for WebRtcEvent {
                 .field("mobile_device_id", mobile_device_id)
                 .field("data_len", &data.len())
                 .finish(),
-            Self::ControlChannelOpened { mobile_device_id, .. } => f
+            Self::ControlChannelOpened {
+                mobile_device_id, ..
+            } => f
                 .debug_struct("ControlChannelOpened")
                 .field("mobile_device_id", mobile_device_id)
                 .finish(),
@@ -163,22 +176,38 @@ impl std::fmt::Debug for WebRtcEvent {
                 .debug_struct("ControlChannelClosed")
                 .field("mobile_device_id", mobile_device_id)
                 .finish(),
-            Self::ControlMessage { mobile_device_id, data, .. } => f
+            Self::ControlMessage {
+                mobile_device_id,
+                data,
+                ..
+            } => f
                 .debug_struct("ControlMessage")
                 .field("mobile_device_id", mobile_device_id)
                 .field("data_len", &data.len())
                 .finish(),
-            Self::AgentChannelOpened { agent_id, mobile_device_id, .. } => f
+            Self::AgentChannelOpened {
+                agent_id,
+                mobile_device_id,
+                ..
+            } => f
                 .debug_struct("AgentChannelOpened")
                 .field("agent_id", agent_id)
                 .field("mobile_device_id", mobile_device_id)
                 .finish(),
-            Self::AgentChannelClosed { agent_id, mobile_device_id } => f
+            Self::AgentChannelClosed {
+                agent_id,
+                mobile_device_id,
+            } => f
                 .debug_struct("AgentChannelClosed")
                 .field("agent_id", agent_id)
                 .field("mobile_device_id", mobile_device_id)
                 .finish(),
-            Self::AgentMessage { agent_id, mobile_device_id, data, .. } => f
+            Self::AgentMessage {
+                agent_id,
+                mobile_device_id,
+                data,
+                ..
+            } => f
                 .debug_struct("AgentMessage")
                 .field("agent_id", agent_id)
                 .field("mobile_device_id", mobile_device_id)
@@ -212,7 +241,10 @@ pub struct WebRtcManager {
 }
 
 fn base_mobile_id(peer_key: &str) -> &str {
-    peer_key.strip_prefix("files:").unwrap_or(peer_key)
+    peer_key
+        .strip_prefix("files:")
+        .or_else(|| peer_key.strip_prefix("agent:"))
+        .unwrap_or(peer_key)
 }
 
 impl WebRtcManager {
@@ -851,6 +883,29 @@ mod tests {
         assert_eq!(base_mobile_id(""), "");
     }
 
+    #[test]
+    fn base_mobile_id_strips_agent_prefix() {
+        assert_eq!(base_mobile_id("agent:abc-123"), "abc-123");
+    }
+
+    #[test]
+    fn base_mobile_id_handles_empty_after_agent_prefix() {
+        assert_eq!(base_mobile_id("agent:"), "");
+    }
+
+    #[test]
+    fn base_mobile_id_only_strips_agent_at_prefix() {
+        // The "agent:" prefix should only be stripped when it appears at the start.
+        assert_eq!(base_mobile_id("foo-agent:bar"), "foo-agent:bar");
+    }
+
+    #[test]
+    fn base_mobile_id_strips_only_one_prefix() {
+        // Only the first matching prefix is stripped; nested prefixes remain.
+        assert_eq!(base_mobile_id("files:agent:xyz"), "agent:xyz");
+        assert_eq!(base_mobile_id("agent:files:xyz"), "files:xyz");
+    }
+
     fn make_manager() -> (WebRtcManager, mpsc::UnboundedReceiver<WebRtcEvent>) {
         let (tx, rx) = mpsc::unbounded_channel();
         (WebRtcManager::new(tx), rx)
@@ -880,7 +935,8 @@ mod tests {
     fn has_channel_returns_false_for_empty_vec() {
         // A session entry with an empty channel list should report no channel.
         let (mut mgr, _rx) = make_manager();
-        mgr.session_channels.insert("sess-1".to_string(), Vec::new());
+        mgr.session_channels
+            .insert("sess-1".to_string(), Vec::new());
         assert!(!mgr.has_channel("sess-1"));
     }
 
@@ -896,7 +952,8 @@ mod tests {
     fn prune_session_channels_removes_empty_session_map_entry() {
         let (mut mgr, _rx) = make_manager();
         // Seed an empty channel list — prune should drop the map entry.
-        mgr.session_channels.insert("sess-empty".to_string(), Vec::new());
+        mgr.session_channels
+            .insert("sess-empty".to_string(), Vec::new());
         // Note: prune iterates only if the entry exists. An empty Vec stays unless
         // retain removes nothing and then we check is_empty. The code removes the
         // map entry when channels becomes empty after retain.
