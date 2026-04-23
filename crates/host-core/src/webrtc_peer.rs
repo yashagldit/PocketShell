@@ -29,6 +29,20 @@ pub struct WebRtcPeer {
     pub ice_tx: mpsc::Receiver<RTCIceCandidate>,
 }
 
+/// webrtc-rs does not support `turns:` (TURN-over-TLS) or `transport=tcp`.
+/// Strip those URIs so they don't end up in the ICE config and break TURN
+/// fallback silently.
+pub(crate) fn filter_supported_turn_uris<I, S>(uris: I) -> Vec<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    uris.into_iter()
+        .map(|u| u.as_ref().to_string())
+        .filter(|u| !u.starts_with("turns:") && !u.contains("transport=tcp"))
+        .collect()
+}
+
 impl WebRtcPeer {
     pub async fn new(turn_uris: Vec<String>, username: String, credential: String) -> Result<Self> {
         let mut media = MediaEngine::default();
@@ -37,12 +51,7 @@ impl WebRtcPeer {
             .map_err(|e| HostError::Backend(format!("webrtc codec registration failed: {e}")))?;
 
         let api = APIBuilder::new().with_media_engine(media).build();
-        // webrtc-rs doesn't support turns: (TURN-over-TLS) or transport=tcp;
-        // filter to URIs this library can handle.
-        let supported_uris: Vec<String> = turn_uris
-            .into_iter()
-            .filter(|u| !u.starts_with("turns:") && !u.contains("transport=tcp"))
-            .collect();
+        let supported_uris = filter_supported_turn_uris(turn_uris);
         let config = RTCConfiguration {
             ice_servers: vec![RTCIceServer {
                 urls: supported_uris,
@@ -166,5 +175,179 @@ impl WebRtcPeer {
 
     pub fn connection_state(&self) -> RTCPeerConnectionState {
         self.peer.connection_state()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn filter_turn_uris_keeps_udp_turn() {
+        let out = filter_supported_turn_uris(["turn:t.example.com:3478?transport=udp"]);
+        assert_eq!(out, vec!["turn:t.example.com:3478?transport=udp"]);
+    }
+
+    #[test]
+    fn filter_turn_uris_drops_turns_tls() {
+        let out = filter_supported_turn_uris([
+            "turns:t.example.com:5349?transport=tcp",
+            "turns:t.example.com:5349",
+        ]);
+        assert!(out.is_empty(), "turns: URIs must be dropped, got {out:?}");
+    }
+
+    #[test]
+    fn filter_turn_uris_drops_tcp_transport() {
+        let out = filter_supported_turn_uris(["turn:t.example.com:3478?transport=tcp"]);
+        assert!(out.is_empty(), "transport=tcp must be dropped, got {out:?}");
+    }
+
+    #[test]
+    fn filter_turn_uris_mixed_keeps_only_supported() {
+        let out = filter_supported_turn_uris([
+            "turn:t.example.com:3478?transport=udp",
+            "turn:t.example.com:3478?transport=tcp",
+            "turns:t.example.com:5349?transport=udp",
+            "stun:stun.example.com:3478",
+        ]);
+        assert_eq!(
+            out,
+            vec![
+                "turn:t.example.com:3478?transport=udp",
+                "stun:stun.example.com:3478",
+            ]
+        );
+    }
+
+    #[test]
+    fn filter_turn_uris_empty_input_yields_empty() {
+        let out: Vec<String> = filter_supported_turn_uris(Vec::<String>::new());
+        assert!(out.is_empty());
+    }
+
+    async fn new_local_peer() -> WebRtcPeer {
+        // No TURN servers — ICE will use host candidates only. That's enough
+        // for everything below except the loopback test (which adds ICE
+        // relaying manually).
+        WebRtcPeer::new(Vec::new(), String::new(), String::new())
+            .await
+            .expect("local peer construction should succeed")
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn peer_constructs_with_empty_turn_config() {
+        let peer = new_local_peer().await;
+        assert_eq!(peer.connection_state(), RTCPeerConnectionState::New);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn create_offer_with_data_channel_returns_non_empty_sdp() {
+        let peer = new_local_peer().await;
+        let (dc, sdp) = peer
+            .create_offer_with_data_channel("terminal")
+            .await
+            .expect("create offer should succeed");
+        assert!(!sdp.is_empty());
+        assert!(sdp.contains("m=application"), "SDP should include data channel m-line");
+        assert_eq!(dc.label(), "terminal");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn apply_offer_rejects_malformed_sdp() {
+        let peer = new_local_peer().await;
+        let result = peer.apply_offer("this is not sdp").await;
+        assert!(result.is_err(), "garbage SDP should be rejected");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn apply_answer_rejects_malformed_sdp() {
+        let peer = new_local_peer().await;
+        // Have to create a local offer first or set_remote_description(answer) has no matching state.
+        let (_dc, _offer) = peer
+            .create_offer_with_data_channel("ctl")
+            .await
+            .expect("offer setup");
+        let result = peer.apply_answer("junk").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn close_is_idempotent() {
+        let peer = new_local_peer().await;
+        peer.close().await;
+        peer.close().await; // second close must not panic
+        assert_eq!(peer.connection_state(), RTCPeerConnectionState::Closed);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn offer_answer_loopback_opens_data_channel_and_roundtrips() {
+        use std::sync::Arc;
+        use std::time::Duration;
+        use tokio::sync::Notify;
+        use tokio::task::JoinHandle;
+        use tokio::time::timeout;
+
+        /// Aborts spawned relay tasks on drop so a panic between spawn and
+        /// the end of the test doesn't leave them holding the peer Arcs.
+        struct AbortOnDrop(Vec<JoinHandle<()>>);
+        impl Drop for AbortOnDrop {
+            fn drop(&mut self) {
+                for h in &self.0 {
+                    h.abort();
+                }
+            }
+        }
+
+        let mut initiator = new_local_peer().await;
+        let mut responder = new_local_peer().await;
+
+        let (dc, offer_sdp) = initiator
+            .create_offer_with_data_channel("terminal")
+            .await
+            .expect("create offer");
+
+        let answer_sdp = responder
+            .apply_offer(&offer_sdp)
+            .await
+            .expect("responder applies offer");
+        initiator
+            .apply_answer(&answer_sdp)
+            .await
+            .expect("initiator applies answer");
+
+        let init_peer = initiator.peer.clone();
+        let resp_peer = responder.peer.clone();
+        let _relays = AbortOnDrop(vec![
+            tokio::spawn(async move {
+                while let Some(c) = initiator.ice_tx.recv().await {
+                    if let Ok(init) = c.to_json() {
+                        let _ = resp_peer.add_ice_candidate(init).await;
+                    }
+                }
+            }),
+            tokio::spawn(async move {
+                while let Some(c) = responder.ice_tx.recv().await {
+                    if let Ok(init) = c.to_json() {
+                        let _ = init_peer.add_ice_candidate(init).await;
+                    }
+                }
+            }),
+        ]);
+
+        let open_notify = Arc::new(Notify::new());
+        let on_open_notify = open_notify.clone();
+        dc.on_open(Box::new(move || {
+            let n = on_open_notify.clone();
+            Box::pin(async move { n.notify_one() })
+        }));
+
+        timeout(Duration::from_secs(10), open_notify.notified())
+            .await
+            .expect("data channel should open within 10s");
+
+        dc.send_text("ping".to_string())
+            .await
+            .expect("send_text should succeed on an open channel");
     }
 }
