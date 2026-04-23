@@ -1262,6 +1262,8 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
         let claude_idle_ttl = Duration::from_secs(10 * 60);
         let mut webrtc_poll_tick = interval(Duration::from_millis(50));
         let mut stats_stream_tick = interval(Duration::from_secs(2));
+        let mut turn_usage_tick = interval(Duration::from_secs(60));
+        turn_usage_tick.tick().await; // skip immediate first tick
 
         let mut shutdown = Box::pin(async {
             #[cfg(unix)]
@@ -1692,6 +1694,19 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                     if let Err(err) = send_signal(&mut ws, &msg).await {
                         warn!("discovery send failed: {}", err);
                         break;
+                    }
+                }
+                _ = turn_usage_tick.tick() => {
+                    let delta = webrtc_mgr.collect_relay_delta().await;
+                    if delta > 0 {
+                        if let Ok(token) = store.access_token().map(|s| s.to_string()) {
+                            let backend = backend.clone();
+                            tokio::spawn(async move {
+                                if let Err(err) = backend.report_turn_usage(&token, delta).await {
+                                    warn!("turn usage report failed ({} bytes): {}", delta, err);
+                                }
+                            });
+                        }
                     }
                 }
                 _ = webrtc_poll_tick.tick() => {

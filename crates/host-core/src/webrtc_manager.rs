@@ -219,6 +219,10 @@ impl std::fmt::Debug for WebRtcEvent {
 
 pub struct WebRtcManager {
     peers: HashMap<String, WebRtcPeer>,
+    /// Relay-bytes carried over from peers that were closed since the last
+    /// `collect_relay_delta` call. Prevents tail bytes from being lost when
+    /// a peer closes mid-interval.
+    pending_relay_bytes: u64,
     /// Multiple data channels per session — supports multi-device viewing.
     session_channels: HashMap<String, Vec<Arc<RTCDataChannel>>>,
     /// Maps (session_id, mobile_device_id) to the index range of channels owned by that mobile.
@@ -251,6 +255,7 @@ impl WebRtcManager {
     pub fn new(event_tx: mpsc::UnboundedSender<WebRtcEvent>) -> Self {
         Self {
             peers: HashMap::new(),
+            pending_relay_bytes: 0,
             session_channels: HashMap::new(),
             channel_owners: Vec::new(),
             stats_channel_owners: Vec::new(),
@@ -524,7 +529,9 @@ impl WebRtcManager {
     }
 
     pub async fn close_peer(&mut self, peer_key: &str) {
-        if let Some(peer) = self.peers.remove(peer_key) {
+        if let Some(mut peer) = self.peers.remove(peer_key) {
+            let tail = peer.collect_relay_delta().await;
+            self.pending_relay_bytes = self.pending_relay_bytes.saturating_add(tail);
             peer.close().await;
         }
         self.disconnected_since.remove(peer_key);
@@ -603,6 +610,19 @@ impl WebRtcManager {
         for id in ids {
             self.close_peer(&id).await;
         }
+    }
+
+    /// Collect total relay bytes (sent+received) across every active peer since
+    /// the previous call, plus any tail bytes carried over from peers that were
+    /// closed in the meantime.
+    pub async fn collect_relay_delta(&mut self) -> u64 {
+        let mut total = self.pending_relay_bytes;
+        self.pending_relay_bytes = 0;
+        for peer in self.peers.values_mut() {
+            let d = peer.collect_relay_delta().await;
+            total = total.saturating_add(d);
+        }
+        total
     }
 
     async fn handle_new_channel(&mut self, peer_key: &str, dc_event: DataChannelEvent) {

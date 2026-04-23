@@ -551,6 +551,32 @@ impl BackendClient {
 
         Ok((username, credential, ttl_seconds, uris))
     }
+
+    pub async fn report_turn_usage(&self, token: &str, bytes_used: u64) -> Result<()> {
+        let url = format!("{}/api/v1/webrtc/turn-usage", self.base_url);
+        let res = self
+            .client
+            .post(url)
+            .header(AUTHORIZATION, format!("Bearer {token}"))
+            .header(CONTENT_TYPE, "application/json")
+            .json(&serde_json::json!({ "bytes_used": bytes_used }))
+            .send()
+            .await
+            .map_err(|e| HostError::Backend(e.to_string()))?;
+
+        if res.status() == StatusCode::UNAUTHORIZED {
+            return Err(HostError::AuthRevoked);
+        }
+
+        if !res.status().is_success() {
+            let status = res.status();
+            return Err(HostError::Backend(format!(
+                "turn usage report failed: {status}"
+            )));
+        }
+
+        Ok(())
+    }
 }
 
 pub fn derive_access_expiry(token: &str) -> Option<chrono::DateTime<chrono::Utc>> {

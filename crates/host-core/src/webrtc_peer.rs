@@ -1,6 +1,7 @@
 #![cfg(feature = "webrtc")]
 
 use crate::error::{HostError, Result};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use webrtc::api::media_engine::MediaEngine;
@@ -13,6 +14,8 @@ use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
+use webrtc::ice::candidate::CandidateType;
+use webrtc::stats::StatsReportType;
 
 /// A data channel event received from the remote peer.
 pub struct DataChannelEvent {
@@ -27,6 +30,17 @@ pub struct WebRtcPeer {
     pub channel_rx: mpsc::Receiver<DataChannelEvent>,
     /// Receives ICE candidates to send back via signaling.
     pub ice_tx: mpsc::Receiver<RTCIceCandidate>,
+    /// Per-candidate-pair cumulative byte counts from the last stats snapshot,
+    /// keyed by pair id. Used by `collect_relay_delta` to compute deltas
+    /// across ICE path migrations without double-counting.
+    relay_pair_state: HashMap<String, RelayPairSnapshot>,
+}
+
+#[derive(Clone, Copy)]
+struct RelayPairSnapshot {
+    bytes_sent: u64,
+    bytes_received: u64,
+    was_relay: bool,
 }
 
 /// webrtc-rs does not support `turns:` (TURN-over-TLS) or `transport=tcp`.
@@ -93,7 +107,66 @@ impl WebRtcPeer {
             peer,
             channel_rx,
             ice_tx,
+            relay_pair_state: HashMap::new(),
         })
+    }
+
+    /// Poll `get_stats()` and return the count of bytes (sent+received) that
+    /// flowed through candidate pairs whose *local* candidate is a TURN relay
+    /// since the last call. Only local-relay pairs are counted — if only the
+    /// remote peer is relaying, those bytes bill against the remote's TURN
+    /// allocation, not ours.
+    ///
+    /// Handles ICE path migration by tracking cumulative counters per pair id
+    /// and summing deltas. Pairs not seen in a snapshot are dropped; new pairs
+    /// start with their cumulative count attributed (since they didn't exist
+    /// before this interval).
+    pub async fn collect_relay_delta(&mut self) -> u64 {
+        let report = self.peer.get_stats().await;
+
+        let mut local_candidate_types: HashMap<&String, CandidateType> = HashMap::new();
+        for (id, entry) in report.reports.iter() {
+            if let StatsReportType::LocalCandidate(cand) = entry {
+                local_candidate_types.insert(id, cand.candidate_type);
+            }
+        }
+
+        let mut delta: u64 = 0;
+        let mut seen: HashMap<String, RelayPairSnapshot> = HashMap::new();
+
+        for entry in report.reports.values() {
+            let StatsReportType::CandidatePair(pair) = entry else {
+                continue;
+            };
+            let is_relay = local_candidate_types
+                .get(&pair.local_candidate_id)
+                .copied()
+                .map(|t| matches!(t, CandidateType::Relay))
+                .unwrap_or(false);
+
+            let snap = RelayPairSnapshot {
+                bytes_sent: pair.bytes_sent,
+                bytes_received: pair.bytes_received,
+                was_relay: is_relay,
+            };
+
+            if let Some(prev) = self.relay_pair_state.get(&pair.id) {
+                if is_relay && prev.was_relay {
+                    let d_sent = pair.bytes_sent.saturating_sub(prev.bytes_sent);
+                    let d_recv = pair.bytes_received.saturating_sub(prev.bytes_received);
+                    delta = delta.saturating_add(d_sent).saturating_add(d_recv);
+                }
+            } else if is_relay {
+                delta = delta
+                    .saturating_add(pair.bytes_sent)
+                    .saturating_add(pair.bytes_received);
+            }
+
+            seen.insert(pair.id.clone(), snap);
+        }
+
+        self.relay_pair_state = seen;
+        delta
     }
 
     /// Apply an offer from mobile, create and return an answer SDP.
