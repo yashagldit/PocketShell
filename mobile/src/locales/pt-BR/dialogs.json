@@ -1,0 +1,8 @@
+{
+  "sign_out_title": "Sair",
+  "sign_out_description": "Você precisará entrar novamente para acessar seus hosts.",
+  "replace_device_key_title": "Substituir chave?",
+  "replace_device_key_description": "Isso substituirá sua chave atual. Você pode precisar re-parear os hosts que não reconhecerem a chave importada.",
+  "delete_rule_title": "Excluir regra",
+  "delete_rule_description": "Excluir esta regra de alerta?"
+}

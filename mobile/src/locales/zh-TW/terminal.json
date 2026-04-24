@@ -1,0 +1,15 @@
+{
+  "requesting": "正在請求工作階段...",
+  "connecting": "正在建立 P2P 連接...",
+  "reconnecting": "正在重新連接主機...",
+  "failed": "連接失敗",
+  "closed": "工作階段已關閉",
+  "progress.requested": "已請求工作階段",
+  "progress.connecting": "正在建立 P2P",
+  "progress.reconnecting": "正在重新連接...",
+  "new_session": "新工作階段",
+  "uploading_image": "正在上傳圖片",
+  "upload_success": "上傳成功",
+  "upload_failed": "上傳失敗",
+  "selection_modal_subtitle": "使用設備的原生文本選擇句柄。"
+}

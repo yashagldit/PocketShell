@@ -1,0 +1,15 @@
+{
+  "requesting": "세션 요청 중...",
+  "connecting": "P2P 연결 설정 중...",
+  "reconnecting": "호스트에 다시 연결하는 중...",
+  "failed": "연결 실패",
+  "closed": "세션 종료됨",
+  "progress.requested": "세션 요청됨",
+  "progress.connecting": "P2P 설정 중",
+  "progress.reconnecting": "다시 연결 중...",
+  "new_session": "새 세션",
+  "uploading_image": "이미지 업로드 중",
+  "upload_success": "업로드 성공",
+  "upload_failed": "업로드 실패",
+  "selection_modal_subtitle": "장치 고유의 텍스트 선택 핸들을 사용하세요."
+}

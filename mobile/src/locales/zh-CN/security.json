@@ -1,0 +1,15 @@
+{
+  "screen.title": "受信任设备",
+  "empty.title": "无受信任设备",
+  "empty.subtitle": "连接到此主机的设备将显示在这里。",
+  "device.revoke": "撤销设备",
+  "device.revokeMessage": "这将移除此移动设备访问主机的权限。",
+  "device.revokeButton": "撤销",
+  "permission.shell": "终端访问",
+  "permission.stats": "统计访问",
+  "permission.sessions": "会话访问",
+  "badge.revoked": "已撤销",
+  "badge.approved": "已通过",
+  "badge.pending": "待处理",
+  "device.never_used": "从未使用过"
+}

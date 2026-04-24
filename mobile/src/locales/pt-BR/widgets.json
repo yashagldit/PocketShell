@@ -1,0 +1,6 @@
+{
+  "open_to_setup": "Abra o PocketShell para configurar",
+  "stale_indicator": "obsoleto",
+  "fleet_overview": "Visão da frota",
+  "online_count": "{{online}}/{{total}} online"
+}

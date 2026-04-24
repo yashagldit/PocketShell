@@ -1,0 +1,15 @@
+{
+  "screen.title": "신뢰할 수 있는 장치",
+  "empty.title": "신뢰할 수 있는 장치 없음",
+  "empty.subtitle": "이 호스트에 연결하는 장치들이 여기에 표시됩니다.",
+  "device.revoke": "장치 권한 취소",
+  "device.revokeMessage": "해당 모바일 장치의 호스트 액세스 권한이 제거됩니다.",
+  "device.revokeButton": "취소",
+  "permission.shell": "셸 액세스",
+  "permission.stats": "통계 액세스",
+  "permission.sessions": "세션 액세스",
+  "badge.revoked": "취소됨",
+  "badge.approved": "승인됨",
+  "badge.pending": "대기 중",
+  "device.never_used": "사용 기록 없음"
+}

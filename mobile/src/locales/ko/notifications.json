@@ -1,0 +1,5 @@
+{
+  "host_online": "{{host}}가 온라인입니다",
+  "host_offline": "{{host}}가 오프라인이 되었습니다",
+  "alert_triggered": "{{host}}의 {{metric}} 지표가 {{value}}{{unit}}에 도달했습니다 (임계값 {{threshold}}{{unit}})"
+}

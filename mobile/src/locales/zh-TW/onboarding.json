@@ -1,0 +1,17 @@
+{
+  "step_pair.title": "配對您的主機",
+  "step_pair.subtitle": "秒級連接",
+  "step_pair.description": "在任何機器上安裝 PocketShell 代理程式，在應用程式中產生配對碼，然後在主機上執行 `pocketshell pair <CODE>`。就是這樣 —— 安全的 P2P 連接已建立。",
+  "step_terminal.title": "全功能終端機存取",
+  "step_terminal.subtitle": "真實 Shell，真實力量",
+  "step_terminal.description": "獲得包含 Ctrl 鍵、箭頭導航、Tab 補全、搜尋和剪貼簿支援的完整終端機。無縫連接到 tmux 或 screen 工作階段。",
+  "step_workspaces.title": "工作區與檔案",
+  "step_workspaces.subtitle": "組織您的工作流",
+  "step_workspaces.description": "建立包含多個終端機標籤和檔案瀏覽面板的工作區。在手機和遠端主機之間直接瀏覽、編輯和傳輸檔案。",
+  "step_monitor.title": "即時監控",
+  "step_monitor.subtitle": "了解您的系統",
+  "step_monitor.description": "即時查看 CPU、記憶體、磁碟和網路統計資訊。設置警報閾值，并在需要關注時獲得通知 —— 全部透過安全的 WebRTC 通道。",
+  "skip": "跳過",
+  "next": "下一步",
+  "get_started": "立即開始"
+}

@@ -1,0 +1,15 @@
+{
+  "screen.title": "Доверенные устройства",
+  "empty.title": "Доверенных устройств нет",
+  "empty.subtitle": "Устройства, подключающиеся к этому хосту, появятся здесь.",
+  "device.revoke": "Отозвать доступ",
+  "device.revokeMessage": "Это лишит данное мобильное устройство доступа к хосту.",
+  "device.revokeButton": "Отозвать",
+  "permission.shell": "Доступ к шеллу",
+  "permission.stats": "Доступ к статистике",
+  "permission.sessions": "Доступ к сессиям",
+  "badge.revoked": "отозван",
+  "badge.approved": "одобрен",
+  "badge.pending": "ожидание",
+  "device.never_used": "ни разу не использовалось"
+}

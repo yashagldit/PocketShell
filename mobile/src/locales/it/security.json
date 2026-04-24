@@ -1,0 +1,15 @@
+{
+  "screen.title": "Dispositivi fidati",
+  "empty.title": "Nessun dispositivo",
+  "empty.subtitle": "I dispositivi che si connettono a questo host appariranno qui.",
+  "device.revoke": "Revoca accesso",
+  "device.revokeMessage": "Questo rimuoverà l'accesso di questo dispositivo mobile all'host.",
+  "device.revokeButton": "Revoca",
+  "permission.shell": "Accesso Shell",
+  "permission.stats": "Accesso Stats",
+  "permission.sessions": "Accesso Sessioni",
+  "badge.revoked": "revocato",
+  "badge.approved": "approvato",
+  "badge.pending": "in attesa",
+  "device.never_used": "mai usato"
+}

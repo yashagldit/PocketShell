@@ -1,0 +1,8 @@
+{
+  "sign_out_title": "Se déconnecter",
+  "sign_out_description": "Vous devrez vous reconnecter pour accéder à vos hôtes.",
+  "replace_device_key_title": "Remplacer la clé ?",
+  "replace_device_key_description": "Cela remplacera votre clé actuelle. Vous devrez peut-être rejumeler les hôtes qui ne reconnaissent pas la clé importée.",
+  "delete_rule_title": "Supprimer la règle",
+  "delete_rule_description": "Supprimer cette règle d'alerte ?"
+}

@@ -1,0 +1,15 @@
+{
+  "screen.title": "Appareils de confiance",
+  "empty.title": "Aucun appareil",
+  "empty.subtitle": "Les appareils se connectant à cet hôte s'afficheront ici.",
+  "device.revoke": "Révoquer l'accès",
+  "device.revokeMessage": "Cela retirera l'accès de cet appareil mobile à l'hôte.",
+  "device.revokeButton": "Révoquer",
+  "permission.shell": "Accès Shell",
+  "permission.stats": "Accès Stats",
+  "permission.sessions": "Accès Sessions",
+  "badge.revoked": "révoqué",
+  "badge.approved": "approuvé",
+  "badge.pending": "en attente",
+  "device.never_used": "jamais utilisé"
+}

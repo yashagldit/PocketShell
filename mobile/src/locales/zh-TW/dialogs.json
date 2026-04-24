@@ -1,0 +1,8 @@
+{
+  "sign_out_title": "登出",
+  "sign_out_description": "您需要重新登入才能存取您的主機。",
+  "replace_device_key_title": "替換設備金鑰？",
+  "replace_device_key_description": "這將替換您目前的設備金鑰。您可能需要重新配對那些不識別匯入金鑰的主機。",
+  "delete_rule_title": "刪除規則",
+  "delete_rule_description": "移除此警報規則？"
+}

@@ -1,0 +1,6 @@
+{
+  "open_to_setup": "Откройте PocketShell для настройки",
+  "stale_indicator": "устарело",
+  "fleet_overview": "Обзор устройств",
+  "online_count": "{{online}}/{{total}} в сети"
+}

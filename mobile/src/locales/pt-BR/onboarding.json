@@ -1,0 +1,17 @@
+{
+  "step_pair.title": "Vincule seus hosts",
+  "step_pair.subtitle": "Conexão em segundos",
+  "step_pair.description": "Instale o agente PocketShell em qualquer máquina, gere um código de pareamento no app e execute `pocketshell pair <CODE>` no seu host. Pronto: conexão P2P segura estabelecida.",
+  "step_terminal.title": "Acesso total ao terminal",
+  "step_terminal.subtitle": "Shell real, poder real",
+  "step_terminal.description": "Obtenha um terminal completo com suporte a Ctrl, navegação por setas, Tab-completion, busca e área de transferência. Conecte-se a sessões tmux ou screen sem problemas.",
+  "step_workspaces.title": "Workspaces e arquivos",
+  "step_workspaces.subtitle": "Organize seu fluxo",
+  "step_workspaces.description": "Crie workspaces com múltiplas abas de terminal e painéis de arquivos. Navegue, edite e transfira arquivos diretamente entre seu telefone e hosts remotos.",
+  "step_monitor.title": "Monitoramento ao vivo",
+  "step_monitor.subtitle": "Conheça seus sistemas",
+  "step_monitor.description": "Acompanhe estatísticas de CPU, memória, disco e rede em tempo real. Configure alertas e receba notificações quando algo precisar de atenção — tudo via canal WebRTC seguro.",
+  "skip": "Pular",
+  "next": "Próximo",
+  "get_started": "Começar"
+}

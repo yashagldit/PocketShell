@@ -1,0 +1,8 @@
+{
+  "sign_out_title": "Cerrar sesión",
+  "sign_out_description": "Tendrás que volver a iniciar sesión para acceder a tus hosts.",
+  "replace_device_key_title": "¿Reemplazar clave?",
+  "replace_device_key_description": "Esto reemplazará tu clave actual. Es posible que tengas que volver a vincular los hosts que no reconozcan la nueva clave.",
+  "delete_rule_title": "Eliminar regla",
+  "delete_rule_description": "¿Eliminar esta regla de alerta?"
+}

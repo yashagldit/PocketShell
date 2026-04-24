@@ -1,0 +1,5 @@
+{
+  "host_online": "{{host}} 已上線",
+  "host_offline": "{{host}} 已下線",
+  "alert_triggered": "{{host}} 上的 {{metric}} 達到 {{value}}{{unit}} (閾值 {{threshold}}{{unit}})"
+}

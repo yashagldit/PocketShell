@@ -1,0 +1,8 @@
+{
+  "sign_out_title": "退出登录",
+  "sign_out_description": "您需要重新登录才能访问您的主机。",
+  "replace_device_key_title": "替换设备密钥？",
+  "replace_device_key_description": "这将替换您当前的设备密钥。您可能需要重新配对那些不识别导入密钥的主机。",
+  "delete_rule_title": "删除规则",
+  "delete_rule_description": "移除此报警规则？"
+}

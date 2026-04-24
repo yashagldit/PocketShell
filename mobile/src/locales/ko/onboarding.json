@@ -1,0 +1,17 @@
+{
+  "step_pair.title": "호스트 페어링",
+  "step_pair.subtitle": "수 초 만에 연결",
+  "step_pair.description": "아무 머신에나 PocketShell 에이전트를 설치하고, 앱에서 페어링 코드를 생성한 후, 호스트에서 `pocketshell pair <CODE>`를 실행하세요. 그것으로 끝입니다 — 안전한 P2P 연결이 설정됩니다.",
+  "step_terminal.title": "전체 터미널 액세스",
+  "step_terminal.subtitle": "진짜 셸, 진짜 파워",
+  "step_terminal.description": "Ctrl 키, 화살표 탐색, 탭 완성, 검색 및 클립보드 지원이 포함된 완전한 터미널을 사용하세요. tmux 또는 screen 세션에 원활하게 연결할 수 있습니다.",
+  "step_workspaces.title": "워크스페이스 및 파일",
+  "step_workspaces.subtitle": "워크플로우 관리",
+  "step_workspaces.description": "여러 터미널 탭과 파일 브라우저 패널로 워크스페이스를 만드세요. 휴대폰과 원격 호스트 사이에서 파일을 직접 탐색, 편집 및 전송할 수 있습니다.",
+  "step_monitor.title": "실시간 모니터링",
+  "step_monitor.subtitle": "시스템 상태 파악",
+  "step_monitor.description": "CPU, 메모리, 디스크 및 네트워크 통계를 실시간으로 확인하세요. 알림 임계값을 설정하고 주의가 필요한 상황이 발생하면 알림을 받으세요 — 모두 안전한 WebRTC 채널을 통해 이루어집니다.",
+  "skip": "건너뛰기",
+  "next": "다음",
+  "get_started": "시작하기"
+}

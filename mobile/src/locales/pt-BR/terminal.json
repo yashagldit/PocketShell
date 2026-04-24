@@ -1,0 +1,15 @@
+{
+  "requesting": "Solicitando sessão...",
+  "connecting": "Estabelecendo canal P2P...",
+  "reconnecting": "Reconectando ao host...",
+  "failed": "Conexão falhou",
+  "closed": "Sessão encerrada",
+  "progress.requested": "Sessão solicitada",
+  "progress.connecting": "Ajustando P2P",
+  "progress.reconnecting": "Reconectando...",
+  "new_session": "Nova sessão",
+  "uploading_image": "Enviando imagem",
+  "upload_success": "Envio realizado",
+  "upload_failed": "Falha no envio",
+  "selection_modal_subtitle": "Use os controles de seleção de texto nativos do dispositivo."
+}

@@ -1,0 +1,6 @@
+{
+  "open_to_setup": "打开 PocketShell 进行设置",
+  "stale_indicator": "陈旧",
+  "fleet_overview": "设备群概览",
+  "online_count": "{{online}}/{{total}} 在线"
+}

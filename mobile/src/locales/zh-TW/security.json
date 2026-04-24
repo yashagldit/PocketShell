@@ -1,0 +1,15 @@
+{
+  "screen.title": "受信任設備",
+  "empty.title": "無受信任設備",
+  "empty.subtitle": "連接到此主機的設備將顯示在這裡。",
+  "device.revoke": "撤回設備",
+  "device.revokeMessage": "這將移除此行動設備存取主機的權限。",
+  "device.revokeButton": "撤回",
+  "permission.shell": "終端機存取",
+  "permission.stats": "統計存取",
+  "permission.sessions": "工作階段存取",
+  "badge.revoked": "已撤回",
+  "badge.approved": "已通過",
+  "badge.pending": "待處理",
+  "device.never_used": "從未使用過"
+}

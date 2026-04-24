@@ -1,0 +1,5 @@
+{
+  "host_online": "{{host}} теперь в сети",
+  "host_offline": "{{host}} вышел из сети",
+  "alert_triggered": "{{metric}} на {{host}} достиг {{value}}{{unit}} (порог {{threshold}}{{unit}})"
+}

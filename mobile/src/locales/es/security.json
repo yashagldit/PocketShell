@@ -1,0 +1,15 @@
+{
+  "screen.title": "Dispositivos de confianza",
+  "empty.title": "Sin dispositivos",
+  "empty.subtitle": "Los dispositivos que se conecten a este host aparecerán aquí.",
+  "device.revoke": "Revocar acceso",
+  "device.revokeMessage": "Esto quitará el acceso de este dispositivo móvil al host.",
+  "device.revokeButton": "Revocar",
+  "permission.shell": "Acceso shell",
+  "permission.stats": "Acceso estadísticas",
+  "permission.sessions": "Acceso sesiones",
+  "badge.revoked": "revocado",
+  "badge.approved": "aprobado",
+  "badge.pending": "pendiente",
+  "device.never_used": "nunca usado"
+}

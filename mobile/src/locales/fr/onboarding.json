@@ -1,0 +1,17 @@
+{
+  "step_pair.title": "Liez vos hôtes",
+  "step_pair.subtitle": "Connexion en quelques secondes",
+  "step_pair.description": "Installez l'agent PocketShell sur n'importe quelle machine, générez un code de jumelage dans l'application et exécutez `pocketshell pair <CODE>` sur votre hôte. C'est tout : connexion P2P sécurisée établie.",
+  "step_terminal.title": "Accès complet au terminal",
+  "step_terminal.subtitle": "Vrai shell, vraie puissance",
+  "step_terminal.description": "Obtenez un terminal complet avec support des touches Ctrl, navigation par flèches, complétion par Tab, recherche et presse-papiers. Connectez-vous à des sessions tmux ou screen de manière transparente.",
+  "step_workspaces.title": "Espaces et fichiers",
+  "step_workspaces.subtitle": "Organisez votre travail",
+  "step_workspaces.description": "Créez des espaces de travail avec plusieurs onglets de terminal et des panneaux de navigation de fichiers. Parcourez, éditez et transférez des fichiers directement entre votre téléphone et les hôtes distants.",
+  "step_monitor.title": "Surveillance en direct",
+  "step_monitor.subtitle": "Connaissez vos systèmes",
+  "step_monitor.description": "Suivez les statistiques CPU, mémoire, disque et réseau en temps réel. Définissez des seuils d'alerte et recevez des notifications quand quelque chose nécessite votre attention — tout cela via un canal WebRTC sécurisé.",
+  "skip": "Passer",
+  "next": "Suivant",
+  "get_started": "Commencer"
+}

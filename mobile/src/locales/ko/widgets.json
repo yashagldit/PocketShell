@@ -1,0 +1,6 @@
+{
+  "open_to_setup": "PocketShell을 열어 설정하세요",
+  "stale_indicator": "지연됨",
+  "fleet_overview": "플릿 개요",
+  "online_count": "{{online}}/{{total}} 온라인"
+}

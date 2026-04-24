@@ -1,0 +1,8 @@
+{
+  "sign_out_title": "로그아웃",
+  "sign_out_description": "호스트에 다시 접근하려면 로그인이 필요합니다.",
+  "replace_device_key_title": "장치 키를 교체하시겠습니까?",
+  "replace_device_key_description": "현재 장치 키가 교체됩니다. 가져온 키를 인식하지 못하는 호스트와는 다시 페어링해야 할 수 있습니다.",
+  "delete_rule_title": "규칙 삭제",
+  "delete_rule_description": "이 알림 규칙을 제거하시겠습니까?"
+}

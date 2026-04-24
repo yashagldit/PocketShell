@@ -1,0 +1,15 @@
+{
+  "requesting": "Запрос сессии...",
+  "connecting": "Установка P2P-соединения...",
+  "reconnecting": "Переподключение к хосту...",
+  "failed": "Ошибка подключения",
+  "closed": "Сессия закрыта",
+  "progress.requested": "Сессия запрошена",
+  "progress.connecting": "Установка P2P",
+  "progress.reconnecting": "Переподключение...",
+  "new_session": "Новая сессия",
+  "uploading_image": "Загрузка изображения",
+  "upload_success": "Загрузка завершена",
+  "upload_failed": "Ошибка загрузки",
+  "selection_modal_subtitle": "Используйте системные инструменты выделения текста."
+}
