@@ -532,7 +532,13 @@ impl WebRtcManager {
         if let Some(mut peer) = self.peers.remove(peer_key) {
             let tail = peer.collect_relay_delta().await;
             self.pending_relay_bytes = self.pending_relay_bytes.saturating_add(tail);
-            peer.close().await;
+            // webrtc-rs's RTCPeerConnection::close() can hang indefinitely when
+            // the ICE agent is already in a Failed state. Fire-and-forget with a
+            // timeout so a stuck close never wedges our caller (the main select
+            // loop calls this via poll_events → close_peer).
+            tokio::spawn(async move {
+                let _ = timeout(Duration::from_secs(5), peer.close()).await;
+            });
         }
         self.disconnected_since.remove(peer_key);
 
