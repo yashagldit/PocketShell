@@ -28,7 +28,7 @@ use futures_util::SinkExt;
 use rand::RngCore;
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
-use std::io::{BufReader, Read, Write};
+use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -2423,6 +2423,139 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                             let _ = tokio::time::timeout(
                                                 DOWNLOAD_SEND_TIMEOUT,
                                                 send_files_stream_frame(channel, &end, &[]),
+                                            ).await;
+                                        });
+                                        continue;
+                                    }
+
+                                    if action == "read_file_stream" {
+                                        // PSFB binary path to skip base64 — see read_file in
+                                        // files.rs for the text (signaling-friendly) variant.
+                                        let req_id_clone = request_id.clone();
+                                        let path_clone = path.clone();
+                                        let offset = payload
+                                            .get("offset")
+                                            .and_then(|v| v.as_u64())
+                                            .unwrap_or(0);
+                                        // Match read_file's MAX_READ_SIZE cap (512 KB). The
+                                        // mobile loader iterates, so a single request never
+                                        // has to be unbounded.
+                                        const MAX_READ_STREAM_SIZE: u64 = 512 * 1024;
+                                        let limit = payload
+                                            .get("limit")
+                                            .and_then(|v| v.as_u64())
+                                            .unwrap_or(MAX_READ_STREAM_SIZE)
+                                            .min(MAX_READ_STREAM_SIZE);
+
+                                        tokio::spawn(async move {
+                                            let send_error = |msg: String| {
+                                                let channel = std::sync::Arc::clone(&channel);
+                                                let req_id = req_id_clone.clone();
+                                                async move {
+                                                    let header = serde_json::json!({
+                                                        "op": "read_stream_error",
+                                                        "id": req_id,
+                                                        "error": msg,
+                                                    });
+                                                    let _ = send_files_stream_frame(channel, &header, &[]).await;
+                                                }
+                                            };
+
+                                            let canonical = match crate::files::resolve_file_path_for_transfer(&path_clone) {
+                                                Ok(p) => p,
+                                                Err(err) => {
+                                                    send_error(err.to_string()).await;
+                                                    return;
+                                                }
+                                            };
+                                            let metadata = match std::fs::metadata(&canonical) {
+                                                Ok(m) => m,
+                                                Err(err) => {
+                                                    send_error(err.to_string()).await;
+                                                    return;
+                                                }
+                                            };
+                                            if metadata.is_dir() {
+                                                send_error("cannot read a directory".to_string()).await;
+                                                return;
+                                            }
+
+                                            let size = metadata.len();
+                                            let end_offset = offset.saturating_add(limit).min(size);
+                                            let will_read = end_offset.saturating_sub(offset);
+                                            let truncated = (offset + will_read) < size;
+
+                                            let start_header = serde_json::json!({
+                                                "op": "read_stream_start",
+                                                "id": req_id_clone,
+                                                "size": size,
+                                                "truncated": truncated,
+                                            });
+                                            if let Err(e) = send_files_stream_frame(
+                                                std::sync::Arc::clone(&channel),
+                                                &start_header,
+                                                &[],
+                                            ).await {
+                                                warn!("files read_stream start send failed: {}", e);
+                                                return;
+                                            }
+
+                                            let mut file = match File::open(&canonical) {
+                                                Ok(f) => f,
+                                                Err(err) => {
+                                                    send_error(err.to_string()).await;
+                                                    return;
+                                                }
+                                            };
+                                            if offset > 0 {
+                                                if let Err(err) = file.seek(SeekFrom::Start(offset)) {
+                                                    send_error(err.to_string()).await;
+                                                    return;
+                                                }
+                                            }
+                                            let mut reader = BufReader::new(file);
+                                            let mut remaining = will_read;
+                                            let mut buf = vec![0u8; FILES_STREAM_CHUNK_SIZE];
+                                            while remaining > 0 {
+                                                let want = std::cmp::min(remaining as usize, buf.len());
+                                                let read = match reader.read(&mut buf[..want]) {
+                                                    Ok(n) => n,
+                                                    Err(err) => {
+                                                        send_error(err.to_string()).await;
+                                                        return;
+                                                    }
+                                                };
+                                                if read == 0 {
+                                                    break;
+                                                }
+                                                let header = serde_json::json!({
+                                                    "op": "read_stream_chunk",
+                                                    "id": req_id_clone,
+                                                });
+                                                match tokio::time::timeout(
+                                                    DOWNLOAD_SEND_TIMEOUT,
+                                                    send_files_stream_frame(std::sync::Arc::clone(&channel), &header, &buf[..read]),
+                                                ).await {
+                                                    Ok(Ok(())) => {}
+                                                    Ok(Err(e)) => {
+                                                        warn!("files read_stream chunk send failed: {}", e);
+                                                        return;
+                                                    }
+                                                    Err(_) => {
+                                                        warn!("files read_stream chunk send timed out req={}", req_id_clone);
+                                                        return;
+                                                    }
+                                                }
+                                                remaining -= read as u64;
+                                            }
+
+                                            let end_header = serde_json::json!({
+                                                "op": "read_stream_end",
+                                                "id": req_id_clone,
+                                            });
+                                            let _ = tokio::time::timeout(
+                                                DOWNLOAD_SEND_TIMEOUT,
+                                                send_files_stream_frame(channel, &end_header, &[]),
                                             ).await;
                                         });
                                         continue;
