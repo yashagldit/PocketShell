@@ -66,9 +66,10 @@ where
 /// webrtc-rs an IP literal, we sidestep that entirely. Falls back to IPv6 only
 /// if no A record exists. IP-literal URIs and unknown schemes are passed through.
 pub(crate) async fn resolve_uris_prefer_ipv4(uris: Vec<String>) -> Vec<String> {
+    let mut cache: HashMap<(String, u16), Option<std::net::IpAddr>> = HashMap::new();
     let mut out = Vec::with_capacity(uris.len());
     for uri in uris {
-        match resolve_one_uri(&uri).await {
+        match resolve_one_uri(&uri, &mut cache).await {
             Some(rewritten) => {
                 if rewritten != uri {
                     tracing::debug!(original = %uri, resolved = %rewritten, "rewrote TURN/STUN URI");
@@ -83,7 +84,10 @@ pub(crate) async fn resolve_uris_prefer_ipv4(uris: Vec<String>) -> Vec<String> {
     out
 }
 
-async fn resolve_one_uri(uri: &str) -> Option<String> {
+async fn resolve_one_uri(
+    uri: &str,
+    cache: &mut HashMap<(String, u16), Option<std::net::IpAddr>>,
+) -> Option<String> {
     let (scheme, rest) = uri.split_once(':')?;
     if !matches!(scheme, "turn" | "turns" | "stun" | "stuns") {
         return Some(uri.to_string());
@@ -99,10 +103,30 @@ async fn resolve_one_uri(uri: &str) -> Option<String> {
         return Some(uri.to_string());
     }
 
-    let host_owned = host.to_string();
+    let key = (host.to_string(), port);
+    let chosen = match cache.get(&key) {
+        Some(cached) => *cached,
+        None => {
+            let resolved = lookup_prefer_ipv4(host.to_string(), port).await;
+            cache.insert(key, resolved);
+            resolved
+        }
+    }?;
+
+    let new_host = match chosen {
+        std::net::IpAddr::V4(v4) => v4.to_string(),
+        std::net::IpAddr::V6(v6) => format!("[{v6}]"),
+    };
+    Some(match query {
+        Some(q) => format!("{scheme}:{new_host}:{port}?{q}"),
+        None => format!("{scheme}:{new_host}:{port}"),
+    })
+}
+
+async fn lookup_prefer_ipv4(host: String, port: u16) -> Option<std::net::IpAddr> {
     let lookup = tokio::task::spawn_blocking(move || {
         use std::net::ToSocketAddrs;
-        (host_owned.as_str(), port)
+        (host.as_str(), port)
             .to_socket_addrs()
             .map(|it| it.collect::<Vec<_>>())
             .unwrap_or_default()
@@ -111,20 +135,11 @@ async fn resolve_one_uri(uri: &str) -> Option<String> {
         .await
         .ok()?
         .ok()?;
-
-    let chosen = addrs
+    addrs
         .iter()
         .find(|a| a.is_ipv4())
-        .or_else(|| addrs.iter().find(|a| a.is_ipv6()))?;
-
-    let new_host = match chosen.ip() {
-        std::net::IpAddr::V4(v4) => v4.to_string(),
-        std::net::IpAddr::V6(v6) => format!("[{v6}]"),
-    };
-    Some(match query {
-        Some(q) => format!("{scheme}:{new_host}:{port}?{q}"),
-        None => format!("{scheme}:{new_host}:{port}"),
-    })
+        .or_else(|| addrs.iter().find(|a| a.is_ipv6()))
+        .map(|a| a.ip())
 }
 
 impl WebRtcPeer {
@@ -414,6 +429,31 @@ mod tests {
             "query string preserved: {}",
             out[0]
         );
+    }
+
+    #[tokio::test]
+    async fn resolve_uris_shares_host_across_uris() {
+        // Cloudflare returns several URIs (turn:host:3478?transport=udp,
+        // turn:host:3478?transport=tcp, stun:host:3478) that all point at the
+        // same host:port. The cache must collapse those into one DNS lookup,
+        // and all resulting URIs must rewrite to the same IP literal.
+        let out = resolve_uris_prefer_ipv4(vec![
+            "turn:localhost:3478?transport=udp".into(),
+            "turn:localhost:3478?transport=tcp".into(),
+            "stun:localhost:3478".into(),
+        ])
+        .await;
+        assert_eq!(out.len(), 3);
+        let extract_host = |s: &str| {
+            s.split(':').nth(1).map(|h| h.to_string())
+        };
+        let hosts: Vec<_> = out.iter().filter_map(|s| extract_host(s)).collect();
+        let first = &hosts[0];
+        assert!(
+            hosts.iter().all(|h| h == first),
+            "all rewritten hosts should match: {hosts:?}"
+        );
+        assert_ne!(first, "localhost", "should be replaced with IP literal");
     }
 
     async fn new_local_peer() -> WebRtcPeer {
