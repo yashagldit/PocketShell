@@ -46,5 +46,8 @@
   "terminal.resumeTitle": "फिर से शुरू करें: {{title}}",
   "scrollPill.latest": "नवीनतम",
   "scrollPill.new_one": "{{count}} नया",
-  "scrollPill.new_other": "{{count}} नए"
+  "scrollPill.new_other": "{{count}} नए",
+  "composer.status.connecting": "कनेक्ट हो रहा है…",
+  "composer.status.failed": "विफल",
+  "composer.status.closed": "बंद"
 }

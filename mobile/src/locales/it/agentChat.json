@@ -46,5 +46,8 @@
   "terminal.resumeTitle": "Riprendi: {{title}}",
   "scrollPill.latest": "Ultimi",
   "scrollPill.new_one": "{{count}} nuovo messaggio",
-  "scrollPill.new_other": "{{count}} nuovi messaggi"
+  "scrollPill.new_other": "{{count}} nuovi messaggi",
+  "composer.status.connecting": "Connessione…",
+  "composer.status.failed": "Errore",
+  "composer.status.closed": "Chiuso"
 }

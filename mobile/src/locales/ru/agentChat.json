@@ -46,5 +46,8 @@
   "terminal.resumeTitle": "Возобновление: {{title}}",
   "scrollPill.latest": "Последние",
   "scrollPill.new_one": "{{count}} новое сообщение",
-  "scrollPill.new_other": "{{count}} новых сообщений"
+  "scrollPill.new_other": "{{count}} новых сообщений",
+  "composer.status.connecting": "Подключение…",
+  "composer.status.failed": "Ошибка",
+  "composer.status.closed": "Закрыто"
 }

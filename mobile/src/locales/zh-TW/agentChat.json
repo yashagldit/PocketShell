@@ -46,5 +46,8 @@
   "terminal.resumeTitle": "恢復：{{title}}",
   "scrollPill.latest": "最新",
   "scrollPill.new_one": "{{count}} 條新訊息",
-  "scrollPill.new_other": "{{count}} 條新訊息"
+  "scrollPill.new_other": "{{count}} 條新訊息",
+  "composer.status.connecting": "連線中…",
+  "composer.status.failed": "失敗",
+  "composer.status.closed": "已關閉"
 }

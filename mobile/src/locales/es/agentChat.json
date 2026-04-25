@@ -46,5 +46,8 @@
   "terminal.resumeTitle": "Reanudar: {{title}}",
   "scrollPill.latest": "Últimos",
   "scrollPill.new_one": "{{count}} mensaje nuevo",
-  "scrollPill.new_other": "{{count}} mensajes nuevos"
+  "scrollPill.new_other": "{{count}} mensajes nuevos",
+  "composer.status.connecting": "Conectando…",
+  "composer.status.failed": "Falló",
+  "composer.status.closed": "Cerrado"
 }

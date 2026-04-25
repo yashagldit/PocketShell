@@ -45,6 +45,73 @@ use webrtc::data_channel::RTCDataChannel;
 /// Whether the backend kill-action is honored.
 const HONOR_KILL_ACTION: bool = true;
 
+/// Safety margin subtracted from the TURN cred TTL so we re-fetch slightly
+/// before they actually expire and never hand the WebRTC stack creds that
+/// die mid-handshake.
+const TURN_CACHE_SAFETY_MARGIN_SECS: u64 = 30;
+/// Floor for cached TTL so a backend that returns 0 doesn't put us back
+/// into a fetch-on-every-offer loop. Cloudflare typically returns 1h+.
+const TURN_CACHE_MIN_TTL_SECS: u64 = 60;
+
+#[derive(Clone)]
+struct CachedTurnCreds {
+    username: String,
+    credential: String,
+    uris: Vec<String>,
+    expires_at: Instant,
+}
+
+/// In-process cache for TURN credentials issued by the backend.
+///
+/// The backend's `/webrtc/turn-credentials` endpoint is rate-limited
+/// (default 30/hour per user). The host previously fetched fresh creds
+/// on every `files_offer`/`agent_offer`/`stats_offer`/`session_offer` and
+/// direct-host-transfer, which blew through the limit during normal use
+/// (each of the 4 peer types × mobile reconnects/StrictMode remounts) and
+/// left the host unable to answer with `Rate limit exceeded`. The mobile
+/// already caches creds for the full TTL — this mirrors that behavior.
+struct TurnCredsCache {
+    inner: tokio::sync::Mutex<Option<CachedTurnCreds>>,
+}
+
+impl TurnCredsCache {
+    fn new() -> Self {
+        Self {
+            inner: tokio::sync::Mutex::new(None),
+        }
+    }
+
+    async fn get(
+        &self,
+        backend: &BackendClient,
+        token: &str,
+    ) -> Result<(String, String, i64, Vec<String>)> {
+        let mut guard = self.inner.lock().await;
+        if let Some(cached) = guard.as_ref() {
+            if Instant::now() < cached.expires_at {
+                return Ok((
+                    cached.username.clone(),
+                    cached.credential.clone(),
+                    0,
+                    cached.uris.clone(),
+                ));
+            }
+        }
+        let (username, credential, ttl, uris) = backend.turn_credentials(token).await?;
+        let lifetime = (ttl.max(0) as u64)
+            .max(TURN_CACHE_MIN_TTL_SECS)
+            .saturating_sub(TURN_CACHE_SAFETY_MARGIN_SECS);
+        let expires_at = Instant::now() + Duration::from_secs(lifetime);
+        *guard = Some(CachedTurnCreds {
+            username: username.clone(),
+            credential: credential.clone(),
+            uris: uris.clone(),
+            expires_at,
+        });
+        Ok((username, credential, ttl, uris))
+    }
+}
+
 /// Build a signaling payload JSON value for an outbound SDP, attaching an
 /// ED25519 signature binding the SDP to the host's identity key so the mobile
 /// client can detect a MITM rewriting the DTLS fingerprint.
@@ -1104,6 +1171,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
 
     let host_id = store.host_id()?;
     let backend = BackendClient::new(config.backend_base_url.clone());
+    let turn_cache = TurnCredsCache::new();
 
     let mut stats = StatsCollector::new();
     let mut stats_active = false;
@@ -3273,6 +3341,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                             } else if let Err(err) = handle_signal(
                                 &mut store,
                                 &backend,
+                                &turn_cache,
                                 &shell,
                                 &mut sessions,
                                 msg,
@@ -3711,6 +3780,7 @@ async fn spawn_ws_agent_pump(
 async fn handle_signal(
     store: &mut StateStore,
     backend: &BackendClient,
+    turn_cache: &TurnCredsCache,
     shell: &str,
     sessions: &mut SessionManager,
     msg: SignalEnvelope,
@@ -3830,7 +3900,7 @@ async fn handle_signal(
             }
 
             let token = store.access_token()?.to_string();
-            let (username, credential, _ttl, uris) = match backend.turn_credentials(&token).await {
+            let (username, credential, _ttl, uris) = match turn_cache.get(backend, &token).await {
                 Ok(creds) => creds,
                 Err(err) => {
                     let _ = direct_transfer_event_tx.send(DirectHostTransferEvent::Result {
@@ -3987,7 +4057,7 @@ async fn handle_signal(
             }
 
             let token = store.access_token()?.to_string();
-            let (username, credential, _ttl, uris) = backend.turn_credentials(&token).await?;
+            let (username, credential, _ttl, uris) = turn_cache.get(backend, &token).await?;
             let peer = WebRtcPeer::new(uris, username, credential).await?;
             {
                 let transfer_id = transfer_id.clone();
@@ -5216,7 +5286,7 @@ async fn handle_signal(
             if let Some(payload) = &msg.payload {
                 if let Some(offer_sdp) = payload.get("sdp").and_then(|v| v.as_str()) {
                     let token = store.access_token()?.to_string();
-                    match backend.turn_credentials(&token).await {
+                    match turn_cache.get(backend, &token).await {
                         Ok((username, credential, _ttl, uris)) => {
                             match webrtc_mgr
                                 .handle_offer(
@@ -5319,7 +5389,7 @@ async fn handle_signal(
                 if let Some(offer_sdp) = payload.get("sdp").and_then(|v| v.as_str()) {
                     let token = store.access_token()?.to_string();
                     let peer_key = format!("stats:{mobile_device_id}");
-                    match backend.turn_credentials(&token).await {
+                    match turn_cache.get(backend, &token).await {
                         Ok((username, credential, _ttl, uris)) => {
                             match webrtc_mgr
                                 .handle_offer(
@@ -5408,7 +5478,7 @@ async fn handle_signal(
             if let Some(payload) = &msg.payload {
                 if let Some(offer_sdp) = payload.get("sdp").and_then(|v| v.as_str()) {
                     let token = store.access_token()?.to_string();
-                    match backend.turn_credentials(&token).await {
+                    match turn_cache.get(backend, &token).await {
                         Ok((username, credential, _ttl, uris)) => {
                             match webrtc_mgr
                                 .handle_offer(
@@ -5487,7 +5557,7 @@ async fn handle_signal(
             if let Some(payload) = &msg.payload {
                 if let Some(offer_sdp) = payload.get("sdp").and_then(|v| v.as_str()) {
                     let token = store.access_token()?.to_string();
-                    match backend.turn_credentials(&token).await {
+                    match turn_cache.get(backend, &token).await {
                         Ok((username, credential, _ttl, uris)) => {
                             match webrtc_mgr
                                 .handle_offer(

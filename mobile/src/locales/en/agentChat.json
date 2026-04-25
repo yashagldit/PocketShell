@@ -48,5 +48,8 @@
   "terminal.resumeTitle": "Resume: {{title}}",
   "scrollPill.latest": "Latest",
   "scrollPill.new_one": "{{count}} new",
-  "scrollPill.new_other": "{{count}} new"
+  "scrollPill.new_other": "{{count}} new",
+  "composer.status.connecting": "Connecting…",
+  "composer.status.failed": "Failed",
+  "composer.status.closed": "Closed"
 }

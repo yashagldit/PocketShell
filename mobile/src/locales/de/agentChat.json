@@ -46,5 +46,8 @@
   "terminal.resumeTitle": "Fortsetzen: {{title}}",
   "scrollPill.latest": "Neueste",
   "scrollPill.new_one": "{{count}} neu",
-  "scrollPill.new_other": "{{count}} neue"
+  "scrollPill.new_other": "{{count}} neue",
+  "composer.status.connecting": "Verbinden…",
+  "composer.status.failed": "Fehler",
+  "composer.status.closed": "Geschlossen"
 }

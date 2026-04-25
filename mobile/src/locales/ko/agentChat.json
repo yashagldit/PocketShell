@@ -46,5 +46,8 @@
   "terminal.resumeTitle": "재개: {{title}}",
   "scrollPill.latest": "최신",
   "scrollPill.new_one": "새 메시지 {{count}}개",
-  "scrollPill.new_other": "새 메시지 {{count}}개"
+  "scrollPill.new_other": "새 메시지 {{count}}개",
+  "composer.status.connecting": "연결 중…",
+  "composer.status.failed": "실패",
+  "composer.status.closed": "종료됨"
 }

@@ -46,5 +46,8 @@
   "terminal.resumeTitle": "再開: {{title}}",
   "scrollPill.latest": "最新",
   "scrollPill.new_one": "新着 {{count}} 件",
-  "scrollPill.new_other": "新着 {{count}} 件"
+  "scrollPill.new_other": "新着 {{count}} 件",
+  "composer.status.connecting": "接続中…",
+  "composer.status.failed": "失敗",
+  "composer.status.closed": "終了"
 }
