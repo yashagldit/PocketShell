@@ -3177,6 +3177,19 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                         };
                                         let _ = send_signal(&mut ws, &ice_msg).await;
                                     }
+                                } else if peer_key.starts_with("stats:") {
+                                    let mut extra = std::collections::HashMap::new();
+                                    extra.insert("mobile_device_id".to_string(), serde_json::json!(mobile_device_id));
+                                    let ice_msg = SignalEnvelope {
+                                        message_type: "stats_ice_candidate".to_string(),
+                                        session_id: None,
+                                        payload: Some(candidate_value),
+                                        state: None,
+                                        accepted: None,
+                                        reason: None,
+                                        extra,
+                                    };
+                                    let _ = send_signal(&mut ws, &ice_msg).await;
                                 } else if let Some(session_id) = peer_session_routes.get(&mobile_device_id).cloned() {
                                     let mut extra = std::collections::HashMap::new();
                                     extra.insert(
@@ -3194,19 +3207,10 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                     };
                                     let _ = send_signal(&mut ws, &ice_msg).await;
                                 } else {
-                                    // Stats-only peer — route via stats_ice_candidate
-                                    let mut extra = std::collections::HashMap::new();
-                                    extra.insert("mobile_device_id".to_string(), serde_json::json!(mobile_device_id));
-                                    let ice_msg = SignalEnvelope {
-                                        message_type: "stats_ice_candidate".to_string(),
-                                        session_id: None,
-                                        payload: Some(candidate_value),
-                                        state: None,
-                                        accepted: None,
-                                        reason: None,
-                                        extra,
-                                    };
-                                    let _ = send_signal(&mut ws, &ice_msg).await;
+                                    warn!(
+                                        "dropping ICE candidate: no route for peer_key={} mobile={}",
+                                        peer_key, mobile_device_id
+                                    );
                                 }
                             }
                         }
@@ -5314,11 +5318,12 @@ async fn handle_signal(
             if let Some(payload) = &msg.payload {
                 if let Some(offer_sdp) = payload.get("sdp").and_then(|v| v.as_str()) {
                     let token = store.access_token()?.to_string();
+                    let peer_key = format!("stats:{mobile_device_id}");
                     match backend.turn_credentials(&token).await {
                         Ok((username, credential, _ttl, uris)) => {
                             match webrtc_mgr
                                 .handle_offer(
-                                    &mobile_device_id,
+                                    &peer_key,
                                     uris,
                                     username,
                                     credential,
@@ -5600,8 +5605,9 @@ async fn handle_signal(
                     webrtc::ice_transport::ice_candidate::RTCIceCandidateInit,
                 >(payload.clone())
                 {
+                    let peer_key = format!("stats:{mobile_device_id}");
                     if let Err(e) = webrtc_mgr
-                        .add_ice_candidate(&mobile_device_id, candidate)
+                        .add_ice_candidate(&peer_key, candidate)
                         .await
                     {
                         warn!("webrtc stats add_ice_candidate failed: {}", e);

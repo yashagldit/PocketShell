@@ -248,6 +248,7 @@ fn base_mobile_id(peer_key: &str) -> &str {
     peer_key
         .strip_prefix("files:")
         .or_else(|| peer_key.strip_prefix("agent:"))
+        .or_else(|| peer_key.strip_prefix("stats:"))
         .unwrap_or(peer_key)
 }
 
@@ -282,8 +283,12 @@ impl WebRtcManager {
                 let state = peer.connection_state();
                 // Don't replace a peer that is still connecting — TURN allocation
                 // can take several seconds and killing it mid-flight causes cascading
-                // failures.  Return empty answer so the mobile knows to wait.
-                if state == RTCPeerConnectionState::Connecting {
+                // failures. Exception: if the caller explicitly asked for a fresh
+                // peer (`force_new_peer`), the mobile side has already torn down
+                // its end and the existing peer is dead from its perspective; keeping
+                // it just causes a 30s ICE timeout. Return empty otherwise so the
+                // mobile knows to wait.
+                if state == RTCPeerConnectionState::Connecting && !force_new_peer {
                     warn!(
                         "skipping offer for peer_key={} — peer still connecting",
                         peer_key
@@ -917,6 +922,21 @@ mod tests {
     #[test]
     fn base_mobile_id_handles_empty_after_agent_prefix() {
         assert_eq!(base_mobile_id("agent:"), "");
+    }
+
+    #[test]
+    fn base_mobile_id_strips_stats_prefix() {
+        assert_eq!(base_mobile_id("stats:abc-123"), "abc-123");
+    }
+
+    #[test]
+    fn base_mobile_id_handles_empty_after_stats_prefix() {
+        assert_eq!(base_mobile_id("stats:"), "");
+    }
+
+    #[test]
+    fn base_mobile_id_only_strips_stats_at_prefix() {
+        assert_eq!(base_mobile_id("foo-stats:bar"), "foo-stats:bar");
     }
 
     #[test]
