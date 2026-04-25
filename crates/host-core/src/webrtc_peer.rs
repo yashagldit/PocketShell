@@ -57,6 +57,76 @@ where
         .collect()
 }
 
+/// Resolve hostnames in `turn:`/`stun:` URIs to an IP literal, preferring IPv4.
+///
+/// webrtc-rs's ICE gatherer does not retry across address families: if libc
+/// returns an AAAA record first and the host has no working IPv6 route (common
+/// on cheap VPS providers), the gather call fails with `Network is unreachable`
+/// and no relay/srflx candidate is produced. By pre-resolving and feeding
+/// webrtc-rs an IP literal, we sidestep that entirely. Falls back to IPv6 only
+/// if no A record exists. IP-literal URIs and unknown schemes are passed through.
+pub(crate) async fn resolve_uris_prefer_ipv4(uris: Vec<String>) -> Vec<String> {
+    let mut out = Vec::with_capacity(uris.len());
+    for uri in uris {
+        match resolve_one_uri(&uri).await {
+            Some(rewritten) => {
+                if rewritten != uri {
+                    tracing::debug!(original = %uri, resolved = %rewritten, "rewrote TURN/STUN URI");
+                }
+                out.push(rewritten);
+            }
+            None => {
+                tracing::warn!(uri = %uri, "could not resolve TURN/STUN URI; dropping");
+            }
+        }
+    }
+    out
+}
+
+async fn resolve_one_uri(uri: &str) -> Option<String> {
+    let (scheme, rest) = uri.split_once(':')?;
+    if !matches!(scheme, "turn" | "turns" | "stun" | "stuns") {
+        return Some(uri.to_string());
+    }
+    let (hostport, query) = match rest.split_once('?') {
+        Some((h, q)) => (h, Some(q)),
+        None => (rest, None),
+    };
+    let (host, port_s) = hostport.rsplit_once(':')?;
+    let port: u16 = port_s.parse().ok()?;
+
+    if host.parse::<std::net::IpAddr>().is_ok() {
+        return Some(uri.to_string());
+    }
+
+    let host_owned = host.to_string();
+    let lookup = tokio::task::spawn_blocking(move || {
+        use std::net::ToSocketAddrs;
+        (host_owned.as_str(), port)
+            .to_socket_addrs()
+            .map(|it| it.collect::<Vec<_>>())
+            .unwrap_or_default()
+    });
+    let addrs = tokio::time::timeout(std::time::Duration::from_secs(3), lookup)
+        .await
+        .ok()?
+        .ok()?;
+
+    let chosen = addrs
+        .iter()
+        .find(|a| a.is_ipv4())
+        .or_else(|| addrs.iter().find(|a| a.is_ipv6()))?;
+
+    let new_host = match chosen.ip() {
+        std::net::IpAddr::V4(v4) => v4.to_string(),
+        std::net::IpAddr::V6(v6) => format!("[{v6}]"),
+    };
+    Some(match query {
+        Some(q) => format!("{scheme}:{new_host}:{port}?{q}"),
+        None => format!("{scheme}:{new_host}:{port}"),
+    })
+}
+
 impl WebRtcPeer {
     pub async fn new(turn_uris: Vec<String>, username: String, credential: String) -> Result<Self> {
         let mut media = MediaEngine::default();
@@ -66,9 +136,10 @@ impl WebRtcPeer {
 
         let api = APIBuilder::new().with_media_engine(media).build();
         let supported_uris = filter_supported_turn_uris(turn_uris);
+        let resolved_uris = resolve_uris_prefer_ipv4(supported_uris).await;
         let config = RTCConfiguration {
             ice_servers: vec![RTCIceServer {
-                urls: supported_uris,
+                urls: resolved_uris,
                 username,
                 credential,
                 ..Default::default()
@@ -297,6 +368,52 @@ mod tests {
     fn filter_turn_uris_empty_input_yields_empty() {
         let out: Vec<String> = filter_supported_turn_uris(Vec::<String>::new());
         assert!(out.is_empty());
+    }
+
+    #[tokio::test]
+    async fn resolve_uris_passes_through_ip_literal() {
+        let out = resolve_uris_prefer_ipv4(vec![
+            "turn:1.2.3.4:3478?transport=udp".into(),
+            "stun:5.6.7.8:3478".into(),
+        ])
+        .await;
+        assert_eq!(
+            out,
+            vec![
+                "turn:1.2.3.4:3478?transport=udp",
+                "stun:5.6.7.8:3478",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_uris_passes_through_unknown_scheme() {
+        let out = resolve_uris_prefer_ipv4(vec!["https://example.com/turn".into()]).await;
+        assert_eq!(out, vec!["https://example.com/turn"]);
+    }
+
+    #[tokio::test]
+    async fn resolve_uris_rewrites_hostname_to_ipv4() {
+        let out = resolve_uris_prefer_ipv4(vec!["stun:localhost:3478".into()]).await;
+        assert_eq!(out.len(), 1, "expected one URI back, got {out:?}");
+        let rewritten = &out[0];
+        assert!(rewritten.starts_with("stun:"), "scheme preserved: {rewritten}");
+        assert!(rewritten.ends_with(":3478"), "port preserved: {rewritten}");
+        assert!(
+            !rewritten.contains("localhost"),
+            "hostname should be replaced with an IP literal: {rewritten}"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_uris_preserves_query_string() {
+        let out = resolve_uris_prefer_ipv4(vec!["turn:localhost:3478?transport=udp".into()]).await;
+        assert_eq!(out.len(), 1);
+        assert!(
+            out[0].ends_with("?transport=udp"),
+            "query string preserved: {}",
+            out[0]
+        );
     }
 
     async fn new_local_peer() -> WebRtcPeer {
