@@ -28,6 +28,8 @@
   "error.openFailed": "Failed to open agent chat",
   "error.resumeFailed": "Failed to resume session",
   "error.loadOlderFailed": "Failed to load older messages",
+  "error.loadHistoryFailed": "Couldn't load transcript history",
+  "loadHistory.progress": "Loading transcript… {{loaded}} / {{total}}",
   "error.prepareImageFailed": "Failed to prepare image",
   "toolSheet.eyebrow": "Tool details",
   "toolSheet.subtitle": "{{count}} calls in this batch",
