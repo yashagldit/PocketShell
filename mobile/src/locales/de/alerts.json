@@ -34,5 +34,7 @@
   "history.acknowledge": "Antippen zum Bestätigen",
   "history.actual": "Aktuell:",
   "history.threshold": "Schwellwert:",
-  "badge.acknowledged": "bestätigt"
+  "badge.acknowledged": "bestätigt",
+  "permission.title": "Benachrichtigungen deaktiviert",
+  "permission.message": "Aktiviere Benachrichtigungen in den Systemeinstellungen, um Alarme auf diesem Gerät zu erhalten."
 }

@@ -34,5 +34,7 @@
   "history.acknowledge": "タップして確認",
   "history.actual": "実測値：",
   "history.threshold": "しきい値：",
-  "badge.acknowledged": "確認済み"
+  "badge.acknowledged": "確認済み",
+  "permission.title": "通知が無効です",
+  "permission.message": "このデバイスでアラートを受信するには、システム設定で通知を有効にしてください。"
 }

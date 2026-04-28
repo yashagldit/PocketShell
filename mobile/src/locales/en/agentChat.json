@@ -63,5 +63,16 @@
   "scrollPill.new_other": "{{count}} new",
   "composer.status.connecting": "Connecting…",
   "composer.status.failed": "Failed",
-  "composer.status.closed": "Closed"
+  "composer.status.closed": "Closed",
+  "switcher.title": "Switch chat",
+  "switcher.segment.thisProject": "This project ({{count}})",
+  "switcher.segment.allProjects": "All projects ({{count}})",
+  "switcher.empty.projectTitle": "No other chats here",
+  "switcher.empty.projectSubtitle": "This is your only chat in this project. Switch to All projects to see more.",
+  "switcher.empty.allTitle": "No chats yet",
+  "switcher.empty.allSubtitle": "Start a new chat to see it here.",
+  "switcher.retry": "Retry",
+  "switcher.noProject": "No project",
+  "switcher.upgrade_one": "{{count}} more chat — upgrade to PocketShell Pro to view",
+  "switcher.upgrade_other": "{{count}} more chats — upgrade to PocketShell Pro to view"
 }

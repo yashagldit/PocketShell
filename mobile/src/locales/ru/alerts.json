@@ -34,5 +34,7 @@
   "history.acknowledge": "Нажмите, чтобы подтвердить",
   "history.actual": "Тек.:",
   "history.threshold": "Порог:",
-  "badge.acknowledged": "подтверждено"
+  "badge.acknowledged": "подтверждено",
+  "permission.title": "Уведомления отключены",
+  "permission.message": "Включите уведомления в системных настройках, чтобы получать оповещения на этом устройстве."
 }

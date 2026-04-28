@@ -34,5 +34,7 @@
   "history.acknowledge": "点击以确认",
   "history.actual": "实际值：",
   "history.threshold": "阈值：",
-  "badge.acknowledged": "已确认"
+  "badge.acknowledged": "已确认",
+  "permission.title": "通知已关闭",
+  "permission.message": "请在系统设置中开启通知以在此设备上接收警报。"
 }

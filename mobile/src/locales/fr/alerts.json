@@ -34,5 +34,7 @@
   "history.acknowledge": "Appuyez pour acquitter",
   "history.actual": "Actuel :",
   "history.threshold": "Seuil :",
-  "badge.acknowledged": "acquittée"
+  "badge.acknowledged": "acquittée",
+  "permission.title": "Notifications désactivées",
+  "permission.message": "Activez les notifications dans les réglages système pour recevoir les alertes sur cet appareil."
 }

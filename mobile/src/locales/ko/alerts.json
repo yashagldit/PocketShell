@@ -34,5 +34,7 @@
   "history.acknowledge": "탭하여 확인",
   "history.actual": "현재값:",
   "history.threshold": "임계값:",
-  "badge.acknowledged": "확인됨"
+  "badge.acknowledged": "확인됨",
+  "permission.title": "알림이 비활성화됨",
+  "permission.message": "이 기기에서 알림을 받으려면 시스템 설정에서 알림을 활성화하세요."
 }

@@ -34,5 +34,7 @@
   "history.acknowledge": "點擊以確認",
   "history.actual": "實際值：",
   "history.threshold": "閾值：",
-  "badge.acknowledged": "已確認"
+  "badge.acknowledged": "已確認",
+  "permission.title": "通知已關閉",
+  "permission.message": "請在系統設定中開啟通知，以在此裝置上接收警示。"
 }

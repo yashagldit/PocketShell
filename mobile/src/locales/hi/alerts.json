@@ -34,5 +34,7 @@
   "history.acknowledge": "स्वीकार करने के लिए टैप करें",
   "history.actual": "वास्तविक:",
   "history.threshold": "थ्रेशोल्ड:",
-  "badge.acknowledged": "स्वीकृत"
+  "badge.acknowledged": "स्वीकृत",
+  "permission.title": "नोटिफिकेशन बंद हैं",
+  "permission.message": "इस डिवाइस पर अलर्ट पाने के लिए सिस्टम सेटिंग्स में नोटिफिकेशन चालू करें।"
 }

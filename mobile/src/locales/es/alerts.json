@@ -34,5 +34,7 @@
   "history.acknowledge": "Toca para confirmar",
   "history.actual": "Actual:",
   "history.threshold": "Umbral:",
-  "badge.acknowledged": "confirmada"
+  "badge.acknowledged": "confirmada",
+  "permission.title": "Notificaciones desactivadas",
+  "permission.message": "Activa las notificaciones en los ajustes del sistema para recibir alertas en este dispositivo."
 }

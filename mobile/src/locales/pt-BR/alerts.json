@@ -34,5 +34,7 @@
   "history.acknowledge": "Toque para reconhecer",
   "history.actual": "Atual:",
   "history.threshold": "Limite:",
-  "badge.acknowledged": "reconhecido"
+  "badge.acknowledged": "reconhecido",
+  "permission.title": "Notificações desativadas",
+  "permission.message": "Ative as notificações nas configurações do sistema para receber alertas neste dispositivo."
 }

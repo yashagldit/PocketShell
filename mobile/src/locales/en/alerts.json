@@ -34,5 +34,7 @@
   "history.acknowledge": "Tap to acknowledge",
   "history.actual": "Actual:",
   "history.threshold": "Threshold:",
-  "badge.acknowledged": "acknowledged"
+  "badge.acknowledged": "acknowledged",
+  "permission.title": "Notifications disabled",
+  "permission.message": "Enable notifications in system settings to receive alerts on this device."
 }
