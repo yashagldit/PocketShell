@@ -1,9 +1,13 @@
 {
   "screen.title": "Vinculación de host",
+  "scan_qr_button": "Escanear QR de equipo",
+  "or": "o",
   "instruction": "Ejecuta esto en tu escritorio:",
   "pairing_code": "Código de vinculación",
   "command_copied": "Comando copiado al portapapeles",
   "paired_successfully": "¡Host vinculado correctamente!",
+  "reconnected_successfully": "¡Dispositivo reconectado correctamente!",
+  "done": "Listo",
   "give_nickname": "Ponle un nombre a tu host",
   "device_hostname": "Nombre de host del dispositivo: {{hostname}}",
   "device_hostname_label": "Nombre de host del dispositivo:",

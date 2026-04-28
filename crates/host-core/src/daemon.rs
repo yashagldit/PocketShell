@@ -1474,6 +1474,12 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                     // New devices are NEVER added here — only via `pocketshell pair`.
                     if let Ok(token) = store.access_token().map(|s| s.to_string()) {
                         if let Ok(devices) = backend.list_trusted_devices(&token, &host_id).await {
+                            // Rebase trust on whatever the CLI may have written since we
+                            // last loaded, so we don't drop a freshly paired device when
+                            // we write our revocations back out.
+                            if let Err(e) = store.reload_trust() {
+                                warn!("reload_trust before revocation tick failed: {e}");
+                            }
                             let removed = store.apply_revocations(&devices);
                             for revoked_id in &removed {
                                 info!("device {} revoked via backend sync — closing sessions", revoked_id);
@@ -1498,7 +1504,9 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                 }
                             }
                             if !removed.is_empty() {
-                                let _ = store.save();
+                                // Use save_full so the revocation actually persists; we
+                                // already rebased trust from disk above.
+                                let _ = store.save_full();
                             }
                         }
                     }

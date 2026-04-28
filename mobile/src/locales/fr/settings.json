@@ -30,5 +30,16 @@
   "dark_theme": "Sombre",
   "default_display_name": "Utilisateur",
   "biometric_auth_failed": "Échec de l'authentification biométrique",
-  "export_failed": "Échec de l'exportation"
+  "export_failed": "Échec de l'exportation",
+  "devices.action_title": "{{name}}",
+  "devices.action_message": "Choisissez quoi faire avec cet appareil. « Déconnecter » le déconnecte mais conserve son accès à vos hôtes. « Révoquer l'accès » le retire aussi de tous les hôtes jumelés (vérification par e-mail requise).",
+  "devices.action_logout": "Déconnecter",
+  "devices.action_revoke": "Déconnecter et révoquer l'accès",
+  "devices.revoke_otp_title": "Vérifiez qu'il s'agit bien de vous",
+  "devices.revoke_otp_message": "Nous avons envoyé un code à 6 chiffres à votre e-mail. Saisissez-le pour révoquer l'accès de {{name}}.",
+  "devices.revoke_otp_placeholder": "Code à 6 chiffres",
+  "devices.revoke_otp_submit": "Révoquer l'accès",
+  "devices.revoke_otp_invalid": "Code invalide ou expiré",
+  "devices.revoke_otp_send_failed": "Impossible d'envoyer le code de vérification",
+  "devices.revoke_access_success": "Accès révoqué"
 }

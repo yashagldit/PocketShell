@@ -30,5 +30,16 @@
   "dark_theme": "Oscuro",
   "default_display_name": "Usuario",
   "biometric_auth_failed": "Autenticación fallida",
-  "export_failed": "Error al exportar"
+  "export_failed": "Error al exportar",
+  "devices.action_title": "{{name}}",
+  "devices.action_message": "Elige qué hacer con este dispositivo. «Cerrar sesión» lo desconecta pero conserva su acceso a tus hosts. «Revocar acceso» también lo elimina de todos los hosts vinculados (requiere verificación por correo).",
+  "devices.action_logout": "Cerrar sesión",
+  "devices.action_revoke": "Cerrar sesión y revocar acceso",
+  "devices.revoke_otp_title": "Verifica que eres tú",
+  "devices.revoke_otp_message": "Enviamos un código de 6 dígitos a tu correo. Ingrésalo para revocar el acceso de {{name}}.",
+  "devices.revoke_otp_placeholder": "Código de 6 dígitos",
+  "devices.revoke_otp_submit": "Revocar acceso",
+  "devices.revoke_otp_invalid": "Código inválido o expirado",
+  "devices.revoke_otp_send_failed": "No se pudo enviar el código de verificación",
+  "devices.revoke_access_success": "Acceso revocado"
 }

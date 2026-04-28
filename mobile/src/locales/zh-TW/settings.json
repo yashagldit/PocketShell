@@ -30,5 +30,16 @@
   "dark_theme": "深色",
   "default_display_name": "用戶",
   "biometric_auth_failed": "身分驗證失敗",
-  "export_failed": "匯出失敗"
+  "export_failed": "匯出失敗",
+  "devices.action_title": "{{name}}",
+  "devices.action_message": "選擇對此裝置執行的操作。「登出」會讓該裝置登出但保留其對主機的存取權。「撤銷存取權」會額外將其從所有已配對的主機中移除（需要電子郵件驗證）。",
+  "devices.action_logout": "登出",
+  "devices.action_revoke": "登出並撤銷存取權",
+  "devices.revoke_otp_title": "驗證身份",
+  "devices.revoke_otp_message": "我們已將 6 位驗證碼發送到您的電子郵件。輸入驗證碼以撤銷 {{name}} 的存取權。",
+  "devices.revoke_otp_placeholder": "6 位驗證碼",
+  "devices.revoke_otp_submit": "撤銷存取權",
+  "devices.revoke_otp_invalid": "驗證碼無效或已過期",
+  "devices.revoke_otp_send_failed": "無法發送驗證碼",
+  "devices.revoke_access_success": "已撤銷存取權"
 }

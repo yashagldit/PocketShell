@@ -30,5 +30,16 @@
   "dark_theme": "डार्क",
   "default_display_name": "उपयोगकर्ता",
   "biometric_auth_failed": "प्रमाणीकरण विफल",
-  "export_failed": "निर्यात विफल"
+  "export_failed": "निर्यात विफल",
+  "devices.action_title": "{{name}}",
+  "devices.action_message": "इस डिवाइस के साथ क्या करें चुनें। \"लॉग आउट\" इसे साइन आउट करता है लेकिन होस्ट का एक्सेस बना रहता है। \"एक्सेस रद्द करें\" इसे आपके पेयर किए गए हर होस्ट से भी हटा देता है (ईमेल वेरिफिकेशन ज़रूरी)।",
+  "devices.action_logout": "लॉग आउट",
+  "devices.action_revoke": "लॉग आउट और एक्सेस रद्द करें",
+  "devices.revoke_otp_title": "पुष्टि करें कि यह आप हैं",
+  "devices.revoke_otp_message": "हमने आपकी ईमेल पर 6-अंकीय कोड भेजा है। {{name}} का एक्सेस रद्द करने के लिए इसे दर्ज करें।",
+  "devices.revoke_otp_placeholder": "6-अंकीय कोड",
+  "devices.revoke_otp_submit": "एक्सेस रद्द करें",
+  "devices.revoke_otp_invalid": "अमान्य या समाप्त कोड",
+  "devices.revoke_otp_send_failed": "वेरिफिकेशन कोड नहीं भेजा जा सका",
+  "devices.revoke_access_success": "एक्सेस रद्द कर दिया गया"
 }

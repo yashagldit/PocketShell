@@ -1,9 +1,13 @@
 {
   "screen.title": "Pareamento de Host",
+  "scan_qr_button": "Escanear QR do host",
+  "or": "ou",
   "instruction": "Execute isto no seu computador:",
   "pairing_code": "Código de pareamento",
   "command_copied": "Comando copiado para a área de transferência",
   "paired_successfully": "Host pareado com sucesso!",
+  "reconnected_successfully": "Dispositivo reconectado com sucesso!",
+  "done": "Concluído",
   "give_nickname": "Dê um apelido ao seu host",
   "device_hostname": "Hostname do dispositivo: {{hostname}}",
   "device_hostname_label": "Hostname do dispositivo:",

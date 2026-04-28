@@ -2,7 +2,7 @@
   "sign_out_title": "Sign out",
   "sign_out_description": "You will need to sign in again to access your hosts.",
   "replace_device_key_title": "Replace Device Key?",
-  "replace_device_key_description": "This will replace your current device key. You may need to re-pair with hosts that don't recognize the imported key.",
+  "replace_device_key_description": "This will replace your current device key. You may need to reconnect to hosts that don't recognize the imported key.",
   "delete_rule_title": "Delete rule",
   "delete_rule_description": "Remove this alert rule?"
 }

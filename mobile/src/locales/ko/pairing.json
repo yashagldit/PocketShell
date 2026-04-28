@@ -1,9 +1,13 @@
 {
   "screen.title": "호스트 페어링",
+  "scan_qr_button": "호스트 QR 스캔",
+  "or": "또는",
   "instruction": "데스크톱에서 다음을 실행하세요:",
   "pairing_code": "페어링 코드",
   "command_copied": "명령어가 클립보드에 복사되었습니다",
   "paired_successfully": "호스트가 성공적으로 페어링되었습니다!",
+  "reconnected_successfully": "장치가 다시 연결되었습니다!",
+  "done": "완료",
   "give_nickname": "호스트의 별명을 지어주세요",
   "device_hostname": "장치 호스트 이름: {{hostname}}",
   "device_hostname_label": "장치 호스트 이름:",

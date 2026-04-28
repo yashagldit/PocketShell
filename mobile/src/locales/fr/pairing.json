@@ -1,9 +1,13 @@
 {
   "screen.title": "Jumelage d'hôte",
+  "scan_qr_button": "Scanner le QR de l'hôte",
+  "or": "ou",
   "instruction": "Exécutez ceci sur votre bureau :",
   "pairing_code": "Code de jumelage",
   "command_copied": "Commande copiée dans le presse-papiers",
   "paired_successfully": "Hôte jumelé avec succès !",
+  "reconnected_successfully": "Appareil reconnecté avec succès !",
+  "done": "Terminé",
   "give_nickname": "Donnez un surnom à votre hôte",
   "device_hostname": "Nom d'hôte de l'appareil : {{hostname}}",
   "device_hostname_label": "Nom d'hôte de l'appareil :",

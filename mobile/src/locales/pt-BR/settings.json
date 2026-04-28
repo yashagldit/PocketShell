@@ -30,5 +30,16 @@
   "dark_theme": "Escuro",
   "default_display_name": "Usuário",
   "biometric_auth_failed": "Autenticação biométrica falhou",
-  "export_failed": "Falha na exportação"
+  "export_failed": "Falha na exportação",
+  "devices.action_title": "{{name}}",
+  "devices.action_message": "Escolha o que fazer com este dispositivo. \"Sair\" o desconecta mas mantém o acesso aos hosts. \"Revogar acesso\" também o remove de todos os hosts pareados (verificação por e-mail necessária).",
+  "devices.action_logout": "Sair",
+  "devices.action_revoke": "Sair e revogar acesso",
+  "devices.revoke_otp_title": "Confirme que é você",
+  "devices.revoke_otp_message": "Enviamos um código de 6 dígitos para o seu e-mail. Digite-o para revogar o acesso de {{name}}.",
+  "devices.revoke_otp_placeholder": "Código de 6 dígitos",
+  "devices.revoke_otp_submit": "Revogar acesso",
+  "devices.revoke_otp_invalid": "Código inválido ou expirado",
+  "devices.revoke_otp_send_failed": "Não foi possível enviar o código de verificação",
+  "devices.revoke_access_success": "Acesso revogado"
 }

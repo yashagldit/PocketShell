@@ -1,9 +1,13 @@
 {
   "screen.title": "होस्ट जोड़ें",
+  "scan_qr_button": "होस्ट QR स्कैन करें",
+  "or": "या",
   "instruction": "यह अपने डेस्कटॉप पर चलाएँ:",
   "pairing_code": "पेयरिंग कोड",
   "command_copied": "कमांड क्लिपबोर्ड पर कॉपी किया गया",
   "paired_successfully": "होस्ट सफलतापूर्वक जोड़ा गया!",
+  "reconnected_successfully": "डिवाइस सफलतापूर्वक पुनः कनेक्ट हुआ!",
+  "done": "हो गया",
   "give_nickname": "अपने होस्ट को एक उपनाम दें",
   "device_hostname": "डिवाइस होस्टनेम: {{hostname}}",
   "device_hostname_label": "डिवाइस होस्टनेम:",

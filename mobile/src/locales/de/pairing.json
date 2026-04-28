@@ -1,9 +1,13 @@
 {
   "screen.title": "Host koppeln",
+  "scan_qr_button": "Host-QR scannen",
+  "or": "oder",
   "instruction": "Führe dies auf deinem Desktop aus:",
   "pairing_code": "Kopplungscode",
   "command_copied": "Befehl in Zwischenablage kopiert",
   "paired_successfully": "Host erfolgreich gekoppelt!",
+  "reconnected_successfully": "Gerät erfolgreich neu verbunden!",
+  "done": "Fertig",
   "give_nickname": "Gib deinem Host einen Spitznamen",
   "device_hostname": "Gerätename: {{hostname}}",
   "device_hostname_label": "Gerätename:",

@@ -30,5 +30,16 @@
   "dark_theme": "Dunkel",
   "default_display_name": "Benutzer",
   "biometric_auth_failed": "Authentifizierung fehlgeschlagen",
-  "export_failed": "Export fehlgeschlagen"
+  "export_failed": "Export fehlgeschlagen",
+  "devices.action_title": "{{name}}",
+  "devices.action_message": "Wähle aus, was mit diesem Gerät passieren soll. \"Abmelden\" meldet es ab, behält aber den Hostzugriff. \"Zugriff entziehen\" entfernt es zusätzlich von allen gekoppelten Hosts (E-Mail-Bestätigung erforderlich).",
+  "devices.action_logout": "Abmelden",
+  "devices.action_revoke": "Abmelden & Zugriff entziehen",
+  "devices.revoke_otp_title": "Bestätige deine Identität",
+  "devices.revoke_otp_message": "Wir haben einen 6-stelligen Code an deine E-Mail gesendet. Gib ihn ein, um den Zugriff für {{name}} zu entziehen.",
+  "devices.revoke_otp_placeholder": "6-stelliger Code",
+  "devices.revoke_otp_submit": "Zugriff entziehen",
+  "devices.revoke_otp_invalid": "Ungültiger oder abgelaufener Code",
+  "devices.revoke_otp_send_failed": "Bestätigungscode konnte nicht gesendet werden",
+  "devices.revoke_access_success": "Zugriff entzogen"
 }

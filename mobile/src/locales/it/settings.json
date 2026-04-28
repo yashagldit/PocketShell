@@ -30,5 +30,16 @@
   "dark_theme": "Scuro",
   "default_display_name": "Utente",
   "biometric_auth_failed": "Autenticazione biometrica fallita",
-  "export_failed": "Esportazione fallita"
+  "export_failed": "Esportazione fallita",
+  "devices.action_title": "{{name}}",
+  "devices.action_message": "Scegli cosa fare con questo dispositivo. \"Esci\" lo disconnette ma mantiene l'accesso ai tuoi host. \"Revoca accesso\" lo rimuove anche da tutti gli host associati (richiede verifica via e-mail).",
+  "devices.action_logout": "Esci",
+  "devices.action_revoke": "Esci e revoca accesso",
+  "devices.revoke_otp_title": "Verifica che sei tu",
+  "devices.revoke_otp_message": "Abbiamo inviato un codice a 6 cifre alla tua e-mail. Inseriscilo per revocare l'accesso di {{name}}.",
+  "devices.revoke_otp_placeholder": "Codice a 6 cifre",
+  "devices.revoke_otp_submit": "Revoca accesso",
+  "devices.revoke_otp_invalid": "Codice non valido o scaduto",
+  "devices.revoke_otp_send_failed": "Impossibile inviare il codice di verifica",
+  "devices.revoke_access_success": "Accesso revocato"
 }

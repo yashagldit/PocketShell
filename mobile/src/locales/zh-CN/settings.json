@@ -30,5 +30,16 @@
   "dark_theme": "深色",
   "default_display_name": "用户",
   "biometric_auth_failed": "身份验证失败",
-  "export_failed": "导出失败"
+  "export_failed": "导出失败",
+  "devices.action_title": "{{name}}",
+  "devices.action_message": "选择对该设备执行的操作。\"退出登录\"会让该设备退出登录但保留其对主机的访问权限。\"撤销访问权限\"还会将其从所有已配对的主机中移除（需要邮箱验证）。",
+  "devices.action_logout": "退出登录",
+  "devices.action_revoke": "退出登录并撤销访问权限",
+  "devices.revoke_otp_title": "验证身份",
+  "devices.revoke_otp_message": "我们已向您的邮箱发送了 6 位验证码。输入验证码以撤销 {{name}} 的访问权限。",
+  "devices.revoke_otp_placeholder": "6 位验证码",
+  "devices.revoke_otp_submit": "撤销访问权限",
+  "devices.revoke_otp_invalid": "验证码无效或已过期",
+  "devices.revoke_otp_send_failed": "无法发送验证码",
+  "devices.revoke_access_success": "已撤销访问权限"
 }

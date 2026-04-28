@@ -232,6 +232,8 @@ async fn pair(config: AppConfig, code: Option<String>, reset: bool) -> Result<()
         access_expires_at: parse_jwt_exp(&response.access_token),
     });
 
+    let was_device_add = response.already_paired;
+
     if response.already_paired {
         // Device-add flow: host identity already exists locally.
         store.save().context("persisting refreshed auth")?;
@@ -285,9 +287,20 @@ async fn pair(config: AppConfig, code: Option<String>, reset: bool) -> Result<()
                 paired_device.device_public_key = Some(device_key.clone());
                 store.add_trusted_device(paired_device);
                 store
-                    .save()
+                    .save_full()
                     .context("persisting paired device with pinned key")?;
             }
+        }
+    }
+
+    // Device-add: a daemon is already running with stale in-memory trust.
+    // Restart it so it picks up the device we just added.
+    if was_device_add && host_core::service::is_service_running() {
+        match host_core::service::restart() {
+            Ok(_) => println!("daemon restarted to load new trusted device"),
+            Err(e) => eprintln!(
+                "warning: could not restart daemon ({e}); run `pocketshell daemon stop && pocketshell daemon start` manually"
+            ),
         }
     }
 
@@ -481,7 +494,7 @@ async fn pair_qr_new_host(config: AppConfig, mut store: StateStore) -> Result<()
                 paired_device.device_public_key = Some(device_key.clone());
                 store.add_trusted_device(paired_device);
                 store
-                    .save()
+                    .save_full()
                     .context("persisting paired device with pinned key")?;
             }
         }
@@ -659,7 +672,7 @@ async fn pair_qr_device_add(config: AppConfig, mut store: StateStore) -> Result<
             }
             store.add_trusted_device(paired_device);
             store
-                .save()
+                .save_full()
                 .context("persisting paired device with pinned key")?;
         }
     }
@@ -672,6 +685,19 @@ async fn pair_qr_device_add(config: AppConfig, mut store: StateStore) -> Result<
     });
 
     println!("device added: {mobile_device_id}");
+
+    // Restart the running daemon so it reloads trusted_devices from disk.
+    // Without this, the daemon's in-memory trust list lacks the new device
+    // and rejects all signaling from it until the next manual restart.
+    if host_core::service::is_service_running() {
+        match host_core::service::restart() {
+            Ok(_) => println!("daemon restarted to load new trusted device"),
+            Err(e) => eprintln!(
+                "warning: could not restart daemon ({e}); run `pocketshell daemon stop && pocketshell daemon start` manually"
+            ),
+        }
+    }
+
     println!("the device can now connect to this host");
 
     Ok(())

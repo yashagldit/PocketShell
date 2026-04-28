@@ -1,9 +1,13 @@
 {
   "screen.title": "ホストをペアリング",
+  "scan_qr_button": "ホストQRをスキャン",
+  "or": "または",
   "instruction": "デスクトップで次を実行してください：",
   "pairing_code": "ペアリングコード",
   "command_copied": "コマンドをクリップボードにコピーしました",
   "paired_successfully": "ホストのペアリングに成功しました！",
+  "reconnected_successfully": "デバイスを再接続しました！",
+  "done": "完了",
   "give_nickname": "ホストにニックネームを付ける",
   "device_hostname": "デバイス名：{{hostname}}",
   "device_hostname_label": "デバイス名：",

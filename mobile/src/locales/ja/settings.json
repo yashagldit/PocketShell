@@ -30,5 +30,16 @@
   "dark_theme": "ダーク",
   "default_display_name": "ユーザー",
   "biometric_auth_failed": "認証に失敗しました",
-  "export_failed": "エクスポートに失敗しました"
+  "export_failed": "エクスポートに失敗しました",
+  "devices.action_title": "{{name}}",
+  "devices.action_message": "このデバイスをどう扱うか選択してください。「ログアウト」はサインアウトしますがホストへのアクセスは保持します。「アクセスを取り消す」はペアリング済みのすべてのホストからも削除します（メール認証が必要です）。",
+  "devices.action_logout": "ログアウト",
+  "devices.action_revoke": "ログアウトしてアクセスを取り消す",
+  "devices.revoke_otp_title": "本人確認",
+  "devices.revoke_otp_message": "メールに6桁のコードを送信しました。{{name}} のアクセスを取り消すにはコードを入力してください。",
+  "devices.revoke_otp_placeholder": "6桁のコード",
+  "devices.revoke_otp_submit": "アクセスを取り消す",
+  "devices.revoke_otp_invalid": "コードが無効または期限切れです",
+  "devices.revoke_otp_send_failed": "確認コードを送信できませんでした",
+  "devices.revoke_access_success": "アクセスを取り消しました"
 }

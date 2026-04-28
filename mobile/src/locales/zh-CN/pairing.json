@@ -1,9 +1,13 @@
 {
   "screen.title": "配对主机",
+  "scan_qr_button": "扫描主机二维码",
+  "or": "或",
   "instruction": "在您的桌面上运行此命令：",
   "pairing_code": "配对码",
   "command_copied": "命令已复制到剪贴板",
   "paired_successfully": "主机配对成功！",
+  "reconnected_successfully": "设备已成功重新连接！",
+  "done": "完成",
   "give_nickname": "为您的主机起个昵称",
   "device_hostname": "设备主机名：{{hostname}}",
   "device_hostname_label": "设备主机名：",

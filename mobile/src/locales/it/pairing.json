@@ -1,9 +1,13 @@
 {
   "screen.title": "Associazione Host",
+  "scan_qr_button": "Scansiona QR host",
+  "or": "oppure",
   "instruction": "Esegui questo sul tuo computer:",
   "pairing_code": "Codice di associazione",
   "command_copied": "Comando copiato negli appunti",
   "paired_successfully": "Host associato con successo!",
+  "reconnected_successfully": "Dispositivo riconnesso con successo!",
+  "done": "Fatto",
   "give_nickname": "Dai un soprannome al tuo host",
   "device_hostname": "Hostname del dispositivo: {{hostname}}",
   "device_hostname_label": "Hostname del dispositivo:",

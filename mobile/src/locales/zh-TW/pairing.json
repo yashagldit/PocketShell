@@ -1,9 +1,13 @@
 {
   "screen.title": "配對主機",
+  "scan_qr_button": "掃描主機二維碼",
+  "or": "或",
   "instruction": "在您的桌面上執行此命令：",
   "pairing_code": "配對碼",
   "command_copied": "命令已複製到剪貼簿",
   "paired_successfully": "主機配對成功！",
+  "reconnected_successfully": "裝置已成功重新連接！",
+  "done": "完成",
   "give_nickname": "為您的主機起個暱称",
   "device_hostname": "設備主機名稱：{{hostname}}",
   "device_hostname_label": "設備主機名稱：",
