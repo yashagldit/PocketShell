@@ -54,8 +54,7 @@ impl StateStore {
             }
         }
         let raw = serde_json::to_string_pretty(&to_write)?;
-        fs::write(&self.path, raw)?;
-        set_file_permissions(&self.path)?;
+        atomic_write(&self.path, raw.as_bytes())?;
         Ok(())
     }
 
@@ -65,8 +64,7 @@ impl StateStore {
     /// concurrent CLI write.
     pub fn save_full(&self) -> Result<()> {
         let raw = serde_json::to_string_pretty(&self.state)?;
-        fs::write(&self.path, raw)?;
-        set_file_permissions(&self.path)?;
+        atomic_write(&self.path, raw.as_bytes())?;
         Ok(())
     }
 
@@ -245,6 +243,39 @@ impl StateStore {
             .map(|a| a.access_token.as_str())
             .ok_or(HostError::NotLoggedIn)
     }
+}
+
+/// Write `bytes` to `path` atomically: write to a sibling tempfile, fsync, rename.
+/// Prevents partial writes from a killed/crashing process leaving state.json in
+/// a half-state — the rename is atomic on POSIX, so readers either see the old
+/// contents or the new contents but never a truncation. The 0o600 mode is set
+/// on the tempfile before the rename so the destination is never world-readable.
+fn atomic_write(path: &PathBuf, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    let parent = path
+        .parent()
+        .ok_or_else(|| HostError::Config(format!("path has no parent: {path:?}")))?;
+    let pid = std::process::id();
+    let nonce = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
+    let tmp = parent.join(format!(
+        ".{}.{}.{}.tmp",
+        path.file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("state"),
+        pid,
+        nonce
+    ));
+    {
+        let mut f = fs::File::create(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+    }
+    set_file_permissions(&tmp)?;
+    if let Err(e) = fs::rename(&tmp, path) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e.into());
+    }
+    Ok(())
 }
 
 #[cfg(unix)]

@@ -2,13 +2,14 @@ use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
 use host_core::api::BackendClient;
 use host_core::audit::{write_audit_event, AuditEvent};
+use host_core::auth::safe_refresh_if_needed;
 use host_core::config::AppConfig;
 use host_core::daemon;
 use host_core::discovery::SessionDiscovery;
 use host_core::models::{
     AuthState, HostIdentity, HostInitiatedPollOutcome, PairingValidateRequest,
 };
-use host_core::secure::{parse_jwt_exp, require_refresh_token, token_is_expiring};
+use host_core::secure::parse_jwt_exp;
 use host_core::stats::StatsCollector;
 use host_core::store::StateStore;
 use nix::sys::signal::{kill, Signal};
@@ -537,8 +538,10 @@ async fn pair_qr_device_add(config: AppConfig, mut store: StateStore) -> Result<
 
     let backend = BackendClient::new(config.backend_base_url.clone());
 
-    // Refresh host access token if it's expiring — mirrors daemon logic.
-    refresh_auth_if_needed(&backend, &mut store)
+    // Refresh host access token if it's expiring. Uses the cross-process lock
+    // so a CLI invocation while the daemon is also refreshing can't burn the
+    // rotation.
+    safe_refresh_if_needed(&backend, &mut store)
         .await
         .map_err(|e| {
             anyhow!("host auth expired — re-pair with: pocketshell pair --reset (detail: {e})")
@@ -700,31 +703,6 @@ async fn pair_qr_device_add(config: AppConfig, mut store: StateStore) -> Result<
 
     println!("the device can now connect to this host");
 
-    Ok(())
-}
-
-/// Refresh the host's access token if it's close to expiring. Mirrors the
-/// daemon's `refresh_auth_if_needed` so CLI device-add works when the daemon
-/// isn't the one driving refresh.
-async fn refresh_auth_if_needed(backend: &BackendClient, store: &mut StateStore) -> Result<()> {
-    let Some(auth) = store.state.auth.clone() else {
-        return Err(anyhow!("not logged in"));
-    };
-    if !token_is_expiring(auth.access_expires_at, 60) {
-        return Ok(());
-    }
-    let refresh = require_refresh_token(&auth).map_err(|e| anyhow!(e.to_string()))?;
-    let tokens = backend
-        .refresh_tokens(&refresh)
-        .await
-        .map_err(|e| anyhow!(e.to_string()))?;
-    let expires = parse_jwt_exp(&tokens.access_token);
-    store.state.auth = Some(AuthState {
-        access_token: tokens.access_token,
-        refresh_token: tokens.refresh_token,
-        access_expires_at: expires,
-    });
-    store.save().context("persisting refreshed tokens")?;
     Ok(())
 }
 

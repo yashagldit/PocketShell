@@ -2,8 +2,9 @@ use crate::agent_session::{
     self, AgentExitWire, AgentRouter, AgentSession, Backend as AgentBackend,
     SpawnConfig as AgentSpawnConfig,
 };
-use crate::api::{derive_access_expiry, BackendClient, HeartbeatAction};
+use crate::api::{BackendClient, HeartbeatAction};
 use crate::audit::{write_audit_event, AuditEvent};
+use crate::auth::{refresh_token_jwt_expired, safe_refresh_if_needed};
 use crate::config::AppConfig;
 use crate::discovery::SessionDiscovery;
 use crate::error::{HostError, Result};
@@ -13,7 +14,6 @@ use crate::models::{
     AttachTarget, HeartbeatRequest, SessionRecord, SessionRequest, SessionState, SignalEnvelope,
 };
 use crate::pty::SessionManager;
-use crate::secure::{require_refresh_token, token_is_expiring};
 use crate::session::accept_session;
 use crate::signaling_crypto::{self, EphemeralKeypair, SessionCipher};
 use crate::stats::StatsCollector;
@@ -1277,12 +1277,28 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
     let mut backoff_secs = 1_u64;
 
     loop {
-        match refresh_auth_if_needed(&backend, &mut store).await {
+        match safe_refresh_if_needed(&backend, &mut store).await {
             Ok(()) => {}
             Err(HostError::AuthRevoked) => {
-                warn!("authentication expired — waiting for re-pairing via `pocketshell pair`");
-                sleep(Duration::from_secs(60)).await;
-                // Reload state in case user ran `pocketshell login` in another terminal
+                // 401 from /token/refresh. While the host is still associated
+                // with a user account the token is treated as live: a 401 is
+                // typically a transient race (CLI vs daemon) and the next tick
+                // — which reloads state.json — will pick up whichever rotated
+                // tokens the winner persisted. Only stop trying when the
+                // refresh JWT's exp claim has actually passed locally; until
+                // then keep retrying so the daemon recovers without re-pair.
+                let permanent = store
+                    .state
+                    .auth
+                    .as_ref()
+                    .map(refresh_token_jwt_expired)
+                    .unwrap_or(false);
+                if permanent {
+                    warn!("refresh token JWT exp passed — re-pair via `pocketshell pair <CODE>`");
+                } else {
+                    warn!("token refresh rejected (likely a rotation race) — retrying in 30s");
+                }
+                sleep(Duration::from_secs(30)).await;
                 store = StateStore::load()?;
                 continue;
             }
@@ -1397,11 +1413,16 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                     }
                     last_tick = now;
 
-                    match refresh_auth_if_needed(&backend, &mut store).await {
+                    match safe_refresh_if_needed(&backend, &mut store).await {
                         Ok(()) => {}
                         Err(HostError::AuthRevoked) => {
-                            warn!("authentication expired — run `pocketshell pair` to re-authenticate");
-                            break; // reconnect loop will retry after reload
+                            // Bounce out to the outer connect loop: it reloads
+                            // state.json and decides whether the refresh token
+                            // is genuinely past its JWT exp or just a transient
+                            // race. Either way, do not clear in-memory tokens —
+                            // the existing access token may still have life left
+                            // for the heartbeat we'd otherwise skip.
+                            break;
                         }
                         Err(err) => {
                             warn!("token refresh failed: {} — will retry next tick", err);
@@ -3440,47 +3461,9 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
     }
 }
 
-async fn refresh_auth_if_needed(backend: &BackendClient, store: &mut StateStore) -> Result<()> {
-    store.require_logged_in()?;
-    let Some(auth) = store.state.auth.clone() else {
-        return Err(HostError::NotLoggedIn);
-    };
-
-    if !token_is_expiring(auth.access_expires_at, 60) {
-        return Ok(());
-    }
-
-    let refresh = require_refresh_token(&auth)?;
-    let tokens = match backend.refresh_tokens(&refresh).await {
-        Ok(t) => t,
-        Err(HostError::AuthRevoked) => {
-            // Before giving up, reload state — another process may have refreshed
-            let reloaded = StateStore::load()?;
-            if let Some(ref reloaded_auth) = reloaded.state.auth {
-                if !token_is_expiring(reloaded_auth.access_expires_at, 60) {
-                    // Another process already refreshed the token
-                    *store = reloaded;
-                    return Ok(());
-                }
-            }
-            return Err(HostError::AuthRevoked);
-        }
-        Err(e) => return Err(e),
-    };
-
-    let expires = derive_access_expiry(&tokens.access_token);
-    store.state.auth = Some(crate::models::AuthState {
-        access_token: tokens.access_token,
-        refresh_token: tokens.refresh_token,
-        access_expires_at: expires,
-    });
-    // Persist immediately — losing the new refresh token means auth death
-    if let Err(e) = store.save() {
-        warn!("failed to persist refreshed tokens: {}", e);
-        return Err(e);
-    }
-    Ok(())
-}
+// Refresh logic now lives in `crate::auth::safe_refresh_if_needed`, which adds
+// cross-process locking + atomic state writes so concurrent refreshes from
+// short-lived CLI commands and the daemon can't burn the rotation.
 
 /// Rewrite a Claude stdout line so that embedded `tool_result` payloads keep a
 /// bounded preview instead of the full body. Raw tool results can be hundreds

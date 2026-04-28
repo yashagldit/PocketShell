@@ -2,6 +2,7 @@ pub mod agent_session;
 pub mod alerts;
 pub mod api;
 pub mod audit;
+pub mod auth;
 pub mod coding_sessions;
 pub mod config;
 pub mod daemon;
