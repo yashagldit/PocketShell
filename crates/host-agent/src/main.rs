@@ -22,11 +22,11 @@ use tokio::time::sleep;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
-#[command(name = "pocketshell")]
+#[command(name = "pocketshell", version)]
 #[command(about = "PocketShell host agent")]
 struct Cli {
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -121,11 +121,12 @@ async fn main() -> Result<()> {
     let config = AppConfig::from_env();
 
     match cli.command {
-        Commands::Pair {
+        None => interactive_menu(config).await,
+        Some(Commands::Pair {
             code,
             reset,
             show_qr: _,
-        } => {
+        }) => {
             // QR is now the default. --show-qr is accepted (no-op) for backward compat.
             // `code.is_some()` → legacy code-entry flow (preserves existing behavior).
             // Otherwise → QR flow, which auto-picks new-host vs device-add from state.
@@ -135,18 +136,18 @@ async fn main() -> Result<()> {
                 pair_qr(config, reset).await
             }
         }
-        Commands::Logout { reset } => logout(reset),
-        Commands::Status => status(config).await,
-        Commands::Devices { command } => devices(config, command).await,
-        Commands::Daemon { command } => daemon_cmd(config, command).await,
-        Commands::Stats { watch } => stats_cmd(watch).await,
-        Commands::Sessions { command } => sessions_cmd(config, command).await,
-        Commands::Remote {
+        Some(Commands::Logout { reset }) => logout(reset),
+        Some(Commands::Status) => status(config).await,
+        Some(Commands::Devices { command }) => devices(config, command).await,
+        Some(Commands::Daemon { command }) => daemon_cmd(config, command).await,
+        Some(Commands::Stats { watch }) => stats_cmd(watch).await,
+        Some(Commands::Sessions { command }) => sessions_cmd(config, command).await,
+        Some(Commands::Remote {
             name,
             detached,
             list,
             remove,
-        } => remote_cmd(name, detached, list, remove),
+        }) => remote_cmd(name, detached, list, remove),
     }
 }
 
@@ -999,31 +1000,44 @@ async fn sessions_list(config: AppConfig) -> Result<()> {
         .require_logged_in()
         .map_err(|e| anyhow!(e.to_string()))?;
 
-    // Local discoverable sessions (tmux, screen, pocketshell persistent, exposed)
     let local_sessions = SessionDiscovery::discover();
+    let backend_sessions = fetch_backend_sessions(&config, &store).await;
+    print_sessions_overview(&local_sessions, &backend_sessions, true);
+    Ok(())
+}
 
-    // Backend active sessions (CONNECTED / DETACHED)
-    let backend_sessions = {
-        let token = store.access_token()?.to_string();
-        let host_id = store.host_id()?;
-        let backend = BackendClient::new(config.backend_base_url);
-        backend
-            .list_active_sessions_full(&token, &host_id)
-            .await
-            .unwrap_or_else(|e| {
-                eprintln!("warning: could not fetch backend sessions: {e}");
-                Vec::new()
-            })
+async fn fetch_backend_sessions(
+    config: &AppConfig,
+    store: &StateStore,
+) -> Vec<host_core::models::BackendSessionInfo> {
+    let Ok(token) = store.access_token() else {
+        return Vec::new();
     };
+    let Ok(host_id) = store.host_id() else {
+        return Vec::new();
+    };
+    let backend = BackendClient::new(config.backend_base_url.clone());
+    backend
+        .list_active_sessions_full(token, &host_id)
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("warning: could not fetch backend sessions: {e}");
+            Vec::new()
+        })
+}
 
-    // Print backend (active/detached) sessions
-    if !backend_sessions.is_empty() {
+fn print_sessions_overview(
+    local: &[host_core::discovery::AvailableSession],
+    backend: &[host_core::models::BackendSessionInfo],
+    show_attach_tip: bool,
+) {
+    if !backend.is_empty() {
         println!("Active Sessions (backend):");
         println!(
             "{:<38} {:<12} {:<8} {}",
             "SESSION ID", "STATE", "MODE", "STARTED"
         );
-        for s in &backend_sessions {
+        for s in backend {
             let started = s.started_at.as_deref().unwrap_or("-");
             let mode = s.connection_mode.as_deref().unwrap_or("-");
             println!("{:<38} {:<12} {:<8} {}", s.id, s.state, mode, started);
@@ -1031,14 +1045,13 @@ async fn sessions_list(config: AppConfig) -> Result<()> {
         println!();
     }
 
-    // Print local discoverable sessions
-    if !local_sessions.is_empty() {
+    if !local.is_empty() {
         println!("Local Sessions (discoverable):");
         println!(
             "{:<12} {:<24} {:<12} {}",
             "TYPE", "NAME", "STATUS", "WINDOWS"
         );
-        for s in &local_sessions {
+        for s in local {
             let status = if s.attached { "attached" } else { "available" };
             println!(
                 "{:<12} {:<24} {:<12} {}",
@@ -1048,22 +1061,15 @@ async fn sessions_list(config: AppConfig) -> Result<()> {
         println!();
     }
 
-    if backend_sessions.is_empty() && local_sessions.is_empty() {
+    if backend.is_empty() && local.is_empty() {
         println!("no sessions found");
-        return Ok(());
+        return;
     }
 
-    // Show hint for resumable sessions
-    let ps_sessions: Vec<_> = local_sessions
-        .iter()
-        .filter(|s| s.session_type == "pocketshell")
-        .collect();
-    if !ps_sessions.is_empty() {
+    if show_attach_tip && local.iter().any(|s| s.session_type == "pocketshell") {
         println!("Tip: Use `pocketshell sessions attach <session-id>` to attach locally.");
         println!("     Sessions can also be resumed from the mobile app.");
     }
-
-    Ok(())
 }
 
 async fn sessions_attach(session_id: String) -> Result<()> {
@@ -1276,6 +1282,278 @@ fn remote_cmd(name: String, _detached: bool, list: bool, remove: bool) -> Result
     println!("stopped sharing session '{}'.", name);
 
     Ok(())
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum MenuAction {
+    PairQr,
+    TrustedDevices,
+    PendingDevices,
+    Sessions,
+    Status,
+    DaemonStart,
+    DaemonStop,
+    Logout,
+    Quit,
+}
+
+impl MenuAction {
+    fn label(self) -> &'static str {
+        match self {
+            Self::PairQr => "Pair (QR)",
+            Self::TrustedDevices => "Trusted devices",
+            Self::PendingDevices => "Pending devices",
+            Self::Sessions => "Active terminal sessions",
+            Self::Status => "Show status",
+            Self::DaemonStart => "Daemon: start",
+            Self::DaemonStop => "Daemon: stop",
+            Self::Logout => "Logout",
+            Self::Quit => "Quit",
+        }
+    }
+}
+
+/// Top-level interactive menu shown when `pocketshell` is run with no
+/// subcommand. Every action here is also reachable as an explicit subcommand.
+async fn interactive_menu(config: AppConfig) -> Result<()> {
+    use console::style;
+    use dialoguer::theme::ColorfulTheme;
+    use dialoguer::Select;
+
+    let theme = ColorfulTheme::default();
+    let backend = BackendClient::new(config.backend_base_url.clone());
+    let mut cached_profile: Option<host_core::models::UserProfile> = None;
+
+    loop {
+        let store = StateStore::load().context("loading local state")?;
+
+        // Refresh cached profile lazily once per session — avoids a network
+        // round-trip on every menu redraw.
+        if cached_profile.is_none() && store.state.host.is_some() {
+            if let Ok(token) = store.access_token() {
+                cached_profile = backend.get_me(token).await.ok();
+            }
+        }
+        print_header(&store, cached_profile.as_ref());
+
+        let actions: &[MenuAction] = if store.state.host.is_some() {
+            &[
+                MenuAction::PairQr,
+                MenuAction::TrustedDevices,
+                MenuAction::PendingDevices,
+                MenuAction::Sessions,
+                MenuAction::Status,
+                MenuAction::DaemonStart,
+                MenuAction::DaemonStop,
+                MenuAction::Logout,
+                MenuAction::Quit,
+            ]
+        } else {
+            &[MenuAction::PairQr, MenuAction::Status, MenuAction::Quit]
+        };
+        let labels: Vec<&str> = actions.iter().map(|a| a.label()).collect();
+
+        let selection = Select::with_theme(&theme)
+            .with_prompt("What would you like to do?")
+            .items(&labels)
+            .default(0)
+            .interact_opt()
+            .map_err(|e| anyhow!("menu error: {e}"))?;
+
+        let Some(idx) = selection else { return Ok(()) };
+        let action = actions[idx];
+        if action == MenuAction::Quit {
+            return Ok(());
+        }
+
+        println!();
+        let result: Result<()> = match action {
+            MenuAction::PairQr => pair_qr(config.clone(), false).await,
+            MenuAction::TrustedDevices => menu_trusted_devices(&theme, config.clone(), &store).await,
+            MenuAction::PendingDevices => devices(config.clone(), DeviceCommands::ListPending).await,
+            MenuAction::Sessions => menu_sessions(&theme, &config, &store).await,
+            MenuAction::Status => status(config.clone()).await,
+            MenuAction::DaemonStart => daemon_start(),
+            MenuAction::DaemonStop => daemon_stop(),
+            MenuAction::Logout => menu_logout(&theme),
+            MenuAction::Quit => unreachable!(),
+        };
+
+        // Logout/pair changes account context — invalidate cached profile.
+        if matches!(action, MenuAction::Logout | MenuAction::PairQr) {
+            cached_profile = None;
+        }
+
+        if let Err(e) = result {
+            eprintln!("{} {}", style("error:").red().bold(), e);
+        }
+
+        println!();
+        prompt(
+            &style(format!("[{}] complete — press Enter to return to menu", action.label()))
+                .dim()
+                .to_string(),
+        );
+    }
+}
+
+fn print_header(store: &StateStore, profile: Option<&host_core::models::UserProfile>) {
+    use console::style;
+
+    println!();
+    println!(
+        "{} {}",
+        style("PocketShell").cyan().bold(),
+        style(format!("v{}", env!("CARGO_PKG_VERSION"))).dim()
+    );
+
+    let Some(host) = &store.state.host else {
+        println!(
+            "  {}",
+            style("not paired — pair this host to get started").yellow()
+        );
+        println!();
+        return;
+    };
+
+    println!(
+        "  host: {}  ({})",
+        style(&host.hostname).bold(),
+        style(&host.platform).dim()
+    );
+    println!("  host_id: {}", style(&host.host_id).dim());
+    match profile {
+        Some(p) => println!("  account: {}", style(&p.email).green()),
+        None => println!(
+            "  account: {} {}",
+            style(&host.user_id).dim(),
+            style("(offline)").yellow()
+        ),
+    }
+    println!("  daemon: {}", daemon_status_label());
+    println!("  trusted devices: {}", store.state.trusted_devices.len());
+    println!();
+}
+
+fn daemon_status_label() -> String {
+    use console::style;
+
+    if host_core::service::is_service_running() {
+        return style("running (service)").green().to_string();
+    }
+    let Ok(paths) = AppConfig::paths() else {
+        return style("unknown").dim().to_string();
+    };
+    match read_pid(&paths.pid_file) {
+        Some(pid) if pid_running(pid) => style(format!("running (pid {pid})")).green().to_string(),
+        _ => style("stopped").red().to_string(),
+    }
+}
+
+/// Render a `Select` with a trailing "← back" row. Returns `Ok(None)` when the
+/// user picks back, presses Esc, or sends Ctrl+C.
+fn select_with_back(
+    theme: &dialoguer::theme::ColorfulTheme,
+    prompt: &str,
+    items: &[String],
+) -> Result<Option<usize>> {
+    use console::style;
+    use dialoguer::Select;
+
+    let mut with_back = items.to_vec();
+    with_back.push(style("← back").dim().to_string());
+
+    let pick = Select::with_theme(theme)
+        .with_prompt(prompt)
+        .items(&with_back)
+        .default(with_back.len() - 1)
+        .interact_opt()
+        .map_err(|e| anyhow!("menu error: {e}"))?;
+
+    Ok(pick.filter(|&i| i < items.len()))
+}
+
+async fn menu_trusted_devices(
+    theme: &dialoguer::theme::ColorfulTheme,
+    config: AppConfig,
+    store: &StateStore,
+) -> Result<()> {
+    use dialoguer::Confirm;
+
+    let trusted = &store.state.trusted_devices;
+    if trusted.is_empty() {
+        println!("no trusted devices");
+        return Ok(());
+    }
+
+    let items: Vec<String> = trusted
+        .iter()
+        .map(|d| {
+            let key = if d.device_public_key.is_some() { "key=yes" } else { "key=no" };
+            format!("{}  {}  created={}", d.mobile_device_id, key, d.created_at)
+        })
+        .collect();
+
+    let Some(idx) = select_with_back(theme, "Select a device to revoke", &items)? else {
+        return Ok(());
+    };
+
+    let device_id = trusted[idx].mobile_device_id.clone();
+    let confirm = Confirm::with_theme(theme)
+        .with_prompt(format!("Revoke device {device_id}?"))
+        .default(false)
+        .interact_opt()
+        .map_err(|e| anyhow!("confirm error: {e}"))?;
+
+    if confirm != Some(true) {
+        return Ok(());
+    }
+    devices(config, DeviceCommands::Revoke { device_id }).await
+}
+
+async fn menu_sessions(
+    theme: &dialoguer::theme::ColorfulTheme,
+    config: &AppConfig,
+    store: &StateStore,
+) -> Result<()> {
+    let local = SessionDiscovery::discover();
+    let backend = fetch_backend_sessions(config, store).await;
+    print_sessions_overview(&local, &backend, false);
+
+    // Only `pocketshell` sessions are attachable via the local Unix socket.
+    let attachable: Vec<&host_core::discovery::AvailableSession> = local
+        .iter()
+        .filter(|s| s.session_type == "pocketshell")
+        .collect();
+    if attachable.is_empty() {
+        return Ok(());
+    }
+
+    let items: Vec<String> = attachable
+        .iter()
+        .map(|s| {
+            let status = if s.attached { "attached" } else { "available" };
+            format!("{} ({})", s.name, status)
+        })
+        .collect();
+
+    let Some(idx) = select_with_back(theme, "Attach to a session?", &items)? else {
+        return Ok(());
+    };
+    sessions_attach(attachable[idx].name.clone()).await
+}
+
+fn menu_logout(theme: &dialoguer::theme::ColorfulTheme) -> Result<()> {
+    use dialoguer::Confirm;
+
+    let reset = Confirm::with_theme(theme)
+        .with_prompt("Also reset host identity? (use this to switch accounts)")
+        .default(false)
+        .interact_opt()
+        .map_err(|e| anyhow!("confirm error: {e}"))?
+        .unwrap_or(false);
+
+    logout(reset)
 }
 
 fn prompt(label: &str) -> String {

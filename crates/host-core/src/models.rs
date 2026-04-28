@@ -47,6 +47,14 @@ pub struct PairingValidateRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserProfile {
+    pub id: String,
+    pub email: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenPairResponse {
     pub access_token: String,
     pub refresh_token: String,

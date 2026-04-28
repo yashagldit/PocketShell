@@ -266,6 +266,33 @@ impl BackendClient {
         Ok(())
     }
 
+    /// Fetch the authenticated user's profile (email, display name).
+    pub async fn get_me(&self, token: &str) -> Result<crate::models::UserProfile> {
+        let url = format!("{}/api/v1/users/me", self.base_url);
+        let res = self
+            .client
+            .get(url)
+            .header(AUTHORIZATION, format!("Bearer {token}"))
+            .send()
+            .await
+            .map_err(|e| HostError::Backend(e.to_string()))?;
+
+        if res.status() == StatusCode::UNAUTHORIZED {
+            return Err(HostError::AuthRevoked);
+        }
+
+        if !res.status().is_success() {
+            return Err(HostError::Backend(format!(
+                "get_me failed: {}",
+                res.status()
+            )));
+        }
+
+        res.json::<crate::models::UserProfile>()
+            .await
+            .map_err(|e| HostError::Backend(format!("invalid user profile payload: {e}")))
+    }
+
     pub async fn list_trusted_devices(
         &self,
         token: &str,
