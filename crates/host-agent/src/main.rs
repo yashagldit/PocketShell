@@ -504,6 +504,18 @@ async fn pair_qr_new_host(config: AppConfig, mut store: StateStore) -> Result<()
     println!("pairing successful — host registered as {}", host.hostname);
     println!("host_id: {}", host.id);
 
+    // New-host pairing writes a fresh host id/keypair. If a daemon is already
+    // running, it still has the old identity in memory and will reject signed
+    // mobile messages with host_id mismatch until restarted.
+    if host_core::service::is_service_running() {
+        match host_core::service::restart() {
+            Ok(_) => println!("daemon restarted to load new host identity"),
+            Err(e) => eprintln!(
+                "warning: could not restart daemon ({e}); run `pocketshell daemon stop && pocketshell daemon start` manually"
+            ),
+        }
+    }
+
     // Ensure daemon is running
     if !host_core::service::is_service_running() {
         print!("installing service...");
@@ -709,6 +721,26 @@ async fn pair_qr_device_add(config: AppConfig, mut store: StateStore) -> Result<
 fn logout(reset: bool) -> Result<()> {
     let mut store = StateStore::load().context("loading local state")?;
 
+    // Best-effort server-side revocation BEFORE we wipe local state.
+    // Without this the host's 365-day refresh token would remain valid
+    // on the backend until natural expiry, defeating the point of
+    // logging out. Network failures are non-fatal — the user asked to
+    // log out and we should honor that locally regardless.
+    if let Some(refresh) = store.state.auth.as_ref().map(|a| a.refresh_token.clone()) {
+        if !refresh.is_empty() {
+            let cfg = AppConfig::from_env();
+            if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                let api = host_core::api::BackendClient::new(cfg.backend_base_url.clone());
+                if let Err(e) = rt.block_on(api.logout(&refresh)) {
+                    eprintln!("warning: server-side logout failed: {e}");
+                }
+            }
+        }
+    }
+
     // Always stop the daemon — it can't function without auth
     // --reset also uninstalls the service (removes auto-start)
     if reset {
@@ -739,8 +771,18 @@ fn logout(reset: bool) -> Result<()> {
 
     if reset {
         store.state = Default::default();
+        // --reset wipes the host identity entirely; clear both long-lived
+        // secrets from the keychain so a future re-pair doesn't pick up a
+        // stale private key or refresh token.
+        store.clear_secrets();
     } else {
         store.state.auth = None;
+        // Plain logout: forget the refresh token but keep the host
+        // identity (private key) so a re-login from the same host
+        // doesn't need a fresh pairing code.
+        if let Err(e) = store.clear_refresh_token() {
+            eprintln!("warning: could not clear refresh token from keyring: {e}");
+        }
     }
 
     store.save().context("persisting state")?;

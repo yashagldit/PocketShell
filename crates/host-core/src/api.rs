@@ -56,6 +56,27 @@ impl BackendClient {
             .map_err(|e| HostError::Backend(format!("invalid refresh payload: {e}")))
     }
 
+    /// Revoke a refresh token server-side. Called on `pocketshell logout`
+    /// so the 365-day refresh token doesn't outlive the local logout.
+    /// Best-effort: network failures are not propagated — the local state
+    /// has already been cleared by the time we return.
+    pub async fn logout(&self, refresh_token: &str) -> Result<()> {
+        let url = format!("{}/api/v1/auth/logout", self.base_url);
+        let res = self
+            .client
+            .post(url)
+            .header(CONTENT_TYPE, "application/json")
+            .json(&serde_json::json!({"refresh_token": refresh_token}))
+            .send()
+            .await
+            .map_err(|e| HostError::Backend(format!("logout request failed: {e}")))?;
+        if !res.status().is_success() {
+            let body = res.text().await.unwrap_or_default();
+            return Err(HostError::Backend(format!("logout failed: {body}")));
+        }
+        Ok(())
+    }
+
     pub async fn validate_pairing_code(
         &self,
         payload: &PairingValidateRequest,
@@ -309,6 +330,14 @@ impl BackendClient {
 
         if res.status() == StatusCode::UNAUTHORIZED {
             return Err(HostError::AuthRevoked);
+        }
+
+        // 404 here means the user deleted this host from the mobile app —
+        // backend's trusted_device_service raises 404 "Host not found" when
+        // the host_id no longer maps to a row owned by the authenticated user.
+        // 403 is the same outcome for ownership-check failures elsewhere.
+        if res.status() == StatusCode::NOT_FOUND || res.status() == StatusCode::FORBIDDEN {
+            return Err(HostError::HostGone);
         }
 
         if !res.status().is_success() {

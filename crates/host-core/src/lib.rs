@@ -14,6 +14,7 @@ pub mod local_attach;
 pub mod models;
 pub mod pty;
 pub mod rpc;
+pub mod secret_store;
 pub mod secure;
 pub mod service;
 pub mod session;

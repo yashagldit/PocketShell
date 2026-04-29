@@ -4,11 +4,93 @@ use serde::Serialize;
 use std::fs;
 use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use tracing::warn;
 
 const MAX_FILE_SIZE: u64 = 100 * 1024 * 1024; // 100 MB
 const MAX_READ_SIZE: u64 = 512 * 1024; // 512 KB per read_file call
 const MAX_LIST_DIR_PAGE_SIZE: usize = 250;
+
+/// Directories that the file channel must NEVER expose. Even a "trusted"
+/// mobile peer should not be able to read the host's own ED25519 private
+/// key, the user's SSH/AWS/GnuPG/GitHub credentials, or shell histories.
+/// All entries are home-relative (no leading slash); the check resolves
+/// against the current `dirs::home_dir()` so a different host running as a
+/// different user is still protected.
+const DENIED_HOME_PREFIXES: &[&str] = &[
+    ".pocketshell",
+    ".ssh",
+    ".aws",
+    ".gnupg",
+    ".config/gh",
+    ".docker/config.json",
+    ".kube",
+    ".npmrc",
+    ".pypirc",
+];
+
+/// Specific files (not just directories) that must be denied. Shell
+/// histories often contain pasted secrets; the rest are credentials.
+const DENIED_HOME_FILES: &[&str] = &[
+    ".bash_history",
+    ".zsh_history",
+    ".python_history",
+    ".node_repl_history",
+    ".lesshst",
+    ".netrc",
+];
+
+/// Resolved denylist entries against a specific home dir.
+struct DeniedPaths {
+    prefixes: Vec<PathBuf>,
+    files: Vec<PathBuf>,
+}
+
+fn build_denied_paths(home: &Path) -> DeniedPaths {
+    DeniedPaths {
+        prefixes: DENIED_HOME_PREFIXES
+            .iter()
+            .map(|p| home.join(p))
+            .collect(),
+        files: DENIED_HOME_FILES.iter().map(|f| home.join(f)).collect(),
+    }
+}
+
+fn is_path_denied_against(path: &Path, denied: &DeniedPaths) -> bool {
+    denied.prefixes.iter().any(|p| path.starts_with(p))
+        || denied.files.iter().any(|f| path == f)
+}
+
+/// Check whether `path` (already absolute, ideally canonicalized) lands
+/// inside one of the denylisted regions of the user's home directory.
+/// Production callers go through this; the resolved denylist is cached
+/// in a `OnceLock` so per-file dispatches don't re-stat $HOME. Tests
+/// that mutate $HOME use `is_path_denied_against` directly to avoid the
+/// cache.
+fn is_path_denied(path: &Path) -> bool {
+    static CACHE: OnceLock<Option<DeniedPaths>> = OnceLock::new();
+    let denied = CACHE.get_or_init(|| {
+        let home = dirs::home_dir()?;
+        // canonicalize follows /var → /private/var on macOS, etc.
+        let base = fs::canonicalize(&home).unwrap_or(home);
+        Some(build_denied_paths(&base))
+    });
+    match denied {
+        Some(d) => is_path_denied_against(path, d),
+        None => false,
+    }
+}
+
+fn deny_if_protected(path: &Path) -> Result<()> {
+    if is_path_denied(path) {
+        warn!("file channel denied: {} is in protected scope", path.display());
+        return Err(HostError::Backend(format!(
+            "PROTECTED_PATH: access denied for {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
 
 #[derive(Serialize)]
 struct FileEntry {
@@ -149,8 +231,10 @@ fn resolve_path(raw: &str) -> Result<PathBuf> {
 }
 
 fn safe_canonicalize(path: &Path) -> Result<PathBuf> {
-    fs::canonicalize(path)
-        .map_err(|e| HostError::Backend(format!("path not found: {}: {}", path.display(), e)))
+    let canonical = fs::canonicalize(path)
+        .map_err(|e| HostError::Backend(format!("path not found: {}: {}", path.display(), e)))?;
+    deny_if_protected(&canonical)?;
+    Ok(canonical)
 }
 
 /// Canonicalize a destination path that may not exist yet.
@@ -187,6 +271,12 @@ fn safe_resolve_dest(raw: &str) -> Result<PathBuf> {
         }
         result = result.join(component);
     }
+
+    // Re-check the assembled destination — the protected check on the
+    // ancestor doesn't catch the case where the tail walks INTO a
+    // protected dir that doesn't exist yet (e.g. writing to
+    // `~/.ssh/authorized_keys` when `.ssh` is missing).
+    deny_if_protected(&result)?;
 
     Ok(result)
 }
@@ -816,6 +906,13 @@ fn search_files(
             };
             let is_symlink = entry.file_type().map(|ft| ft.is_symlink()).unwrap_or(false);
 
+            // Don't surface denied paths in search hits, and don't
+            // descend into denied directories. A user searching from $HOME
+            // for "id_rsa" must not see SSH keys.
+            if is_path_denied(&entry_path) {
+                continue;
+            }
+
             if matcher.matches(&name) {
                 results.push(FileEntry {
                     name: name.clone(),
@@ -1269,5 +1366,36 @@ mod tests {
         let res = handle_files_action(&v, &router).await.unwrap();
         assert_eq!(res["size"], 2);
         assert_eq!(res["is_dir"], false);
+    }
+
+    #[test]
+    fn denylist_blocks_protected_dirs() {
+        // Test against an explicit fake home so the result doesn't
+        // depend on the OnceLock-cached denylist (which other tests in
+        // the workspace can pre-populate by mutating $HOME).
+        let home = PathBuf::from("/Users/test-user");
+        let d = build_denied_paths(&home);
+        assert!(is_path_denied_against(&home.join(".ssh/id_ed25519"), &d));
+        assert!(is_path_denied_against(&home.join(".pocketshell/state.json"), &d));
+        assert!(is_path_denied_against(&home.join(".aws/credentials"), &d));
+        assert!(is_path_denied_against(&home.join(".gnupg/private-keys-v1.d/k"), &d));
+        assert!(is_path_denied_against(&home.join(".config/gh/hosts.yml"), &d));
+        assert!(is_path_denied_against(&home.join(".bash_history"), &d));
+        assert!(is_path_denied_against(&home.join(".netrc"), &d));
+        assert!(!is_path_denied_against(&home.join("Documents/file.txt"), &d));
+        assert!(!is_path_denied_against(&home.join(".bashrc"), &d));
+    }
+
+    #[test]
+    fn denylist_blocks_writing_into_protected_dir() {
+        // Writing a NEW file into a protected dir must be denied even
+        // when the dir doesn't yet exist on disk. Exercises the
+        // lexical-prefix path that safe_resolve_dest relies on.
+        let home = PathBuf::from("/Users/test-user");
+        let d = build_denied_paths(&home);
+        assert!(is_path_denied_against(
+            &home.join(".ssh").join("authorized_keys_attack"),
+            &d,
+        ));
     }
 }

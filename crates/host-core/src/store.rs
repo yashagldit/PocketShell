@@ -1,6 +1,7 @@
 use crate::config::AppConfig;
 use crate::error::{HostError, Result};
 use crate::models::{AgentState, SessionRecord, TrustedDeviceRecord};
+use crate::secret_store::{SecretStore, KEY_HOST_PRIVATE, KEY_REFRESH_TOKEN};
 use chrono::Utc;
 use std::fs;
 use std::io::Write;
@@ -10,6 +11,7 @@ use std::path::PathBuf;
 pub struct StateStore {
     pub path: PathBuf,
     pub state: AgentState,
+    secrets: SecretStore,
 }
 
 impl StateStore {
@@ -17,23 +19,45 @@ impl StateStore {
         let paths = AppConfig::paths()?;
         if !paths.state_dir.exists() {
             fs::create_dir_all(&paths.state_dir)?;
-            set_dir_permissions(&paths.state_dir)?;
         }
+        harden_dir_permissions(&paths.state_dir)?;
 
         if !paths.state_file.exists() {
             let mut file = fs::File::create(&paths.state_file)?;
             file.write_all(
                 b"{\n  \"pending_devices\": [],\n  \"trusted_devices\": [],\n  \"sessions\": []\n}\n",
             )?;
-            set_file_permissions(&paths.state_file)?;
         }
+        harden_file_permissions(&paths.state_file)?;
 
         let raw = fs::read_to_string(&paths.state_file)?;
-        let state = serde_json::from_str::<AgentState>(&raw).unwrap_or_default();
+        let mut state = serde_json::from_str::<AgentState>(&raw).unwrap_or_default();
+
+        let secrets = SecretStore::new(paths.state_dir.clone());
+
+        // Hydrate secrets from the OS keyring when state.json no longer
+        // carries them (post-migration). If state.json still has plaintext
+        // values (legacy), leave them in place — `save` will migrate on the
+        // next write.
+        if let Some(host) = state.host.as_mut() {
+            if host.private_key.is_empty() {
+                if let Ok(Some(value)) = secrets.get(KEY_HOST_PRIVATE) {
+                    host.private_key = value;
+                }
+            }
+        }
+        if let Some(auth) = state.auth.as_mut() {
+            if auth.refresh_token.is_empty() {
+                if let Ok(Some(value)) = secrets.get(KEY_REFRESH_TOKEN) {
+                    auth.refresh_token = value;
+                }
+            }
+        }
 
         Ok(Self {
             path: paths.state_file,
             state,
+            secrets,
         })
     }
 
@@ -53,6 +77,7 @@ impl StateStore {
                 }
             }
         }
+        self.persist_secrets_and_redact(&mut to_write)?;
         let raw = serde_json::to_string_pretty(&to_write)?;
         atomic_write(&self.path, raw.as_bytes())?;
         Ok(())
@@ -63,9 +88,49 @@ impl StateStore {
     /// disk first (typically via [`reload_trust`]) so this doesn't undo a
     /// concurrent CLI write.
     pub fn save_full(&self) -> Result<()> {
-        let raw = serde_json::to_string_pretty(&self.state)?;
+        let mut to_write = self.state.clone();
+        self.persist_secrets_and_redact(&mut to_write)?;
+        let raw = serde_json::to_string_pretty(&to_write)?;
         atomic_write(&self.path, raw.as_bytes())?;
         Ok(())
+    }
+
+    /// Move long-lived secrets out of the about-to-be-serialized snapshot
+    /// and into the OS keyring. Replaces the plaintext fields with empty
+    /// strings so `state.json` on disk never holds them after the first
+    /// save post-upgrade. Best-effort — if the keyring is unavailable,
+    /// `SecretStore` falls back to a 0o600 file under the state dir, and
+    /// the JSON itself still gets redacted to keep a single source of
+    /// truth.
+    fn persist_secrets_and_redact(&self, snapshot: &mut AgentState) -> Result<()> {
+        if let Some(host) = snapshot.host.as_mut() {
+            if !host.private_key.is_empty() {
+                self.secrets.put(KEY_HOST_PRIVATE, &host.private_key)?;
+                host.private_key.clear();
+            }
+        }
+        if let Some(auth) = snapshot.auth.as_mut() {
+            if !auth.refresh_token.is_empty() {
+                self.secrets.put(KEY_REFRESH_TOKEN, &auth.refresh_token)?;
+                auth.refresh_token.clear();
+            }
+        }
+        Ok(())
+    }
+
+    /// Wipe ALL long-lived secrets from both the OS keyring and any file
+    /// fallback. Called from `pocketshell logout --reset` and account
+    /// deletion — the host identity itself is being destroyed.
+    /// Best-effort; underlying clears swallow "missing" errors.
+    pub fn clear_secrets(&self) {
+        let _ = self.secrets.clear(KEY_HOST_PRIVATE);
+        let _ = self.secrets.clear(KEY_REFRESH_TOKEN);
+    }
+
+    /// Clear only the refresh token. Plain `logout` (no --reset) keeps
+    /// the host's pinned identity so re-login can reuse it.
+    pub fn clear_refresh_token(&self) -> Result<()> {
+        self.secrets.clear(KEY_REFRESH_TOKEN)
     }
 
     /// Re-read `trusted_devices` and `pending_devices` from disk into memory.
@@ -123,6 +188,32 @@ impl StateStore {
         removed
     }
 
+    /// Sync mutable authorization metadata for devices that are already trusted
+    /// locally. This deliberately does not add backend-only devices and does
+    /// not replace pinned device public keys.
+    pub fn apply_trusted_device_permission_updates(
+        &mut self,
+        backend_devices: &[TrustedDeviceRecord],
+    ) -> Vec<String> {
+        let backend_by_mobile_id = backend_devices
+            .iter()
+            .filter(|d| d.revoked_at.is_none() && d.approved_at.is_some())
+            .map(|d| (d.mobile_device_id.as_str(), d))
+            .collect::<std::collections::HashMap<_, _>>();
+
+        let mut updated = Vec::new();
+        for local in &mut self.state.trusted_devices {
+            let Some(backend) = backend_by_mobile_id.get(local.mobile_device_id.as_str()) else {
+                continue;
+            };
+            if local.permissions_json != backend.permissions_json {
+                local.permissions_json = backend.permissions_json.clone();
+                updated.push(local.mobile_device_id.clone());
+            }
+        }
+        updated
+    }
+
     /// Add a single trusted device (called only from the `pair` command).
     pub fn add_trusted_device(&mut self, device: TrustedDeviceRecord) {
         // Remove any existing entry for this mobile_device_id, then add
@@ -145,6 +236,18 @@ impl StateStore {
         self.state.trusted_devices.iter().any(|d| {
             d.mobile_device_id == device_id && d.revoked_at.is_none() && d.approved_at.is_some()
         })
+    }
+
+    pub fn device_has_permission(&self, device_id: &str, permission: &str) -> bool {
+        let Some(device) = self.state.trusted_devices.iter().find(|d| {
+            d.mobile_device_id == device_id && d.revoked_at.is_none() && d.approved_at.is_some()
+        }) else {
+            return false;
+        };
+        let Some(permissions) = device.permissions_json.as_ref() else {
+            return true;
+        };
+        permission_value(permissions, permission)
     }
 
     pub fn upsert_session(&mut self, session: SessionRecord) {
@@ -259,9 +362,7 @@ fn atomic_write(path: &PathBuf, bytes: &[u8]) -> Result<()> {
     let nonce = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
     let tmp = parent.join(format!(
         ".{}.{}.{}.tmp",
-        path.file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("state"),
+        path.file_name().and_then(|s| s.to_str()).unwrap_or("state"),
         pid,
         nonce
     ));
@@ -275,7 +376,62 @@ fn atomic_write(path: &PathBuf, bytes: &[u8]) -> Result<()> {
         let _ = fs::remove_file(&tmp);
         return Err(e.into());
     }
+    set_file_permissions(path)?;
     Ok(())
+}
+
+fn permission_value(
+    permissions: &std::collections::HashMap<String, serde_json::Value>,
+    permission: &str,
+) -> bool {
+    // `terminal` is the pre-1.x wire name for the `shell` capability; keep
+    // the alias so trusted-device records minted by older clients still grant
+    // shell access after a host upgrade.
+    let aliases: &[&str] = match permission {
+        "shell" => &["shell", "terminal"],
+        "stats" => &["stats"],
+        "sessions" => &["sessions"],
+        other => &[other],
+    };
+    aliases.iter().any(|key| {
+        permissions
+            .get(*key)
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+    })
+}
+
+#[cfg(unix)]
+fn ensure_owned_by_current_user(path: &PathBuf) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = fs::metadata(path)?;
+    // SAFETY: geteuid has no preconditions and returns the effective uid.
+    let current_uid = unsafe { nix::libc::geteuid() };
+    if metadata.uid() != current_uid {
+        return Err(HostError::Config(format!(
+            "refusing to use {}: owned by uid {}, expected uid {}",
+            path.display(),
+            metadata.uid(),
+            current_uid
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn ensure_owned_by_current_user(_path: &PathBuf) -> Result<()> {
+    Ok(())
+}
+
+fn harden_file_permissions(path: &PathBuf) -> Result<()> {
+    ensure_owned_by_current_user(path)?;
+    set_file_permissions(path)
+}
+
+fn harden_dir_permissions(path: &PathBuf) -> Result<()> {
+    ensure_owned_by_current_user(path)?;
+    set_dir_permissions(path)
 }
 
 #[cfg(unix)]
@@ -313,9 +469,14 @@ mod tests {
     use chrono::{Duration, Utc};
 
     fn make_store(path: PathBuf) -> StateStore {
+        let parent = path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("/tmp"));
         StateStore {
             path,
             state: AgentState::default(),
+            secrets: SecretStore::new(parent),
         }
     }
 
@@ -341,6 +502,49 @@ mod tests {
             persistent: false,
             tmux_session_name: None,
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_hardens_existing_state_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _g = crate::test_support::HOME_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        let prev_home = std::env::var_os("HOME");
+        unsafe { std::env::set_var("HOME", tmp.path()) };
+
+        let state_dir = tmp.path().join(".pocketshell");
+        let state_file = state_dir.join("state.json");
+        fs::create_dir_all(&state_dir).unwrap();
+        fs::write(
+            &state_file,
+            b"{\n  \"pending_devices\": [],\n  \"trusted_devices\": [],\n  \"sessions\": []\n}\n",
+        )
+        .unwrap();
+        fs::set_permissions(&state_dir, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&state_file, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let loaded = StateStore::load();
+
+        unsafe {
+            match prev_home {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+
+        loaded.unwrap();
+        assert_eq!(
+            fs::metadata(&state_dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(&state_file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 
     #[test]
@@ -437,7 +641,10 @@ mod tests {
         assert!(daemon.state.trusted_devices.is_empty());
         daemon.reload_trust().unwrap();
         assert_eq!(daemon.state.trusted_devices.len(), 1);
-        assert_eq!(daemon.state.trusted_devices[0].mobile_device_id, "late_arrival");
+        assert_eq!(
+            daemon.state.trusted_devices[0].mobile_device_id,
+            "late_arrival"
+        );
     }
 
     #[test]
@@ -559,6 +766,33 @@ mod tests {
     }
 
     #[test]
+    fn device_has_permission_enforces_explicit_permissions_with_legacy_default() {
+        let mut store = make_store(PathBuf::from("/tmp/unused"));
+        store.add_trusted_device(trusted_device("legacy"));
+
+        let mut restricted = trusted_device("restricted");
+        restricted.permissions_json = Some(std::collections::HashMap::from([
+            ("shell".to_string(), serde_json::json!(true)),
+            ("stats".to_string(), serde_json::json!(false)),
+        ]));
+        store.add_trusted_device(restricted);
+
+        let mut terminal_alias = trusted_device("terminal-alias");
+        terminal_alias.permissions_json = Some(std::collections::HashMap::from([(
+            "terminal".to_string(),
+            serde_json::json!(true),
+        )]));
+        store.add_trusted_device(terminal_alias);
+
+        assert!(store.device_has_permission("legacy", "shell"));
+        assert!(store.device_has_permission("restricted", "shell"));
+        assert!(!store.device_has_permission("restricted", "stats"));
+        assert!(!store.device_has_permission("restricted", "sessions"));
+        assert!(store.device_has_permission("terminal-alias", "shell"));
+        assert!(!store.device_has_permission("missing", "shell"));
+    }
+
+    #[test]
     fn apply_revocations_removes_revoked_and_clears_pending() {
         let mut store = make_store(PathBuf::from("/tmp/unused"));
         store.add_trusted_device(trusted_device("keep"));
@@ -574,6 +808,30 @@ mod tests {
         assert_eq!(store.state.trusted_devices.len(), 1);
         assert_eq!(store.state.trusted_devices[0].mobile_device_id, "keep");
         assert!(store.state.pending_devices.is_empty());
+    }
+
+    #[test]
+    fn apply_trusted_device_permission_updates_only_updates_existing_devices() {
+        let mut store = make_store(PathBuf::from("/tmp/unused"));
+        store.add_trusted_device(trusted_device("existing"));
+
+        let mut existing = trusted_device("existing");
+        existing.permissions_json = Some(std::collections::HashMap::from([(
+            "stats".to_string(),
+            serde_json::json!(true),
+        )]));
+        let mut backend_only = trusted_device("backend-only");
+        backend_only.permissions_json = Some(std::collections::HashMap::from([(
+            "shell".to_string(),
+            serde_json::json!(true),
+        )]));
+
+        let updated = store.apply_trusted_device_permission_updates(&[existing, backend_only]);
+
+        assert_eq!(updated, vec!["existing".to_string()]);
+        assert_eq!(store.state.trusted_devices.len(), 1);
+        assert!(store.device_has_permission("existing", "stats"));
+        assert!(!store.device_has_permission("backend-only", "shell"));
     }
 
     #[test]
