@@ -26,6 +26,7 @@ use chrono::Utc;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use futures_util::SinkExt;
 use rand::RngCore;
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
@@ -52,6 +53,9 @@ const TURN_CACHE_SAFETY_MARGIN_SECS: u64 = 30;
 /// Floor for cached TTL so a backend that returns 0 doesn't put us back
 /// into a fetch-on-every-offer loop. Cloudflare typically returns 1h+.
 const TURN_CACHE_MIN_TTL_SECS: u64 = 60;
+const WS_SIGNING_PREFIX: &str = "pocketshell-ws-v1";
+const WS_AUTH_MAX_SKEW_SECS: i64 = 60;
+const WS_AUTH_NONCE_TTL: Duration = Duration::from_secs(120);
 
 #[derive(Clone)]
 struct CachedTurnCreds {
@@ -119,6 +123,21 @@ impl TurnCredsCache {
 /// `sdp_type` MUST be `"offer"` or `"answer"`. `extra` is merged into the
 /// resulting JSON object (e.g. to carry `transfer_id`, `offer_id`, etc.).
 ///
+/// Jitter a duration by ±25% so retry/backoff sleeps don't synchronise across
+/// the fleet. Critical for reconnect storms — without this, 2K hosts hit the
+/// backend at the same instant after every hiccup.
+fn jittered(base: Duration) -> Duration {
+    use rand::Rng;
+    let base_ms = base.as_millis() as i64;
+    if base_ms == 0 {
+        return base;
+    }
+    let spread = (base_ms / 4).max(1);
+    let delta = rand::thread_rng().gen_range(-spread..=spread);
+    let final_ms = (base_ms + delta).max(0) as u64;
+    Duration::from_millis(final_ms)
+}
+
 /// If the host's private key is unavailable or signing fails, returns a plain
 /// SDP payload (no signature) — preserves compatibility with legacy-paired
 /// hosts where the private key may not be stored locally.
@@ -175,12 +194,14 @@ struct PendingFileTransfer {
     name: String,
     expected_chunks: usize,
     chunks: Vec<String>,
+    received_b64_bytes: usize,
     created_at: Instant,
 }
 
 struct PendingFilesChannelMessage {
     expected_chunks: usize,
     chunks: Vec<String>,
+    received_bytes: usize,
     created_at: Instant,
 }
 
@@ -189,6 +210,7 @@ struct PendingFilesBinaryUpload {
     tmp_path: PathBuf,
     file: File,
     bytes_written: usize,
+    expected_size: Option<usize>,
     created_at: Instant,
 }
 
@@ -235,6 +257,13 @@ const FILE_TRANSFER_TIMEOUT_SECS: u64 = 300;
 const FILES_MESSAGE_TIMEOUT_SECS: u64 = 300;
 const FILES_MESSAGE_CHUNK_SIZE: usize = 12 * 1024;
 const FILES_STREAM_CHUNK_SIZE: usize = 48 * 1024;
+const MAX_FILES_FRAMED_CHUNKS: usize = 128;
+const MAX_FILES_FRAMED_MESSAGE_BYTES: usize = 512 * 1024;
+const MAX_FILE_TRANSFER_CHUNKS: usize = 4096;
+const MAX_FILE_TRANSFER_B64_BYTES: usize = 140 * 1024 * 1024;
+const MAX_STREAM_UPLOAD_BYTES: usize = 100 * 1024 * 1024;
+const MAX_STREAM_UPLOAD_CHUNK_BYTES: usize = 1024 * 1024;
+const MAX_ACTIVE_UPLOADS_PER_DEVICE: usize = 3;
 
 /// Sentinel prefix for challenge-response authentication messages on WebRTC channels.
 const AUTH_SENTINEL: &[u8] = b"\x00PSAU";
@@ -339,16 +368,32 @@ fn decode_framed_files_message(
     if id.is_empty() {
         return None;
     }
+    if data.len() > MAX_FILES_FRAMED_MESSAGE_BYTES {
+        warn!(
+            "files framed message rejected: frame too large from mobile={} bytes={}",
+            mobile_device_id,
+            data.len()
+        );
+        return None;
+    }
     let key = format!("{mobile_device_id}:{id}");
 
     match op {
         "start" => {
             let chunks = val.get("chunks").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
+            if chunks == 0 || chunks > MAX_FILES_FRAMED_CHUNKS {
+                warn!(
+                    "files framed message rejected: invalid chunk count mobile={} id={} chunks={}",
+                    mobile_device_id, id, chunks
+                );
+                return None;
+            }
             messages.insert(
                 key,
                 PendingFilesChannelMessage {
                     expected_chunks: chunks,
                     chunks: vec![String::new(); chunks],
+                    received_bytes: 0,
                     created_at: Instant::now(),
                 },
             );
@@ -359,7 +404,21 @@ fn decode_framed_files_message(
             let data = val.get("d").and_then(|v| v.as_str()).unwrap_or_default();
             if let Some(message) = messages.get_mut(&key) {
                 if index < message.expected_chunks {
+                    let previous = message.chunks[index].len();
+                    let next_total = message
+                        .received_bytes
+                        .saturating_sub(previous)
+                        .saturating_add(data.len());
+                    if next_total > MAX_FILES_FRAMED_MESSAGE_BYTES {
+                        warn!(
+                            "files framed message rejected: assembled payload too large mobile={} id={} bytes={}",
+                            mobile_device_id, id, next_total
+                        );
+                        messages.remove(&key);
+                        return None;
+                    }
                     message.chunks[index] = data.to_string();
+                    message.received_bytes = next_total;
                 }
             }
             None
@@ -392,6 +451,24 @@ fn encode_files_stream_frame(header: &serde_json::Value, payload: &[u8]) -> Vec<
     out.push(b'\n');
     out.extend_from_slice(payload);
     out
+}
+
+fn upload_tmp_path(final_path: &PathBuf) -> PathBuf {
+    let parent = final_path
+        .parent()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir());
+    let file_name = final_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("upload");
+    let nonce = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
+    parent.join(format!(
+        ".{}.{}.{}.pstmp",
+        file_name,
+        std::process::id(),
+        nonce
+    ))
 }
 
 async fn send_files_stream_frame(
@@ -574,20 +651,34 @@ fn bind_inbound_host_transfer_channel(
                             .get("path")
                             .and_then(|v| v.as_str())
                             .unwrap_or_default();
+                        let expected_size = frame
+                            .header
+                            .get("size")
+                            .and_then(|v| v.as_u64())
+                            .map(|v| v as usize);
+                        if expected_size.is_none_or(|size| size > MAX_STREAM_UPLOAD_BYTES) {
+                            send_direct_transfer_result(
+                                Arc::clone(&channel),
+                                &transfer_id,
+                                false,
+                                0,
+                                Some("upload size exceeds host limit".to_string()),
+                            )
+                            .await;
+                            let _ = event_tx.send(DirectHostTransferEvent::CleanupInbound {
+                                transfer_id: transfer_id.clone(),
+                            });
+                            return;
+                        }
                         match crate::files::resolve_file_path_for_transfer(path) {
                             Ok(file_path) => {
                                 if let Some(parent) = file_path.parent() {
                                     std::fs::create_dir_all(parent).ok();
                                 }
-                                let tmp_path = match file_path.extension() {
-                                    Some(ext) => file_path
-                                        .with_extension(format!("{}.pstmp", ext.to_string_lossy())),
-                                    None => file_path.with_extension("pstmp"),
-                                };
+                                let tmp_path = upload_tmp_path(&file_path);
                                 match OpenOptions::new()
-                                    .create(true)
+                                    .create_new(true)
                                     .write(true)
-                                    .truncate(true)
                                     .open(&tmp_path)
                                 {
                                     Ok(file) => {
@@ -597,6 +688,7 @@ fn bind_inbound_host_transfer_channel(
                                                 tmp_path,
                                                 file,
                                                 bytes_written: 0,
+                                                expected_size,
                                                 created_at: Instant::now(),
                                             });
                                     }
@@ -633,8 +725,51 @@ fn bind_inbound_host_transfer_channel(
                         }
                     }
                     "upload_chunk" => {
+                        if frame.payload.len() > MAX_STREAM_UPLOAD_CHUNK_BYTES {
+                            send_direct_transfer_result(
+                                Arc::clone(&channel),
+                                &transfer_id,
+                                false,
+                                0,
+                                Some("upload chunk exceeds host limit".to_string()),
+                            )
+                            .await;
+                            let mut guard = upload_state.lock().await;
+                            if let Some(upload) = guard.take() {
+                                drop(upload.file);
+                                let _ = std::fs::remove_file(&upload.tmp_path);
+                            }
+                            let _ = event_tx.send(DirectHostTransferEvent::CleanupInbound {
+                                transfer_id: transfer_id.clone(),
+                            });
+                            return;
+                        }
                         let mut guard = upload_state.lock().await;
                         if let Some(upload) = guard.as_mut() {
+                            let next_size =
+                                upload.bytes_written.saturating_add(frame.payload.len());
+                            if next_size > MAX_STREAM_UPLOAD_BYTES
+                                || upload.expected_size.is_some_and(|size| next_size > size)
+                            {
+                                drop(guard);
+                                send_direct_transfer_result(
+                                    Arc::clone(&channel),
+                                    &transfer_id,
+                                    false,
+                                    0,
+                                    Some("upload exceeds declared or host size limit".to_string()),
+                                )
+                                .await;
+                                let mut guard = upload_state.lock().await;
+                                if let Some(upload) = guard.take() {
+                                    drop(upload.file);
+                                    let _ = std::fs::remove_file(&upload.tmp_path);
+                                }
+                                let _ = event_tx.send(DirectHostTransferEvent::CleanupInbound {
+                                    transfer_id: transfer_id.clone(),
+                                });
+                                return;
+                            }
                             if let Err(err) = upload.file.write_all(&frame.payload) {
                                 drop(guard);
                                 send_direct_transfer_result(
@@ -1040,12 +1175,24 @@ fn handle_file_transfer_msg(
 
     match op {
         "start" => {
+            if id.is_empty() {
+                return Some(FileTransferUpdate::Error {
+                    request_id: id,
+                    message: "missing_transfer_id".to_string(),
+                });
+            }
             let name = val
                 .get("name")
                 .and_then(|v| v.as_str())
                 .unwrap_or("clipboard.jpg")
                 .to_string();
             let chunks = val.get("chunks").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
+            if chunks == 0 || chunks > MAX_FILE_TRANSFER_CHUNKS {
+                return Some(FileTransferUpdate::Error {
+                    request_id: id,
+                    message: "too_many_chunks".to_string(),
+                });
+            }
             transfers.insert(
                 id.clone(),
                 PendingFileTransfer {
@@ -1053,6 +1200,7 @@ fn handle_file_transfer_msg(
                     name,
                     expected_chunks: chunks,
                     chunks: Vec::with_capacity(chunks),
+                    received_b64_bytes: 0,
                     created_at: Instant::now(),
                 },
             );
@@ -1064,7 +1212,18 @@ fn handle_file_transfer_msg(
         "chunk" => {
             if let Some(transfer) = transfers.get_mut(&id) {
                 let data = val.get("d").and_then(|v| v.as_str()).unwrap_or_default();
+                let next_len = transfer.received_b64_bytes.saturating_add(data.len());
+                if transfer.chunks.len() >= transfer.expected_chunks
+                    || next_len > MAX_FILE_TRANSFER_B64_BYTES
+                {
+                    transfers.remove(&id);
+                    return Some(FileTransferUpdate::Error {
+                        request_id: id,
+                        message: "transfer_too_large".to_string(),
+                    });
+                }
                 transfer.chunks.push(data.to_string());
+                transfer.received_b64_bytes = next_len;
                 let progress = if transfer.expected_chunks == 0 {
                     100
                 } else {
@@ -1200,6 +1359,8 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
     let mut inbound_host_transfers: HashMap<String, InboundHostTransfer> = HashMap::new();
     // Per-session E2E encryption ciphers for signaling-based file operations
     let mut session_ciphers: HashMap<String, SessionCipher> = HashMap::new();
+    // Replay cache for end-to-end signed mobile-over-WS control messages.
+    let mut ws_auth_nonces: HashMap<String, Instant> = HashMap::new();
     // Cancellation signals for active download_stream tasks per mobile device
     let mut files_download_cancels: HashMap<String, tokio::sync::watch::Sender<bool>> =
         HashMap::new();
@@ -1296,15 +1457,15 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                 if permanent {
                     warn!("refresh token JWT exp passed — re-pair via `pocketshell pair <CODE>`");
                 } else {
-                    warn!("token refresh rejected (likely a rotation race) — retrying in 30s");
+                    warn!("token refresh rejected (likely a rotation race) — retrying in ~30s");
                 }
-                sleep(Duration::from_secs(30)).await;
+                sleep(jittered(Duration::from_secs(30))).await;
                 store = StateStore::load()?;
                 continue;
             }
             Err(err) => {
-                warn!("auth refresh failed: {} — retrying in 30s", err);
-                sleep(Duration::from_secs(30)).await;
+                warn!("auth refresh failed: {} — retrying in ~30s", err);
+                sleep(jittered(Duration::from_secs(30))).await;
                 store = StateStore::load()?;
                 continue;
             }
@@ -1320,7 +1481,10 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
             }
             Err(err) => {
                 warn!("control-plane connect error: {}", err);
-                sleep(Duration::from_secs(backoff_secs)).await;
+                // Jittered exponential backoff so 2K hosts don't reconnect in
+                // lockstep after a backend hiccup. Spreads load across the
+                // recovery window instead of a thundering herd.
+                sleep(jittered(Duration::from_secs(backoff_secs))).await;
                 backoff_secs = (backoff_secs * 2).min(30);
                 continue;
             }
@@ -1330,10 +1494,12 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
         let mut consecutive_heartbeat_failures: u32 = 0;
         let mut ws_ping_tick = interval(Duration::from_secs(30));
         let mut stats_tick = interval(Duration::from_secs(config.stats_interval_secs));
+        let mut summary_tick = interval(Duration::from_secs(config.summary_interval_secs));
         let mut stats_bg_tick = interval(Duration::from_secs(10 * 60));
         stats_bg_tick.tick().await; // skip immediate first tick
         let mut output_tick = interval(Duration::from_millis(50));
-        let mut trusted_devices_tick = interval(Duration::from_secs(30));
+        let mut trusted_devices_tick =
+            interval(Duration::from_secs(config.trusted_devices_interval_secs));
         let mut session_reap_tick = interval(Duration::from_secs(1));
         let mut stats_minute_tick = interval(Duration::from_secs(60));
         stats_minute_tick.tick().await; // skip immediate first tick
@@ -1490,11 +1656,12 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                     let _ = store.save();
                 }
                 _ = trusted_devices_tick.tick() => {
-                    // Revocation-only sync: check backend for revoked devices,
-                    // remove them locally, and kill their sessions.
-                    // New devices are NEVER added here — only via `pocketshell pair`.
+                    // Trust sync: remove backend-revoked devices, and refresh
+                    // permissions for devices already trusted locally. New
+                    // devices are NEVER added here — only via `pocketshell pair`.
                     if let Ok(token) = store.access_token().map(|s| s.to_string()) {
-                        if let Ok(devices) = backend.list_trusted_devices(&token, &host_id).await {
+                        match backend.list_trusted_devices(&token, &host_id).await {
+                        Ok(devices) => {
                             // Rebase trust on whatever the CLI may have written since we
                             // last loaded, so we don't drop a freshly paired device when
                             // we write our revocations back out.
@@ -1502,6 +1669,14 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                 warn!("reload_trust before revocation tick failed: {e}");
                             }
                             let removed = store.apply_revocations(&devices);
+                            let permission_updates =
+                                store.apply_trusted_device_permission_updates(&devices);
+                            for mobile_device_id in &permission_updates {
+                                info!(
+                                    "device {} permissions updated via backend sync",
+                                    mobile_device_id
+                                );
+                            }
                             for revoked_id in &removed {
                                 info!("device {} revoked via backend sync — closing sessions", revoked_id);
                                 // Also remove from authenticated channels
@@ -1524,11 +1699,82 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                         .await;
                                 }
                             }
-                            if !removed.is_empty() {
-                                // Use save_full so the revocation actually persists; we
+                            if !removed.is_empty() || !permission_updates.is_empty() {
+                                // Use save_full so the trust metadata actually persists; we
                                 // already rebased trust from disk above.
                                 let _ = store.save_full();
                             }
+
+                            // Host abandonment check: if the user revoked the
+                            // last trusted device, no mobile can reach this
+                            // host anymore. Shut down so we stop hammering the
+                            // backend with stale heartbeats. The user can
+                            // re-pair via `pocketshell pair <CODE>` to bring
+                            // the host back — that flow re-installs and starts
+                            // the service.
+                            //
+                            // Guarded on `!removed.is_empty()` to avoid a
+                            // false positive during the initial pairing window
+                            // where the host briefly has 0 trusted devices.
+                            if !removed.is_empty()
+                                && store.state.trusted_devices.is_empty()
+                                && devices.iter().all(|d| d.revoked_at.is_some())
+                            {
+                                warn!(
+                                    "all trusted devices revoked on backend — host abandoned, stopping daemon"
+                                );
+                                let _ = write_audit_event(AuditEvent {
+                                    event_type: "host_abandoned".to_string(),
+                                    host_id: Some(host_id.clone()),
+                                    ..AuditEvent::new("host_abandoned")
+                                });
+                                let _ = tokio::time::timeout(
+                                    Duration::from_secs(3),
+                                    backend.mark_offline(&token, &host_id),
+                                ).await;
+                                sessions.close_all();
+                                webrtc_mgr.close_all().await;
+                                let _ = store.save();
+                                // Uninstall (not just stop): KeepAlive=true on
+                                // launchd / Restart=always on systemd would
+                                // immediately resurrect the daemon if we only
+                                // stopped. Re-pairing calls install_and_start
+                                // which reinstates the service.
+                                let _ = crate::service::uninstall();
+                                return Ok(());
+                            }
+                        }
+                        Err(HostError::HostGone) => {
+                            // Backend doesn't recognize this host_id under the
+                            // authenticated user — the user deleted the host
+                            // from the mobile app. Wipe local identity so a
+                            // subsequent `pocketshell pair <CODE>` (without
+                            // --reset) cleanly re-registers as a new host
+                            // instead of replaying the now-gone host_id and
+                            // tripping the "paired with a different account"
+                            // guard.
+                            warn!(
+                                "host record removed on backend — wiping local state and stopping daemon (run `pocketshell pair <CODE>` to re-add)"
+                            );
+                            let _ = write_audit_event(AuditEvent {
+                                event_type: "host_deleted_by_user".to_string(),
+                                host_id: Some(host_id.clone()),
+                                ..AuditEvent::new("host_deleted_by_user")
+                            });
+                            sessions.close_all();
+                            webrtc_mgr.close_all().await;
+                            store.state = crate::models::AgentState::default();
+                            let _ = store.save_full();
+                            let _ = crate::service::uninstall();
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            // Transient errors (network, 5xx, AuthRevoked) —
+                            // drop and try again next tick. AuthRevoked is
+                            // handled by the heartbeat path which forces
+                            // reconnect.
+                            tracing::debug!("trusted-device sync skipped: {}", e);
+                        }
                         }
                     }
                 }
@@ -1559,6 +1805,35 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                             warn!("stats send failed: {}", err);
                             break;
                         }
+                    }
+                }
+                _ = summary_tick.tick() => {
+                    // Lightweight unconditional presence + cpu/ram beat for the
+                    // mobile hosts list. Independent of `stats_active`: the
+                    // backend forwards this to all of the user's connected
+                    // mobiles so they don't have to poll.
+                    let snap = stats.snapshot();
+                    let ram_percent = if snap.memory_total_bytes > 0 {
+                        (snap.memory_used_bytes as f64 / snap.memory_total_bytes as f64 * 100.0) as f32
+                    } else {
+                        0.0
+                    };
+                    let msg = SignalEnvelope {
+                        message_type: "host_summary".to_string(),
+                        session_id: None,
+                        payload: Some(serde_json::json!({
+                            "cpu_percent": snap.cpu_usage_percent,
+                            "ram_percent": ram_percent,
+                            "collected_at": snap.collected_at,
+                        })),
+                        state: None,
+                        accepted: None,
+                        reason: None,
+                        extra: std::collections::HashMap::new(),
+                    };
+                    if let Err(err) = send_signal(&mut ws, &msg).await {
+                        warn!("host_summary send failed: {}", err);
+                        break;
                     }
                 }
                 _ = stats_bg_tick.tick() => {
@@ -1980,7 +2255,10 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                             let result = verify_device_auth(
                                                 &msg, &session_id, &mobile_device_id,
                                                 &mut pending_auth, &store,
-                                            );
+                                            )
+                                            .and_then(|_| {
+                                                device_permission_result(&store, &mobile_device_id, "shell")
+                                            });
                                             let response = build_auth_message(&serde_json::json!({
                                                 "type": "auth_result",
                                                 "ok": result.is_ok(),
@@ -2165,7 +2443,10 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                             let result = verify_device_auth(
                                                 &msg, &files_channel_key, &mobile_device_id,
                                                 &mut pending_auth, &store,
-                                            );
+                                            )
+                                            .and_then(|_| {
+                                                device_permission_result(&store, &mobile_device_id, "shell")
+                                            });
                                             let response = build_auth_message(&serde_json::json!({
                                                 "type": "auth_result",
                                                 "ok": result.is_ok(),
@@ -2222,41 +2503,72 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                     .to_string();
                                 let upload_key = format!("{mobile_device_id}:{request_id}");
 
-                                match op.as_str() {
-                                    "upload_start" => {
-                                        let path = frame
-                                            .header
-                                            .get("path")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or_default();
-                                        match crate::files::resolve_file_path_for_transfer(path) {
-                                            Ok(file_path) => {
-                                                if let Some(parent) = file_path.parent() {
-                                                    std::fs::create_dir_all(parent).ok();
+                                    match op.as_str() {
+                                        "upload_start" => {
+                                            let path = frame
+                                                .header
+                                                .get("path")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or_default();
+                                            let expected_size = frame
+                                                .header
+                                                .get("size")
+                                                .and_then(|v| v.as_u64())
+                                                .map(|v| v as usize);
+                                            let active_uploads = files_binary_uploads
+                                                .keys()
+                                                .filter(|key| key.starts_with(&format!("{mobile_device_id}:")))
+                                                .count();
+                                            if active_uploads >= MAX_ACTIVE_UPLOADS_PER_DEVICE {
+                                                let response = serde_json::json!({
+                                                    "channel": "files",
+                                                    "response_to": request_id,
+                                                    "status": "error",
+                                                    "error": "too many active uploads for this device",
+                                                    "error_code": "upload_limit_exceeded"
+                                                });
+                                                if let Err(e) = send_framed_files_response(channel, &response).await {
+                                                    warn!("files upload limit send failed: {}", e);
                                                 }
-                                                // Write to temp file; rename to final path on upload_end
-                                                let tmp_path = match file_path.extension() {
-                                                    Some(ext) => file_path.with_extension(format!("{}.pstmp", ext.to_string_lossy())),
-                                                    None => file_path.with_extension("pstmp"),
-                                                };
-                                                match OpenOptions::new()
-                                                    .create(true)
-                                                    .write(true)
-                                                    .truncate(true)
-                                                    .open(&tmp_path)
-                                                {
-                                                    Ok(file) => {
-                                                        files_binary_uploads.insert(
-                                                            upload_key,
+                                                continue;
+                                            }
+                                            if expected_size.is_none_or(|size| size > MAX_STREAM_UPLOAD_BYTES) {
+                                                let response = serde_json::json!({
+                                                    "channel": "files",
+                                                    "response_to": request_id,
+                                                    "status": "error",
+                                                    "error": "upload size exceeds host limit",
+                                                    "error_code": "upload_too_large"
+                                                });
+                                                if let Err(e) = send_framed_files_response(channel, &response).await {
+                                                    warn!("files upload size error send failed: {}", e);
+                                                }
+                                                continue;
+                                            }
+                                            match crate::files::resolve_file_path_for_transfer(path) {
+                                                Ok(file_path) => {
+                                                    if let Some(parent) = file_path.parent() {
+                                                        std::fs::create_dir_all(parent).ok();
+                                                    }
+                                                    let tmp_path = upload_tmp_path(&file_path);
+                                                    match OpenOptions::new()
+                                                        .create_new(true)
+                                                        .write(true)
+                                                        .open(&tmp_path)
+                                                    {
+                                                        Ok(file) => {
+                                                            files_binary_uploads.insert(
+                                                                upload_key,
                                                             PendingFilesBinaryUpload {
                                                                 final_path: file_path,
-                                                                tmp_path,
-                                                                file,
-                                                                bytes_written: 0,
-                                                                created_at: Instant::now(),
-                                                            },
-                                                        );
-                                                    }
+                                                                    tmp_path,
+                                                                    file,
+                                                                    bytes_written: 0,
+                                                                    expected_size,
+                                                                    created_at: Instant::now(),
+                                                                },
+                                                            );
+                                                        }
                                                     Err(err) => {
                                                         let response = serde_json::json!({
                                                             "channel": "files",
@@ -2285,10 +2597,47 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                             }
                                         }
                                         continue;
-                                    }
-                                    "upload_chunk" => {
-                                        if let Some(upload) = files_binary_uploads.get_mut(&upload_key) {
-                                            if let Err(err) = upload.file.write_all(&frame.payload) {
+                                        }
+                                        "upload_chunk" => {
+                                            if frame.payload.len() > MAX_STREAM_UPLOAD_CHUNK_BYTES {
+                                                let response = serde_json::json!({
+                                                    "channel": "files",
+                                                    "response_to": request_id,
+                                                    "status": "error",
+                                                    "error": "upload chunk exceeds host limit",
+                                                    "error_code": "upload_chunk_too_large"
+                                                });
+                                                if let Err(e) = send_framed_files_response(channel, &response).await {
+                                                    warn!("files upload chunk-too-large send failed: {}", e);
+                                                }
+                                                if let Some(failed) = files_binary_uploads.remove(&upload_key) {
+                                                    drop(failed.file);
+                                                    let _ = std::fs::remove_file(&failed.tmp_path);
+                                                }
+                                                continue;
+                                            }
+                                            if let Some(upload) = files_binary_uploads.get_mut(&upload_key) {
+                                                let next_size = upload.bytes_written.saturating_add(frame.payload.len());
+                                                if next_size > MAX_STREAM_UPLOAD_BYTES
+                                                    || upload.expected_size.is_some_and(|size| next_size > size)
+                                                {
+                                                    let response = serde_json::json!({
+                                                        "channel": "files",
+                                                        "response_to": request_id,
+                                                        "status": "error",
+                                                        "error": "upload exceeds declared or host size limit",
+                                                        "error_code": "upload_too_large"
+                                                    });
+                                                    if let Err(e) = send_framed_files_response(channel, &response).await {
+                                                        warn!("files upload too-large send failed: {}", e);
+                                                    }
+                                                    if let Some(failed) = files_binary_uploads.remove(&upload_key) {
+                                                        drop(failed.file);
+                                                        let _ = std::fs::remove_file(&failed.tmp_path);
+                                                    }
+                                                    continue;
+                                                }
+                                                if let Err(err) = upload.file.write_all(&frame.payload) {
                                                 let response = serde_json::json!({
                                                     "channel": "files",
                                                     "response_to": request_id,
@@ -2863,7 +3212,10 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                             let result = verify_device_auth(
                                                 &msg, &stats_channel_key, &mobile_device_id,
                                                 &mut pending_auth, &store,
-                                            );
+                                            )
+                                            .and_then(|_| {
+                                                device_permission_result(&store, &mobile_device_id, "stats")
+                                            });
                                             let response = build_auth_message(&serde_json::json!({
                                                 "type": "auth_result",
                                                 "ok": result.is_ok(),
@@ -2887,6 +3239,9 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str) {
                                     let msg_type = val.get("type").and_then(|v| v.as_str()).unwrap_or_default();
                                     if msg_type == "kill_process" {
+                                        if !require_device_permission(&store, &mobile_device_id, "shell", "kill_process") {
+                                            continue;
+                                        }
                                         let pid = val.get("pid").and_then(|v| v.as_i64());
                                         let signal = val.get("signal").and_then(|v| v.as_str()).unwrap_or("TERM");
                                         if let Some(pid) = pid {
@@ -2920,6 +3275,9 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                             warn!("kill_process message missing pid field");
                                         }
                                     } else if msg_type == "reboot" {
+                                        if !require_device_permission(&store, &mobile_device_id, "shell", "reboot") {
+                                            continue;
+                                        }
                                         info!("reboot request received from mobile");
                                         // Try sudo -n reboot first (non-interactive); fall back to plain reboot
                                         let sudo_ok = match std::process::Command::new("sudo")
@@ -2989,7 +3347,10 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                             let result = verify_device_auth(
                                                 &msg, &control_channel_key, &mobile_device_id,
                                                 &mut pending_auth, &store,
-                                            );
+                                            )
+                                            .and_then(|_| {
+                                                device_permission_result(&store, &mobile_device_id, "shell")
+                                            });
                                             let response = build_auth_message(&serde_json::json!({
                                                 "type": "auth_result",
                                                 "ok": result.is_ok(),
@@ -3098,7 +3459,10 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                 let result = verify_device_auth(
                                     &msg, &key, &mobile_device_id,
                                     &mut pending_auth, &store,
-                                );
+                                )
+                                .and_then(|_| {
+                                    device_permission_result(&store, &mobile_device_id, "shell")
+                                });
                                 let response = build_auth_message(&serde_json::json!({
                                     "type": "auth_result",
                                     "ok": result.is_ok(),
@@ -3357,7 +3721,8 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                     .unwrap_or_default()
                                     .to_string();
                                 let allowed = stats_device_id.is_empty()
-                                    || store.is_trusted(&stats_device_id);
+                                    || (store.is_trusted(&stats_device_id)
+                                        && store.device_has_permission(&stats_device_id, "stats"));
                                 if !allowed {
                                     warn!("stats_subscribe rejected: device {} is not trusted", stats_device_id);
                                 } else {
@@ -3387,6 +3752,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                 &files_response_tx,
                                 &direct_transfer_event_tx,
                                 &mut session_ciphers,
+                                &mut ws_auth_nonces,
                                 &agent_router,
                                 &mut agent_ws_pumps,
                                 &agent_ws_out_tx,
@@ -3788,10 +4154,38 @@ async fn handle_signal(
     files_response_tx: &tokio::sync::mpsc::UnboundedSender<SignalEnvelope>,
     direct_transfer_event_tx: &tokio::sync::mpsc::UnboundedSender<DirectHostTransferEvent>,
     session_ciphers: &mut HashMap<String, SessionCipher>,
+    ws_auth_nonces: &mut HashMap<String, Instant>,
     agent_router: &Arc<AgentRouter>,
     agent_ws_pumps: &mut HashMap<String, tokio::task::JoinHandle<()>>,
     agent_ws_out_tx: &tokio::sync::mpsc::UnboundedSender<SignalEnvelope>,
 ) -> Result<()> {
+    if ws_auth_required(&msg.message_type) {
+        let mobile_device_id = msg
+            .extra
+            .get("mobile_device_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        if mobile_device_id.is_empty() {
+            warn!(
+                "{} rejected: missing mobile_device_id for signed WS auth",
+                msg.message_type
+            );
+            return Ok(());
+        }
+        if let Err(reason) = verify_ws_message_auth(&msg, store, mobile_device_id, ws_auth_nonces) {
+            warn!(
+                "{} rejected: invalid signed WS auth for device {}: {}",
+                msg.message_type, mobile_device_id, reason
+            );
+            return Ok(());
+        }
+        if let Some(permission) = ws_message_permission(&msg) {
+            if !require_device_permission(store, mobile_device_id, permission, &msg.message_type) {
+                return Ok(());
+            }
+        }
+    }
+
     match msg.message_type.as_str() {
         "host_transfer_request" => {
             let mobile_device_id = msg
@@ -4251,6 +4645,29 @@ async fn handle_signal(
                     state: Some("failed".to_string()),
                     accepted: Some(false),
                     reason: Some("device_not_trusted".to_string()),
+                    extra,
+                };
+                send_signal(ws, &reject).await?;
+                return Ok(());
+            }
+            let required_permission = if is_utility_purpose {
+                "sessions"
+            } else {
+                "shell"
+            };
+            if !store.device_has_permission(&mobile_device_id, required_permission) {
+                let mut extra = std::collections::HashMap::new();
+                extra.insert(
+                    "target_mobile_device_id".to_string(),
+                    serde_json::json!(mobile_device_id),
+                );
+                let reject = SignalEnvelope {
+                    message_type: "session_ack".to_string(),
+                    session_id: Some(session_id.clone()),
+                    payload: None,
+                    state: Some("failed".to_string()),
+                    accepted: Some(false),
+                    reason: Some("permission_denied".to_string()),
                     extra,
                 };
                 send_signal(ws, &reject).await?;
@@ -5384,11 +5801,7 @@ async fn handle_signal(
                         Ok((username, credential, _ttl, uris)) => {
                             match webrtc_mgr
                                 .handle_offer(
-                                    &peer_key,
-                                    uris,
-                                    username,
-                                    credential,
-                                    offer_sdp,
+                                    &peer_key, uris, username, credential, offer_sdp,
                                     true, // stats: always fresh peer (mobile always creates new PC)
                                 )
                                 .await
@@ -5667,10 +6080,7 @@ async fn handle_signal(
                 >(payload.clone())
                 {
                     let peer_key = format!("stats:{mobile_device_id}");
-                    if let Err(e) = webrtc_mgr
-                        .add_ice_candidate(&peer_key, candidate)
-                        .await
-                    {
+                    if let Err(e) = webrtc_mgr.add_ice_candidate(&peer_key, candidate).await {
                         warn!("webrtc stats add_ice_candidate failed: {}", e);
                     }
                 }
@@ -5990,8 +6400,33 @@ async fn handle_signal(
             session_ciphers.insert(session_id.clone(), cipher);
             info!("E2E encryption established for session {}", session_id);
 
-            // Send response with host's ephemeral public key and salt
-            let host_id = store.host_id()?.to_string();
+            // Send response with host's ephemeral public key and salt, signed
+            // by the host identity so signaling cannot substitute keys.
+            let host = match store.state.host.as_ref() {
+                Some(host) if !host.private_key.is_empty() => host,
+                _ => {
+                    warn!("x25519_public_key: host identity private key unavailable");
+                    session_ciphers.remove(&session_id);
+                    return Ok(());
+                }
+            };
+            let host_id = host.host_id.clone();
+            let signed = match signaling_crypto::sign_x25519_key_response(
+                &host.private_key,
+                &host_id,
+                &mobile_device_id,
+                &session_id,
+                mobile_pub_b64,
+                &host_pub_b64,
+                &salt_b64,
+            ) {
+                Ok(sig) => sig,
+                Err(e) => {
+                    warn!("x25519_public_key: failed to sign key response: {}", e);
+                    session_ciphers.remove(&session_id);
+                    return Ok(());
+                }
+            };
             let mut extra = std::collections::HashMap::new();
             extra.insert("host_id".to_string(), serde_json::json!(host_id));
             extra.insert(
@@ -6005,6 +6440,9 @@ async fn handle_signal(
                     "session_id": session_id,
                     "public_key": host_pub_b64,
                     "salt": salt_b64,
+                    "sig": signed.sig_b64,
+                    "sig_nonce": signed.nonce_b64,
+                    "sig_ts": signed.ts,
                 })),
                 state: None,
                 accepted: None,
@@ -6122,6 +6560,231 @@ fn build_auth_message(json: &serde_json::Value) -> Vec<u8> {
     msg.extend_from_slice(AUTH_SENTINEL);
     msg.extend_from_slice(&json_bytes);
     msg
+}
+
+fn ws_message_permission_for(message_type: &str) -> Option<&'static str> {
+    match message_type {
+        "stats_offer" | "stats_ice_candidate" => Some("stats"),
+        "session_offer"
+        | "ice_candidate"
+        | "signal"
+        | "files_offer"
+        | "files_ice_candidate"
+        | "agent_offer"
+        | "agent_ice_candidate"
+        | "host_transfer_request"
+        | "host_transfer_cancel"
+        | "x25519_public_key"
+        | "encrypted_file_payload"
+        | "agent_init"
+        | "agent_input"
+        | "agent_close" => Some("shell"),
+        _ => None,
+    }
+}
+
+fn ws_auth_required(message_type: &str) -> bool {
+    ws_message_permission_for(message_type).is_some()
+}
+
+fn ws_message_permission(msg: &SignalEnvelope) -> Option<&'static str> {
+    ws_message_permission_for(msg.message_type.as_str())
+}
+
+fn device_permission_result(
+    store: &StateStore,
+    mobile_device_id: &str,
+    permission: &str,
+) -> std::result::Result<(), String> {
+    if store.device_has_permission(mobile_device_id, permission) {
+        Ok(())
+    } else {
+        Err(format!("permission_denied:{permission}"))
+    }
+}
+
+fn require_device_permission(
+    store: &StateStore,
+    mobile_device_id: &str,
+    permission: &str,
+    context: &str,
+) -> bool {
+    match device_permission_result(store, mobile_device_id, permission) {
+        Ok(()) => true,
+        Err(_) => {
+            warn!(
+                "{} rejected: device {} lacks {} permission",
+                context, mobile_device_id, permission
+            );
+            false
+        }
+    }
+}
+
+fn canonical_json(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Null => "null".to_string(),
+        serde_json::Value::Bool(v) => {
+            if *v {
+                "true".to_string()
+            } else {
+                "false".to_string()
+            }
+        }
+        serde_json::Value::Number(v) => v.to_string(),
+        serde_json::Value::String(v) => serde_json::to_string(v).unwrap_or_else(|_| "\"\"".into()),
+        serde_json::Value::Array(values) => {
+            let items = values
+                .iter()
+                .map(canonical_json)
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("[{items}]")
+        }
+        serde_json::Value::Object(map) => {
+            let mut keys = map.keys().collect::<Vec<_>>();
+            keys.sort();
+            let fields = keys
+                .into_iter()
+                .map(|key| {
+                    let key_json = serde_json::to_string(key).unwrap_or_else(|_| "\"\"".into());
+                    let value_json =
+                        canonical_json(map.get(key).unwrap_or(&serde_json::Value::Null));
+                    format!("{key_json}:{value_json}")
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("{{{fields}}}")
+        }
+    }
+}
+
+fn ws_payload_hash(payload: Option<&serde_json::Value>) -> String {
+    let payload = payload.unwrap_or(&serde_json::Value::Null);
+    let digest = Sha256::digest(canonical_json(payload).as_bytes());
+    base64::engine::general_purpose::STANDARD.encode(digest)
+}
+
+fn verify_ws_message_auth(
+    msg: &SignalEnvelope,
+    store: &StateStore,
+    mobile_device_id: &str,
+    nonce_cache: &mut HashMap<String, Instant>,
+) -> std::result::Result<(), String> {
+    use base64::engine::general_purpose::STANDARD;
+
+    if !store.is_trusted(mobile_device_id) {
+        return Err("device is not trusted".to_string());
+    }
+
+    let auth = msg
+        .extra
+        .get("ws_auth")
+        .and_then(|v| v.as_object())
+        .ok_or_else(|| "missing ws_auth".to_string())?;
+    let version = auth.get("v").and_then(|v| v.as_i64()).unwrap_or_default();
+    if version != 1 {
+        return Err(format!("unsupported ws_auth version {version}"));
+    }
+    let nonce = auth
+        .get("nonce")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "missing nonce".to_string())?;
+    let ts = auth
+        .get("ts")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| "missing ts".to_string())?;
+    let payload_hash = auth
+        .get("payload_hash")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "missing payload_hash".to_string())?;
+    let signature_b64 = auth
+        .get("signature")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "missing signature".to_string())?;
+
+    let now_ts = Utc::now().timestamp();
+    let skew = now_ts.saturating_sub(ts).abs();
+    if skew > WS_AUTH_MAX_SKEW_SECS {
+        return Err(format!("timestamp out of range (|delta|={skew}s)"));
+    }
+
+    let expected_hash = ws_payload_hash(msg.payload.as_ref());
+    if payload_hash != expected_hash {
+        return Err("payload hash mismatch".to_string());
+    }
+
+    let host_id = msg
+        .extra
+        .get("host_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if !host_id.is_empty() {
+        if let Some(host) = store.state.host.as_ref() {
+            if host.host_id != host_id {
+                return Err("host_id mismatch".to_string());
+            }
+        }
+    }
+
+    let pub_key_b64 = store
+        .get_device_public_key(mobile_device_id)
+        .ok_or_else(|| "no device public key stored".to_string())?;
+    let pub_key_bytes = STANDARD
+        .decode(pub_key_b64)
+        .map_err(|e| format!("invalid public key base64: {e}"))?;
+    let pub_key_bytes: [u8; 32] = pub_key_bytes
+        .try_into()
+        .map_err(|_| "public key must be 32 bytes".to_string())?;
+    let verifying_key = VerifyingKey::from_bytes(&pub_key_bytes)
+        .map_err(|e| format!("invalid ed25519 public key: {e}"))?;
+
+    let sig_bytes = STANDARD
+        .decode(signature_b64)
+        .map_err(|e| format!("invalid signature base64: {e}"))?;
+    let signature =
+        Signature::from_slice(&sig_bytes).map_err(|e| format!("invalid ed25519 signature: {e}"))?;
+
+    let canonical = vec![
+        WS_SIGNING_PREFIX.to_string(),
+        host_id.to_string(),
+        mobile_device_id.to_string(),
+        msg.message_type.clone(),
+        msg.session_id.as_deref().unwrap_or("").to_string(),
+        msg.state.as_deref().unwrap_or("").to_string(),
+        nonce.to_string(),
+        ts.to_string(),
+        payload_hash.to_string(),
+    ]
+    .join("|");
+
+    verifying_key
+        .verify(canonical.as_bytes(), &signature)
+        .map_err(|e| format!("ed25519 signature did not verify: {e}"))?;
+
+    let now = Instant::now();
+    // Amortize the O(n) sweep: only run it once the cache has grown past a
+    // threshold, otherwise every signed WS message walks the entire map.
+    // Bound: at WS_AUTH_NONCE_TTL=120s, 128 outstanding entries comfortably
+    // covers steady-state traffic from one peer (incl. ICE flurries).
+    const NONCE_SWEEP_THRESHOLD: usize = 128;
+    if nonce_cache.len() >= NONCE_SWEEP_THRESHOLD {
+        nonce_cache.retain(|_, seen_at| now.duration_since(*seen_at) <= WS_AUTH_NONCE_TTL);
+    }
+    let cache_key = format!("{mobile_device_id}:{nonce}");
+    match nonce_cache.entry(cache_key) {
+        std::collections::hash_map::Entry::Occupied(mut slot) => {
+            if now.duration_since(*slot.get()) <= WS_AUTH_NONCE_TTL {
+                return Err("replayed nonce".to_string());
+            }
+            slot.insert(now);
+        }
+        std::collections::hash_map::Entry::Vacant(slot) => {
+            slot.insert(now);
+        }
+    }
+
+    Ok(())
 }
 
 /// Verify an auth_response message from a mobile device.

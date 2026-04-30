@@ -16,6 +16,9 @@ const PROTOCOL_INFO_PREFIX: &[u8] = b"pocketshell-files-v1";
 /// Shared signing-context prefix for signed SDP envelopes. MUST match the
 /// mobile-side constant in `mobile/src/services/sdpSignature.ts`.
 pub const SDP_SIGNING_PREFIX: &str = "pocketshell-sdp-v1";
+/// Shared signing-context prefix for X25519 key exchange transcripts. MUST
+/// match `X25519_SIGNING_PREFIX` in `mobile/src/services/signalingService.ts`.
+pub const X25519_SIGNING_PREFIX: &str = "pocketshell-x25519-v1";
 
 /// Direction flag for nonce construction — prevents nonce collision between sides.
 const DIRECTION_HOST_TO_MOBILE: u32 = 0x00000001;
@@ -230,10 +233,41 @@ pub struct SignedSdp {
     pub ts: i64,
 }
 
+#[derive(Debug, Clone)]
+pub struct SignedX25519KeyResponse {
+    pub sig_b64: String,
+    pub nonce_b64: String,
+    pub ts: i64,
+}
+
 fn canonical_signing_payload(sdp_type: &str, nonce_b64: &str, ts: i64, sdp: &str) -> String {
     format!(
         "{}|{}|{}|{}|{}",
         SDP_SIGNING_PREFIX, sdp_type, nonce_b64, ts, sdp
+    )
+}
+
+fn canonical_x25519_response_payload(
+    host_id: &str,
+    mobile_device_id: &str,
+    session_id: &str,
+    mobile_pub_b64: &str,
+    host_pub_b64: &str,
+    salt_b64: &str,
+    nonce_b64: &str,
+    ts: i64,
+) -> String {
+    format!(
+        "{}|{}|{}|{}|{}|{}|{}|{}|{}",
+        X25519_SIGNING_PREFIX,
+        host_id,
+        mobile_device_id,
+        session_id,
+        mobile_pub_b64,
+        host_pub_b64,
+        salt_b64,
+        nonce_b64,
+        ts
     )
 }
 
@@ -279,6 +313,46 @@ pub fn sign_sdp(private_key_b64: &str, sdp: &str, sdp_type: &str) -> Result<Sign
     })
 }
 
+/// Sign a host X25519 key-exchange response with the host identity key.
+///
+/// The signed transcript binds both ephemeral public keys, the salt, session,
+/// host, and mobile device id so a signaling relay cannot substitute keys.
+pub fn sign_x25519_key_response(
+    private_key_b64: &str,
+    host_id: &str,
+    mobile_device_id: &str,
+    session_id: &str,
+    mobile_pub_b64: &str,
+    host_pub_b64: &str,
+    salt_b64: &str,
+) -> Result<SignedX25519KeyResponse> {
+    let signing_key = parse_ed25519_signing_key(private_key_b64)?;
+
+    let mut nonce = [0u8; 16];
+    OsRng.fill_bytes(&mut nonce);
+    let nonce_b64 = base64::engine::general_purpose::STANDARD.encode(nonce);
+    let ts = chrono::Utc::now().timestamp();
+
+    let payload = canonical_x25519_response_payload(
+        host_id,
+        mobile_device_id,
+        session_id,
+        mobile_pub_b64,
+        host_pub_b64,
+        salt_b64,
+        &nonce_b64,
+        ts,
+    );
+    let sig = signing_key.sign(payload.as_bytes());
+    let sig_b64 = base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
+
+    Ok(SignedX25519KeyResponse {
+        sig_b64,
+        nonce_b64,
+        ts,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -312,6 +386,52 @@ mod tests {
             .decode(&signed.nonce_b64)
             .unwrap();
         assert_eq!(n.len(), 16);
+    }
+
+    #[test]
+    fn test_sign_x25519_key_response_roundtrip() {
+        let sk = SigningKey::generate(&mut OsRng);
+        let vk: VerifyingKey = sk.verifying_key();
+        let sk_b64 = base64::engine::general_purpose::STANDARD.encode(sk.to_bytes());
+
+        let signed = sign_x25519_key_response(
+            &sk_b64,
+            "host-1",
+            "mobile-1",
+            "session-1",
+            "mobile-pub",
+            "host-pub",
+            "salt",
+        )
+        .unwrap();
+
+        let canon = canonical_x25519_response_payload(
+            "host-1",
+            "mobile-1",
+            "session-1",
+            "mobile-pub",
+            "host-pub",
+            "salt",
+            &signed.nonce_b64,
+            signed.ts,
+        );
+        let sig_bytes = base64::engine::general_purpose::STANDARD
+            .decode(&signed.sig_b64)
+            .unwrap();
+        let sig = Signature::from_slice(&sig_bytes).unwrap();
+        vk.verify(canon.as_bytes(), &sig).unwrap();
+
+        let tampered = canonical_x25519_response_payload(
+            "host-1",
+            "mobile-1",
+            "session-1",
+            "mobile-pub",
+            "attacker-host-pub",
+            "salt",
+            &signed.nonce_b64,
+            signed.ts,
+        );
+        assert!(vk.verify(tampered.as_bytes(), &sig).is_err());
     }
 
     #[test]

@@ -10,10 +10,12 @@ pub struct AppConfig {
     pub min_backend_host_version: Option<String>,
     pub heartbeat_interval_secs: u64,
     pub stats_interval_secs: u64,
+    pub summary_interval_secs: u64,
     pub session_limit: usize,
     pub stale_session_secs: u64,
     pub detach_max_secs: u64,
     pub alert_check_interval_secs: u64,
+    pub trusted_devices_interval_secs: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -45,6 +47,11 @@ impl AppConfig {
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(5);
 
+        let summary_interval_secs = env::var("POCKETSHELL_SUMMARY_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(15);
+
         let session_limit = env::var("POCKETSHELL_SESSION_LIMIT")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
@@ -65,6 +72,14 @@ impl AppConfig {
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(60);
 
+        // Trust sync used to fire every 30s — at 2K hosts that was 66 req/s
+        // of redundant lookups. 5 min is plenty for revocations to propagate;
+        // mobile-driven approval flows take seconds, not minutes, anyway.
+        let trusted_devices_interval_secs = env::var("POCKETSHELL_TRUSTED_DEVICES_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(300);
+
         Self {
             backend_base_url,
             ws_url,
@@ -72,10 +87,12 @@ impl AppConfig {
             min_backend_host_version,
             heartbeat_interval_secs,
             stats_interval_secs,
+            summary_interval_secs,
             session_limit,
             stale_session_secs,
             detach_max_secs,
             alert_check_interval_secs,
+            trusted_devices_interval_secs,
         }
     }
 
@@ -121,10 +138,12 @@ mod tests {
         "POCKETSHELL_MIN_HOST_VERSION",
         "POCKETSHELL_HEARTBEAT_SECS",
         "POCKETSHELL_STATS_SECS",
+        "POCKETSHELL_SUMMARY_SECS",
         "POCKETSHELL_SESSION_LIMIT",
         "POCKETSHELL_STALE_SESSION_SECS",
         "POCKETSHELL_DETACH_MAX_SECS",
         "POCKETSHELL_ALERT_CHECK_SECS",
+        "POCKETSHELL_TRUSTED_DEVICES_SECS",
     ];
 
     fn clear_all() {
@@ -145,10 +164,12 @@ mod tests {
         assert!(cfg.min_backend_host_version.is_none());
         assert_eq!(cfg.heartbeat_interval_secs, 20);
         assert_eq!(cfg.stats_interval_secs, 5);
+        assert_eq!(cfg.summary_interval_secs, 15);
         assert_eq!(cfg.session_limit, 8);
         assert_eq!(cfg.stale_session_secs, 300);
         assert_eq!(cfg.detach_max_secs, 86400);
         assert_eq!(cfg.alert_check_interval_secs, 60);
+        assert_eq!(cfg.trusted_devices_interval_secs, 300);
     }
 
     #[test]
@@ -162,10 +183,12 @@ mod tests {
             env::set_var("POCKETSHELL_MIN_HOST_VERSION", "1.2.3");
             env::set_var("POCKETSHELL_HEARTBEAT_SECS", "7");
             env::set_var("POCKETSHELL_STATS_SECS", "11");
+            env::set_var("POCKETSHELL_SUMMARY_SECS", "23");
             env::set_var("POCKETSHELL_SESSION_LIMIT", "42");
             env::set_var("POCKETSHELL_STALE_SESSION_SECS", "600");
             env::set_var("POCKETSHELL_DETACH_MAX_SECS", "100");
             env::set_var("POCKETSHELL_ALERT_CHECK_SECS", "30");
+            env::set_var("POCKETSHELL_TRUSTED_DEVICES_SECS", "120");
         }
         let cfg = AppConfig::from_env();
         assert_eq!(cfg.backend_base_url, "https://example.test");
@@ -174,10 +197,12 @@ mod tests {
         assert_eq!(cfg.min_backend_host_version.as_deref(), Some("1.2.3"));
         assert_eq!(cfg.heartbeat_interval_secs, 7);
         assert_eq!(cfg.stats_interval_secs, 11);
+        assert_eq!(cfg.summary_interval_secs, 23);
         assert_eq!(cfg.session_limit, 42);
         assert_eq!(cfg.stale_session_secs, 600);
         assert_eq!(cfg.detach_max_secs, 100);
         assert_eq!(cfg.alert_check_interval_secs, 30);
+        assert_eq!(cfg.trusted_devices_interval_secs, 120);
         clear_all();
     }
 
