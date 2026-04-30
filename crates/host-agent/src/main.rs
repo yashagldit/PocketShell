@@ -174,6 +174,9 @@ async fn pair(config: AppConfig, code: Option<String>, reset: bool) -> Result<()
         if store.state.host.is_some() {
             println!("resetting existing host identity...");
         }
+        // Also clear the keyring — otherwise the surviving private key would
+        // make the next pair silently reattach to the same backend host record.
+        store.clear_secrets();
         store.state = Default::default();
         store.save().context("persisting reset state")?;
     }
@@ -189,13 +192,19 @@ async fn pair(config: AppConfig, code: Option<String>, reset: bool) -> Result<()
     let existing_host_id = store.state.host.as_ref().map(|h| h.host_id.clone());
     let is_new_host = existing_host_id.is_none();
 
-    // Only generate a new keypair for new-host registration; device-add flow
-    // doesn't need one since the host identity already exists.
-    let (public_key, private_key) = if is_new_host {
-        generate_keypair()
-    } else {
-        let h = store.state.host.as_ref().unwrap();
+    // Three-way keypair source:
+    //   1. state.host present  → reuse persisted keypair (true device-add).
+    //   2. state wiped but keyring still holds a private key → reuse it so the
+    //      backend can match `(user_id, pubkey)` and reattach to the existing
+    //      host instead of creating a duplicate.
+    //   3. otherwise            → fresh keypair, fresh host registration.
+    let (public_key, private_key) = if let Some(h) = store.state.host.as_ref() {
         (h.public_key.clone(), h.private_key.clone())
+    } else if let Some(kp) = store.try_load_host_keypair() {
+        println!("reusing existing host keypair from keyring — will reattach if backend recognizes it");
+        kp
+    } else {
+        generate_keypair()
     };
 
     let backend = BackendClient::new(config.backend_base_url.clone());
@@ -234,8 +243,12 @@ async fn pair(config: AppConfig, code: Option<String>, reset: bool) -> Result<()
     });
 
     let was_device_add = response.already_paired;
+    // Reconnect: backend matched the host by `(user_id, public_key)` even
+    // though we sent no host_id. The CLI must persist the rediscovered host
+    // identity even though the response is flagged `already_paired`.
+    let was_reconnect = response.already_paired && is_new_host;
 
-    if response.already_paired {
+    if response.already_paired && !was_reconnect {
         // Device-add flow: host identity already exists locally.
         store.save().context("persisting refreshed auth")?;
         println!("new mobile device approved on this host");
@@ -247,7 +260,8 @@ async fn pair(config: AppConfig, code: Option<String>, reset: bool) -> Result<()
             ..AuditEvent::new("device_approved")
         });
     } else {
-        // New-host flow: save host identity and tokens.
+        // New-host flow OR reconnect (state lost, keypair recovered): save
+        // host identity and tokens.
         store.state.host = Some(HostIdentity {
             host_id: response.host.id.clone(),
             user_id: response.host.user_id,
@@ -266,10 +280,17 @@ async fn pair(config: AppConfig, code: Option<String>, reset: bool) -> Result<()
             ..AuditEvent::new("login_success")
         });
 
-        println!(
-            "login successful — host registered as {}",
-            response.host.hostname
-        );
+        if was_reconnect {
+            println!(
+                "host reattached to existing record {} ({})",
+                response.host.hostname, response.host.id
+            );
+        } else {
+            println!(
+                "login successful — host registered as {}",
+                response.host.hostname
+            );
+        }
     }
 
     // Add ONLY the device from this pairing to the local trust store.
@@ -344,8 +365,13 @@ async fn pair(config: AppConfig, code: Option<String>, reset: bool) -> Result<()
 async fn pair_qr(config: AppConfig, reset: bool) -> Result<()> {
     let mut store = StateStore::load().context("loading local state")?;
 
-    if reset && store.state.host.is_some() {
-        println!("resetting existing host identity...");
+    if reset {
+        if store.state.host.is_some() {
+            println!("resetting existing host identity...");
+        }
+        // Also clear the keyring — otherwise the surviving private key would
+        // make the next pair silently reattach to the same backend host record.
+        store.clear_secrets();
         store.state = Default::default();
         store.save().context("persisting reset state")?;
     }
@@ -361,8 +387,18 @@ async fn pair_qr_new_host(config: AppConfig, mut store: StateStore) -> Result<()
     use qrcode::render::unicode;
     use qrcode::{EcLevel, QrCode};
 
-    // Always new-host: generate a fresh keypair
-    let (public_key, private_key) = generate_keypair();
+    // Try to reuse an existing keypair from the keyring before generating a
+    // fresh one. If `state.json` was wiped (reinstall, FS corruption) but the
+    // OS keyring still holds the host's private key, sending the matching
+    // pubkey lets the backend reattach this host to its existing record by
+    // `(user_id, pubkey)` instead of duplicating it.
+    let (public_key, private_key) = match store.try_load_host_keypair() {
+        Some(kp) => {
+            println!("reusing existing host keypair from keyring — will reattach if backend recognizes it");
+            kp
+        }
+        None => generate_keypair(),
+    };
 
     let hostname = std::env::var("HOSTNAME")
         .unwrap_or_else(|_| whoami::fallible::hostname().unwrap_or_else(|_| "unknown".to_string()));
@@ -573,12 +609,15 @@ async fn pair_qr_device_add(config: AppConfig, mut store: StateStore) -> Result<
     {
         Ok(c) => c,
         Err(host_core::error::HostError::HostGone) => {
-            println!(
-                "this host was removed from your account on the backend — re-registering as a new host..."
-            );
-            store.state = Default::default();
-            store.save().context("clearing stale host identity")?;
-            return pair_qr_new_host(config, store).await;
+            // The backend doesn't recognize this host_id under the
+            // authenticated user. Don't silently wipe state and re-register
+            // — that path was creating duplicate hosts. Force the user to
+            // make the choice explicitly via `--reset`.
+            return Err(anyhow!(
+                "this host's identity is no longer recognized by the backend. \
+                 to register as a new host (this will create a fresh host record), \
+                 run: pocketshell pair --reset"
+            ));
         }
         Err(e) => return Err(e).context("starting host-initiated device-add"),
     };

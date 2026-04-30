@@ -133,6 +133,29 @@ impl StateStore {
         self.secrets.clear(KEY_REFRESH_TOKEN)
     }
 
+    /// Try to recover an Ed25519 host keypair from the OS keyring even when
+    /// `state.host` is no longer present on disk. Returns `(public_key_b64,
+    /// private_key_b64)` if a stored private key was found and parses as a
+    /// valid 32-byte Ed25519 seed. The backend pairs by `(user_id, public_key)`,
+    /// so reusing the same keypair lets a host that lost its `state.json`
+    /// reattach to its existing backend record instead of duplicating it.
+    pub fn try_load_host_keypair(&self) -> Option<(String, String)> {
+        use base64::Engine;
+        use ed25519_dalek::SigningKey;
+
+        let private_key_b64 = self.secrets.get(KEY_HOST_PRIVATE).ok().flatten()?;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&private_key_b64)
+            .ok()?;
+        let bytes_arr: [u8; 32] = bytes.try_into().ok()?;
+        let sk = SigningKey::from_bytes(&bytes_arr);
+        let vk = sk.verifying_key();
+        Some((
+            base64::engine::general_purpose::STANDARD.encode(vk.to_bytes()),
+            private_key_b64,
+        ))
+    }
+
     /// Re-read `trusted_devices` and `pending_devices` from disk into memory.
     /// Daemon's revocation path uses this to rebase on the latest CLI writes
     /// before applying backend-driven revocations.
