@@ -9,6 +9,26 @@ use crate::secure::parse_jwt_exp;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use reqwest::{Client, StatusCode};
 
+/// Domain-separation tag for the host signing-key reauth payload. MUST match
+/// `HOST_REAUTH_SIGNING_PREFIX` in `app/services/auth_service.py`; changing
+/// either side without the other breaks signature verification.
+const HOST_REAUTH_SIGNING_PREFIX: &[u8] = b"pocketshell-reauth-v1";
+
+/// Reconstruct the byte sequence that gets Ed25519-signed for `/auth/host/reauth`.
+/// MUST produce the exact same bytes as the Python equivalent in
+/// `AuthService.reauth_host_with_signing_key`.
+pub fn build_reauth_payload(host_id: &str, issued_at_iso8601: &str) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(
+        HOST_REAUTH_SIGNING_PREFIX.len() + 2 + host_id.len() + issued_at_iso8601.len(),
+    );
+    buf.extend_from_slice(HOST_REAUTH_SIGNING_PREFIX);
+    buf.push(b'\n');
+    buf.extend_from_slice(host_id.as_bytes());
+    buf.push(b'\n');
+    buf.extend_from_slice(issued_at_iso8601.as_bytes());
+    buf
+}
+
 /// Optional action the backend can request via heartbeat response.
 #[derive(Debug, Clone, PartialEq)]
 pub enum HeartbeatAction {
@@ -54,6 +74,50 @@ impl BackendClient {
         res.json::<TokenPairResponse>()
             .await
             .map_err(|e| HostError::Backend(format!("invalid refresh payload: {e}")))
+    }
+
+    /// Re-authenticate as a host using its permanent Ed25519 signing key.
+    ///
+    /// Recovery path when `/token/refresh` returns 401 — the refresh token
+    /// is gone (Redis JTI loss, rotation race, manual revocation) but the
+    /// host can still prove identity by signing a recent timestamp with
+    /// the private key registered at pairing time. Backend looks up the
+    /// public key in Postgres, so this works through Redis outages.
+    ///
+    /// `issued_at_iso8601` must be the **exact** string that was signed —
+    /// the server reconstructs the payload byte-for-byte and any
+    /// reformatting (e.g. timezone normalization) breaks verification.
+    /// Use [`build_reauth_payload`] to keep client and server in sync.
+    pub async fn host_reauth(
+        &self,
+        host_id: &str,
+        issued_at_iso8601: &str,
+        signature_b64: &str,
+    ) -> Result<TokenPairResponse> {
+        let url = format!("{}/api/v1/auth/host/reauth", self.base_url);
+        let res = self
+            .client
+            .post(url)
+            .header(CONTENT_TYPE, "application/json")
+            .json(&serde_json::json!({
+                "host_id": host_id,
+                "issued_at": issued_at_iso8601,
+                "signature": signature_b64,
+            }))
+            .send()
+            .await
+            .map_err(|e| HostError::Backend(e.to_string()))?;
+
+        if res.status() == StatusCode::UNAUTHORIZED {
+            return Err(HostError::AuthRevoked);
+        }
+        if !res.status().is_success() {
+            let body = res.text().await.unwrap_or_default();
+            return Err(HostError::Backend(format!("host reauth failed: {body}")));
+        }
+        res.json::<TokenPairResponse>()
+            .await
+            .map_err(|e| HostError::Backend(format!("invalid reauth payload: {e}")))
     }
 
     /// Revoke a refresh token server-side. Called on `pocketshell logout`
@@ -1220,6 +1284,85 @@ mod tests {
         match err {
             HostError::Backend(m) => assert!(m.contains("nope")),
             other => panic!("expected Backend got {other:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // /auth/host/reauth
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn build_reauth_payload_format_is_stable() {
+        // This test pins the exact wire format. If it changes, the Python
+        // verifier has to change in lockstep — bumping this test is a
+        // signal that we need a coordinated server deploy.
+        let bytes = build_reauth_payload("h-123", "2026-05-04T03:40:00+00:00");
+        assert_eq!(bytes, b"pocketshell-reauth-v1\nh-123\n2026-05-04T03:40:00+00:00");
+    }
+
+    #[tokio::test]
+    async fn host_reauth_posts_payload_and_parses_tokens() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/auth/host/reauth"))
+            .and(header("content-type", "application/json"))
+            .and(body_json(json!({
+                "host_id": "h-1",
+                "issued_at": "2026-05-04T03:40:00+00:00",
+                "signature": "sig-b64",
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": "fresh-a",
+                "refresh_token": "fresh-r",
+                "token_type": "Bearer"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let c = BackendClient::new(server.uri());
+        let resp = c
+            .host_reauth("h-1", "2026-05-04T03:40:00+00:00", "sig-b64")
+            .await
+            .unwrap();
+        assert_eq!(resp.access_token, "fresh-a");
+        assert_eq!(resp.refresh_token, "fresh-r");
+    }
+
+    #[tokio::test]
+    async fn host_reauth_maps_401_to_auth_revoked() {
+        // 401 from this endpoint means signature/timestamp/host invalid —
+        // the daemon's outer loop maps `AuthRevoked` to the user-visible
+        // "re-pair required" path, which is the right escalation when the
+        // signing key itself is no longer trusted.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/auth/host/reauth"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+                "detail": "Invalid signature"
+            })))
+            .mount(&server)
+            .await;
+
+        let c = BackendClient::new(server.uri());
+        let err = c.host_reauth("h-1", "2026-05-04T03:40:00+00:00", "sig").await.unwrap_err();
+        assert!(matches!(err, HostError::AuthRevoked), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn host_reauth_500_returns_backend_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/auth/host/reauth"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("kapow"))
+            .mount(&server)
+            .await;
+
+        let c = BackendClient::new(server.uri());
+        let err = c.host_reauth("h-1", "2026-05-04T03:40:00+00:00", "sig").await.unwrap_err();
+        match err {
+            HostError::Backend(m) => assert!(m.contains("kapow")),
+            other => panic!("expected Backend, got {other:?}"),
         }
     }
 }

@@ -271,7 +271,11 @@ fn canonical_x25519_response_payload(
     )
 }
 
-fn parse_ed25519_signing_key(private_key_b64: &str) -> Result<SigningKey> {
+/// Decode a base64-encoded 32-byte Ed25519 seed into a `SigningKey`. The seed
+/// is moved through a `Zeroizing` buffer so it doesn't linger on the stack
+/// after construction. Used by every signing path (SDP, X25519 handshake,
+/// host reauth) so seed-handling stays consistent.
+pub(crate) fn parse_ed25519_signing_key(private_key_b64: &str) -> Result<SigningKey> {
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(private_key_b64)
         .map_err(|e| anyhow!("invalid base64 for ed25519 private key: {}", e))?;

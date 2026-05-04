@@ -18,7 +18,7 @@ use crate::session::accept_session;
 use crate::signaling_crypto::{self, EphemeralKeypair, SessionCipher};
 use crate::stats::StatsCollector;
 use crate::store::StateStore;
-use crate::transport::{connect_host_ws, recv_signal, send_signal};
+use crate::transport::{connect_host_ws, recv_signal, send_signal, WsRead};
 use crate::webrtc_manager::{WebRtcEvent, WebRtcManager};
 use crate::webrtc_peer::WebRtcPeer;
 use base64::Engine;
@@ -1441,13 +1441,18 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
         match safe_refresh_if_needed(&backend, &mut store).await {
             Ok(()) => {}
             Err(HostError::AuthRevoked) => {
-                // 401 from /token/refresh. While the host is still associated
-                // with a user account the token is treated as live: a 401 is
-                // typically a transient race (CLI vs daemon) and the next tick
-                // — which reloads state.json — will pick up whichever rotated
-                // tokens the winner persisted. Only stop trying when the
-                // refresh JWT's exp claim has actually passed locally; until
-                // then keep retrying so the daemon recovers without re-pair.
+                // AuthRevoked here means BOTH paths in `safe_refresh_if_needed`
+                // failed: the rotating refresh token AND the permanent
+                // signing-key reauth via `/auth/host/reauth`. The latter
+                // verifies against `hosts.public_key` in Postgres, so a 401
+                // there means our identity itself is no longer trusted —
+                // host record deleted, disabled, or pubkey rotated. Only at
+                // that point is re-pair the right answer.
+                //
+                // We still distinguish "transient race" from "permanent" via
+                // the local refresh-JWT exp check: if the JWT itself has not
+                // expired, a previous refresh from a concurrent CLI may have
+                // landed and the next tick reloads state.json to pick it up.
                 let permanent = store
                     .state
                     .auth
@@ -1455,9 +1460,9 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                     .map(refresh_token_jwt_expired)
                     .unwrap_or(false);
                 if permanent {
-                    warn!("refresh token JWT exp passed — re-pair via `pocketshell pair <CODE>`");
+                    warn!("auth fully rejected (refresh + signing-key) — re-pair via `pocketshell pair <CODE>`");
                 } else {
-                    warn!("token refresh rejected (likely a rotation race) — retrying in ~30s");
+                    warn!("token refresh rejected and signing-key reauth failed — retrying in ~30s");
                 }
                 sleep(jittered(Duration::from_secs(30))).await;
                 store = StateStore::load()?;
@@ -1493,6 +1498,18 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
         let mut heartbeat_tick = interval(Duration::from_secs(config.heartbeat_interval_secs));
         let mut consecutive_heartbeat_failures: u32 = 0;
         let mut ws_ping_tick = interval(Duration::from_secs(30));
+        // Watchdog state: detect dead WS sockets that don't surface as read
+        // errors (e.g. half-closed CLOSE_WAIT after a backend hiccup). The
+        // read-deadline used to live inside `recv_signal` as a 90s
+        // `tokio::time::timeout`, but that was reset on every select! loss
+        // (50ms output/webrtc ticks) and so could never fire. We track these
+        // externally and check them on `ws_watchdog_tick`.
+        let mut last_ws_message_at = Instant::now();
+        let mut pending_ping_deadline: Option<Instant> = None;
+        let mut ws_watchdog_tick = interval(Duration::from_secs(5));
+        ws_watchdog_tick.tick().await; // skip immediate first tick
+        const WS_READ_IDLE_LIMIT: Duration = Duration::from_secs(90);
+        const WS_PONG_DEADLINE: Duration = Duration::from_secs(15);
         let mut stats_tick = interval(Duration::from_secs(config.stats_interval_secs));
         let mut summary_tick = interval(Duration::from_secs(config.summary_interval_secs));
         let mut stats_bg_tick = interval(Duration::from_secs(10 * 60));
@@ -3683,15 +3700,25 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                 }
 
                 _ = ws_ping_tick.tick() => {
-                    // Send a WS ping to detect dead connections early.
-                    // If the TCP send buffer is full (dead connection), this
-                    // will time out and we force a reconnect.
+                    // Send a WS ping and arm a Pong deadline. A successful
+                    // send only proves the local TLS buffer accepted bytes
+                    // — on a CLOSE_WAIT'd socket writes still succeed
+                    // silently. The real liveness signal is whether the
+                    // server replies with a Pong before `WS_PONG_DEADLINE`;
+                    // the watchdog tick enforces that.
                     let ping_result = tokio::time::timeout(
                         Duration::from_secs(10),
                         ws.send(Message::Ping(vec![].into())),
                     ).await;
                     match ping_result {
-                        Ok(Ok(_)) => {}
+                        Ok(Ok(_)) => {
+                            // Don't overwrite an earlier still-pending
+                            // deadline — that one is the one that should
+                            // fire if the server has gone silent.
+                            if pending_ping_deadline.is_none() {
+                                pending_ping_deadline = Some(Instant::now() + WS_PONG_DEADLINE);
+                            }
+                        }
                         Ok(Err(e)) => {
                             warn!("ws ping send failed: {} — forcing reconnect", e);
                             break;
@@ -3702,10 +3729,36 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                         }
                     }
                 }
+                _ = ws_watchdog_tick.tick() => {
+                    let now = Instant::now();
+                    if now.duration_since(last_ws_message_at) > WS_READ_IDLE_LIMIT {
+                        warn!(
+                            "no ws traffic for >{}s — forcing reconnect",
+                            WS_READ_IDLE_LIMIT.as_secs()
+                        );
+                        break;
+                    }
+                    if let Some(deadline) = pending_ping_deadline {
+                        if now >= deadline {
+                            warn!(
+                                "ws pong missing >{}s after ping — forcing reconnect",
+                                WS_PONG_DEADLINE.as_secs()
+                            );
+                            break;
+                        }
+                    }
+                }
 
                 incoming = recv_signal(&mut ws) => {
+                    // Any frame — Signal, Pong, server-Ping (auto-replied),
+                    // binary, or raw — is evidence the connection is alive.
+                    // The watchdog above checks this timestamp; the read
+                    // deadline lives there rather than inside recv_signal
+                    // because select! cancellation makes a per-call timeout
+                    // unsound (see comment on `recv_signal`).
+                    last_ws_message_at = Instant::now();
                     match incoming {
-                        Ok(Some(msg)) => {
+                        Ok(WsRead::Signal(msg)) => {
                             info!("ws received: type={} session_id={:?}", msg.message_type, msg.session_id);
                             if msg.message_type == "stats_subscribe" {
                                 // stats_subscribe may arrive from the backend REST
@@ -3760,8 +3813,11 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                 error!("control message handling failed: {}", err);
                             }
                         }
-                        Ok(None) => {
-                            // ping/pong or binary frame — keep going
+                        Ok(WsRead::Pong) => {
+                            pending_ping_deadline = None;
+                        }
+                        Ok(WsRead::KeepAlive) => {
+                            // server Ping (auto-replied), binary, or raw frame
                         }
                         Err(err) => {
                             warn!("control-plane read failed: {}", err);

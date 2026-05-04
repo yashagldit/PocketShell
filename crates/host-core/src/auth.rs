@@ -14,17 +14,20 @@
 //! intra-window reload to adopt fresh tokens that another process wrote
 //! between the time we loaded state and the time we acquired the lock.
 
-use crate::api::BackendClient;
+use crate::api::{build_reauth_payload, BackendClient};
 use crate::config::AppConfig;
 use crate::error::{HostError, Result};
 use crate::models::AuthState;
 use crate::secure::{parse_jwt_exp, require_refresh_token, token_is_expiring};
 use crate::store::StateStore;
-use chrono::Utc;
+use crate::signaling_crypto::parse_ed25519_signing_key;
+use base64::Engine;
+use chrono::{SecondsFormat, Utc};
+use ed25519_dalek::{Signer, SigningKey};
 use std::fs::{File, OpenOptions};
 use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
-use tracing::warn;
+use tracing::{info, warn};
 
 /// RAII guard for the cross-process refresh lock. Releases via `flock(LOCK_UN)`
 /// (implicit when the file descriptor is closed on drop).
@@ -126,15 +129,18 @@ pub async fn safe_refresh_if_needed(
     let tokens = match backend.refresh_tokens(&refresh).await {
         Ok(t) => t,
         Err(HostError::AuthRevoked) => {
-            // Inside the lock our snapshot is authoritative for this host's
-            // refresh attempts. A 401 here means the JTI was blacklisted —
-            // either the JWT exp passed, the host record was deleted, or an
-            // unlocked legacy caller (older binary version) raced us. We do
-            // NOT touch persisted state: keep the refresh token on disk so a
-            // later retry can recover if circumstances change, and so the
-            // user gets a clean diagnostic (`refresh_token_jwt_expired`) to
-            // decide whether to re-pair.
-            return Err(HostError::AuthRevoked);
+            // The rotating refresh-token path is dead (Redis JTI lost,
+            // rotation race, manual revocation, …). Before surfacing
+            // AuthRevoked — which forces the user to re-pair — try the
+            // permanent Ed25519 signing key. The backend verifies the
+            // signature against `hosts.public_key` in Postgres, so this
+            // path survives Redis outages and is the whole reason the
+            // host has a permanent identity keypair.
+            //
+            // If signing-key reauth ALSO fails with AuthRevoked, the
+            // signing key itself is no longer trusted (host deleted,
+            // disabled, …) — only then do we propagate AuthRevoked.
+            return reauth_with_signing_key(backend, store, reloaded).await;
         }
         Err(e) => return Err(e),
     };
@@ -159,6 +165,83 @@ pub async fn safe_refresh_if_needed(
     }
     *store = to_persist;
     Ok(())
+}
+
+/// Recovery path: re-authenticate the host using its permanent Ed25519
+/// signing key against `POST /auth/host/reauth`. Called when refresh-token
+/// rotation has been broken by a Redis outage, persistence-after-rotation
+/// race, or manual revocation. Persists the new token pair just like the
+/// refresh path.
+///
+/// `reloaded` is the freshly-loaded store snapshot from inside the refresh
+/// lock — we re-use it as the destination for the new tokens so any other
+/// fields written by a concurrent process (trust changes, sessions) survive.
+async fn reauth_with_signing_key(
+    backend: &BackendClient,
+    store: &mut StateStore,
+    reloaded: StateStore,
+) -> Result<()> {
+    let host_state = reloaded
+        .state
+        .host
+        .as_ref()
+        .ok_or(HostError::NotLoggedIn)?;
+    let host_id = host_state.host_id.clone();
+    let private_key_b64 = host_state.private_key.clone();
+    if private_key_b64.is_empty() {
+        // No signing key on this install — there's no recovery path. This
+        // should not happen for a paired host (the keyring or fallback file
+        // is hydrated at load time), but if state is corrupted we surface
+        // AuthRevoked so the caller's "re-pair" branch fires.
+        warn!("signing-key reauth unavailable: no private key in store");
+        return Err(HostError::AuthRevoked);
+    }
+
+    let signing = parse_ed25519_signing_key(&private_key_b64).map_err(|e| {
+        warn!("signing-key reauth aborted: stored private key failed to decode: {e}");
+        HostError::AuthRevoked
+    })?;
+
+    let tokens = sign_and_reauth(backend, &host_id, &signing).await?;
+    info!("recovered host auth via signing key (host_id={})", host_id);
+
+    let new_auth = AuthState {
+        access_token: tokens.access_token.clone(),
+        refresh_token: tokens.refresh_token,
+        access_expires_at: parse_jwt_exp(&tokens.access_token),
+    };
+    let mut to_persist = reloaded;
+    to_persist.state.auth = Some(new_auth);
+    if let Err(e) = to_persist.save() {
+        warn!(
+            "CRITICAL: signing-key reauth succeeded but persistence failed: {} — next process restart will need to reauth again",
+            e
+        );
+        return Err(e);
+    }
+    *store = to_persist;
+    Ok(())
+}
+
+/// The pure network+crypto half of the signing-key reauth. Split out from
+/// [`reauth_with_signing_key`] so it can be tested without disk / keyring
+/// access — those tests would otherwise clobber the real `pocketshell`
+/// keychain entry when run on a developer's machine.
+///
+/// Signed payload uses an RFC 3339 timestamp with seconds precision and an
+/// explicit `+00:00` offset. The same string we sign is sent on the wire so
+/// the server reconstructs the byte sequence verbatim — any reformatting
+/// on either side breaks verification.
+async fn sign_and_reauth(
+    backend: &BackendClient,
+    host_id: &str,
+    signing: &SigningKey,
+) -> Result<crate::models::TokenPairResponse> {
+    let issued_at = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, false);
+    let payload = build_reauth_payload(host_id, &issued_at);
+    let sig_b64 =
+        base64::engine::general_purpose::STANDARD.encode(signing.sign(&payload).to_bytes());
+    backend.host_reauth(host_id, &issued_at, &sig_b64).await
 }
 
 #[cfg(test)]
@@ -205,5 +288,93 @@ mod tests {
         };
         // Defensive: don't lie about expiry when we can't decode.
         assert!(!refresh_token_jwt_expired(&auth));
+    }
+
+    // -----------------------------------------------------------------
+    // Signing-key reauth — see `sign_and_reauth` for the split-out
+    // network/crypto core. These tests deliberately avoid going through
+    // `StateStore::save()` (which would write to the real macOS Keychain
+    // under the same SERVICE name as the running daemon) and instead
+    // exercise the pure-function boundary.
+    // -----------------------------------------------------------------
+
+    #[tokio::test]
+    async fn sign_and_reauth_signs_payload_and_sends_to_backend() {
+        use rand::rngs::OsRng;
+        use wiremock::matchers::{body_partial_json, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        // We can't predict `issued_at` (it's `now()`), so match only on the
+        // structure: the backend got a host_id, an issued_at, and a
+        // signature, all non-empty. The byte-level signing format is
+        // pinned separately by `build_reauth_payload_format_is_stable`.
+        Mock::given(method("POST"))
+            .and(path("/api/v1/auth/host/reauth"))
+            .and(body_partial_json(serde_json::json!({"host_id": "h-1"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": "fresh-a",
+                "refresh_token": "fresh-r",
+                "token_type": "Bearer"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let backend = BackendClient::new(server.uri());
+        let signing = SigningKey::generate(&mut OsRng);
+        let resp = sign_and_reauth(&backend, "h-1", &signing).await.unwrap();
+        assert_eq!(resp.access_token, "fresh-a");
+        assert_eq!(resp.refresh_token, "fresh-r");
+    }
+
+    #[tokio::test]
+    async fn sign_and_reauth_propagates_auth_revoked_when_backend_rejects() {
+        use rand::rngs::OsRng;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // 401 from the reauth endpoint means the signing key itself is no
+        // longer trusted (host record deleted, disabled, …). The daemon's
+        // outer-loop branch on AuthRevoked will then warn "re-pair via
+        // pocketshell pair <CODE>" — which is the only correct response
+        // when permanent identity is gone.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/auth/host/reauth"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+
+        let backend = BackendClient::new(server.uri());
+        let signing = SigningKey::generate(&mut OsRng);
+        let err = sign_and_reauth(&backend, "h-1", &signing)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, HostError::AuthRevoked), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn sign_and_reauth_returns_transient_error_on_5xx() {
+        use rand::rngs::OsRng;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // 500 / network errors should NOT escalate to AuthRevoked — the
+        // caller will retry on the next tick. Only 401 means the key
+        // itself is dead.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/auth/host/reauth"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let backend = BackendClient::new(server.uri());
+        let signing = SigningKey::generate(&mut OsRng);
+        let err = sign_and_reauth(&backend, "h-1", &signing)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, HostError::Backend(_)), "got {err:?}");
     }
 }
