@@ -35,9 +35,9 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
+use std::time::SystemTime;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::oneshot;
-use std::time::SystemTime;
 use tokio::time::{interval, sleep, Duration, Instant};
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::{debug, error, info, warn};
@@ -187,6 +187,59 @@ fn build_signed_sdp_payload(
     }
 
     serde_json::Value::Object(obj)
+}
+
+fn verify_signed_sdp_payload(
+    payload: &serde_json::Value,
+    sdp: &str,
+    sdp_type: &str,
+    public_key_b64: &str,
+) -> Result<()> {
+    let protocol_err = |msg: &str| HostError::Backend(msg.to_string());
+    let sig_b64 = payload
+        .get("sdp_sig")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| protocol_err("signed SDP is missing signature"))?;
+    let nonce_b64 = payload
+        .get("sdp_sig_nonce")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| protocol_err("signed SDP is missing nonce"))?;
+    let ts = payload
+        .get("sdp_sig_ts")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| protocol_err("signed SDP is missing timestamp"))?;
+
+    let now = Utc::now().timestamp();
+    if (now - ts).abs() > WS_AUTH_MAX_SKEW_SECS {
+        return Err(protocol_err("signed SDP timestamp outside allowed skew"));
+    }
+
+    let pub_bytes = base64::engine::general_purpose::STANDARD
+        .decode(public_key_b64)
+        .map_err(|_| protocol_err("signed SDP public key is invalid base64"))?;
+    let verify_key = VerifyingKey::from_bytes(
+        pub_bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| protocol_err("signed SDP public key must be 32 bytes"))?,
+    )
+    .map_err(|_| protocol_err("signed SDP public key is invalid"))?;
+    let sig_bytes = base64::engine::general_purpose::STANDARD
+        .decode(sig_b64)
+        .map_err(|_| protocol_err("signed SDP signature is invalid base64"))?;
+    let sig = Signature::from_slice(&sig_bytes)
+        .map_err(|_| protocol_err("signed SDP signature must be 64 bytes"))?;
+    let signed = format!(
+        "{}|{}|{}|{}|{}",
+        signaling_crypto::SDP_SIGNING_PREFIX,
+        sdp_type,
+        nonce_b64,
+        ts,
+        sdp
+    );
+    verify_key
+        .verify(signed.as_bytes(), &sig)
+        .map_err(|_| protocol_err("signed SDP signature verification failed"))
 }
 
 /// In-progress file transfer from a mobile device.
@@ -1476,7 +1529,9 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                 if permanent {
                     warn!("auth fully rejected (refresh + signing-key) — re-pair via `pocketshell pair <CODE>`");
                 } else {
-                    warn!("token refresh rejected and signing-key reauth failed — retrying in ~30s");
+                    warn!(
+                        "token refresh rejected and signing-key reauth failed — retrying in ~30s"
+                    );
                 }
                 sleep(jittered(Duration::from_secs(30))).await;
                 store = StateStore::load()?;
@@ -4577,6 +4632,26 @@ async fn handle_signal(
             if transfer_id.is_empty() || source_host_id.is_empty() || offer_sdp.is_empty() {
                 return Ok(());
             }
+            let Some(source_host_public_key) = msg
+                .extra
+                .get("source_host_public_key")
+                .and_then(|v| v.as_str())
+            else {
+                warn!(
+                    "host_transfer_offer rejected: missing source host public key (transfer_id={})",
+                    transfer_id
+                );
+                return Ok(());
+            };
+            if let Err(err) =
+                verify_signed_sdp_payload(payload, &offer_sdp, "offer", source_host_public_key)
+            {
+                warn!(
+                    "host_transfer_offer rejected: SDP signature failed for source host {}: {}",
+                    source_host_id, err
+                );
+                return Ok(());
+            }
             if mobile_device_id.is_empty() || !store.is_trusted(&mobile_device_id) {
                 let mut extra = std::collections::HashMap::new();
                 extra.insert(
@@ -4677,6 +4752,26 @@ async fn handle_signal(
                 .unwrap_or_default()
                 .to_string();
             if let Some(transfer) = outbound_host_transfers.get(&transfer_id) {
+                let Some(answerer_public_key) = msg
+                    .extra
+                    .get("source_host_public_key")
+                    .and_then(|v| v.as_str())
+                else {
+                    warn!(
+                        "host_transfer_answer rejected: missing answering host public key (transfer_id={})",
+                        transfer_id
+                    );
+                    return Ok(());
+                };
+                if let Err(err) =
+                    verify_signed_sdp_payload(payload, &answer_sdp, "answer", answerer_public_key)
+                {
+                    warn!(
+                        "host_transfer_answer rejected: SDP signature failed for target host {}: {}",
+                        transfer.target_host_id, err
+                    );
+                    return Ok(());
+                }
                 if !offer_id.is_empty() && transfer.offer_id != offer_id {
                     return Ok(());
                 }
@@ -6737,7 +6832,10 @@ fn ws_message_permission_for(message_type: &str) -> Option<&'static str> {
         | "encrypted_file_payload"
         | "agent_init"
         | "agent_input"
-        | "agent_close" => Some("shell"),
+        | "agent_close"
+        | "session_join"
+        | "session_event"
+        | "alert_preferences_sync" => Some("shell"),
         _ => None,
     }
 }

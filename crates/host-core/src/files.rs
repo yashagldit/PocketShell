@@ -48,17 +48,13 @@ struct DeniedPaths {
 
 fn build_denied_paths(home: &Path) -> DeniedPaths {
     DeniedPaths {
-        prefixes: DENIED_HOME_PREFIXES
-            .iter()
-            .map(|p| home.join(p))
-            .collect(),
+        prefixes: DENIED_HOME_PREFIXES.iter().map(|p| home.join(p)).collect(),
         files: DENIED_HOME_FILES.iter().map(|f| home.join(f)).collect(),
     }
 }
 
 fn is_path_denied_against(path: &Path, denied: &DeniedPaths) -> bool {
-    denied.prefixes.iter().any(|p| path.starts_with(p))
-        || denied.files.iter().any(|f| path == f)
+    denied.prefixes.iter().any(|p| path.starts_with(p)) || denied.files.iter().any(|f| path == f)
 }
 
 /// Check whether `path` (already absolute, ideally canonicalized) lands
@@ -83,7 +79,10 @@ fn is_path_denied(path: &Path) -> bool {
 
 fn deny_if_protected(path: &Path) -> Result<()> {
     if is_path_denied(path) {
-        warn!("file channel denied: {} is in protected scope", path.display());
+        warn!(
+            "file channel denied: {} is in protected scope",
+            path.display()
+        );
         return Err(HostError::Backend(format!(
             "PROTECTED_PATH: access denied for {}",
             path.display()
@@ -988,7 +987,12 @@ fn mime_from_extension(path: &Path) -> &'static str {
 }
 
 pub fn resolve_file_path_for_transfer(path_str: &str) -> Result<PathBuf> {
-    resolve_path(path_str)
+    let expanded = resolve_path(path_str)?;
+    if expanded.exists() {
+        safe_canonicalize(&expanded)
+    } else {
+        safe_resolve_dest(path_str)
+    }
 }
 
 pub fn file_mime_type(path: &Path) -> &'static str {
@@ -1376,13 +1380,25 @@ mod tests {
         let home = PathBuf::from("/Users/test-user");
         let d = build_denied_paths(&home);
         assert!(is_path_denied_against(&home.join(".ssh/id_ed25519"), &d));
-        assert!(is_path_denied_against(&home.join(".pocketshell/state.json"), &d));
+        assert!(is_path_denied_against(
+            &home.join(".pocketshell/state.json"),
+            &d
+        ));
         assert!(is_path_denied_against(&home.join(".aws/credentials"), &d));
-        assert!(is_path_denied_against(&home.join(".gnupg/private-keys-v1.d/k"), &d));
-        assert!(is_path_denied_against(&home.join(".config/gh/hosts.yml"), &d));
+        assert!(is_path_denied_against(
+            &home.join(".gnupg/private-keys-v1.d/k"),
+            &d
+        ));
+        assert!(is_path_denied_against(
+            &home.join(".config/gh/hosts.yml"),
+            &d
+        ));
         assert!(is_path_denied_against(&home.join(".bash_history"), &d));
         assert!(is_path_denied_against(&home.join(".netrc"), &d));
-        assert!(!is_path_denied_against(&home.join("Documents/file.txt"), &d));
+        assert!(!is_path_denied_against(
+            &home.join("Documents/file.txt"),
+            &d
+        ));
         assert!(!is_path_denied_against(&home.join(".bashrc"), &d));
     }
 
