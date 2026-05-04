@@ -1,11 +1,40 @@
 use crate::error::{HostError, Result};
 use std::fs;
+use std::io;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, ExitStatus};
+use std::time::{Duration, Instant};
 use tracing::{info, warn};
 
 const LAUNCHD_LABEL: &str = "com.pocketshell.host-agent";
 const SYSTEMD_SERVICE: &str = "pocketshell-host-agent";
+
+/// `launchctl unload` and `systemctl stop` block until the supervised
+/// process exits, so a wedged daemon can pin the syscall indefinitely.
+/// Cap any service-control invocation: kill the child and surface
+/// TimedOut if it hasn't exited by then.
+const SERVICE_CMD_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> io::Result<ExitStatus> {
+    let mut child = cmd.spawn()?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait()? {
+            Some(status) => return Ok(status),
+            None => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!("command exceeded {timeout:?}"),
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
+}
 
 /// Result of a service install attempt.
 pub enum ServiceStatus {
@@ -141,16 +170,18 @@ fn install_launchd() -> Result<ServiceStatus> {
     info!("wrote launchd plist to {}", plist_path.display());
 
     // Unload any stale plist before loading the new one
-    let _ = Command::new("launchctl")
-        .args(["unload"])
-        .arg(&plist_path)
-        .status();
+    let _ = run_with_timeout(
+        Command::new("launchctl").args(["unload"]).arg(&plist_path),
+        SERVICE_CMD_TIMEOUT,
+    );
 
-    let status = Command::new("launchctl")
-        .args(["load", "-w"])
-        .arg(&plist_path)
-        .status()
-        .map_err(|e| HostError::Config(format!("launchctl load: {e}")))?;
+    let status = run_with_timeout(
+        Command::new("launchctl")
+            .args(["load", "-w"])
+            .arg(&plist_path),
+        SERVICE_CMD_TIMEOUT,
+    )
+    .map_err(|e| HostError::Config(format!("launchctl load: {e}")))?;
 
     if !status.success() {
         return Err(HostError::Config("launchctl load failed".into()));
@@ -164,10 +195,12 @@ fn install_launchd() -> Result<ServiceStatus> {
 pub fn uninstall_launchd() -> Result<()> {
     let plist_path = launchd_plist_path();
     if plist_path.exists() {
-        let _ = Command::new("launchctl")
-            .args(["unload", "-w"])
-            .arg(&plist_path)
-            .status();
+        let _ = run_with_timeout(
+            Command::new("launchctl")
+                .args(["unload", "-w"])
+                .arg(&plist_path),
+            SERVICE_CMD_TIMEOUT,
+        );
         fs::remove_file(&plist_path)
             .map_err(|e| HostError::Config(format!("remove plist: {e}")))?;
         info!("removed launchd plist");
@@ -278,12 +311,14 @@ WantedBy=default.target
 /// Stop, disable, and remove the systemd user service.
 pub fn uninstall_systemd() -> Result<()> {
     if has_systemctl() {
-        let _ = Command::new("systemctl")
-            .args(["--user", "stop", SYSTEMD_SERVICE])
-            .status();
-        let _ = Command::new("systemctl")
-            .args(["--user", "disable", SYSTEMD_SERVICE])
-            .status();
+        let _ = run_with_timeout(
+            Command::new("systemctl").args(["--user", "stop", SYSTEMD_SERVICE]),
+            SERVICE_CMD_TIMEOUT,
+        );
+        let _ = run_with_timeout(
+            Command::new("systemctl").args(["--user", "disable", SYSTEMD_SERVICE]),
+            SERVICE_CMD_TIMEOUT,
+        );
     }
     let unit_path = systemd_unit_path();
     if unit_path.exists() {
@@ -404,24 +439,28 @@ pub fn stop() -> Result<StopStatus> {
     if cfg!(target_os = "macos") {
         let plist_path = launchd_plist_path();
         if plist_path.exists() {
-            let _ = Command::new("launchctl")
-                .args(["unload"])
-                .arg(&plist_path)
-                .status();
+            let _ = run_with_timeout(
+                Command::new("launchctl").args(["unload"]).arg(&plist_path),
+                SERVICE_CMD_TIMEOUT,
+            );
             // Re-load without starting so it's registered for next boot
-            let _ = Command::new("launchctl")
-                .args(["load", "-w"])
-                .arg(&plist_path)
-                .status();
+            let _ = run_with_timeout(
+                Command::new("launchctl")
+                    .args(["load", "-w"])
+                    .arg(&plist_path),
+                SERVICE_CMD_TIMEOUT,
+            );
             // Then stop the running instance
-            let _ = Command::new("launchctl")
-                .args(["stop", LAUNCHD_LABEL])
-                .status();
+            let _ = run_with_timeout(
+                Command::new("launchctl").args(["stop", LAUNCHD_LABEL]),
+                SERVICE_CMD_TIMEOUT,
+            );
         }
     } else if cfg!(target_os = "linux") && has_systemctl() {
-        let _ = Command::new("systemctl")
-            .args(["--user", "stop", SYSTEMD_SERVICE])
-            .status();
+        let _ = run_with_timeout(
+            Command::new("systemctl").args(["--user", "stop", SYSTEMD_SERVICE]),
+            SERVICE_CMD_TIMEOUT,
+        );
     }
     info!("service stopped");
     Ok(StopStatus::Stopped)

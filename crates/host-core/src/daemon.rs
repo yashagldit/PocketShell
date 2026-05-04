@@ -37,6 +37,7 @@ use std::sync::{
 };
 use tokio::io::AsyncWriteExt;
 use tokio::sync::oneshot;
+use std::time::SystemTime;
 use tokio::time::{interval, sleep, Duration, Instant};
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::{debug, error, info, warn};
@@ -1398,9 +1399,22 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
     let mut local_pending_writers: HashMap<u64, tokio::net::unix::OwnedWriteHalf> = HashMap::new();
     let mut local_client_counter: u64 = 0;
 
+    // Singleton flock on pid_file so a second `daemon run` fails fast
+    // instead of racing on the local-attach socket.
+    let _pid_lock = match acquire_daemon_pid_lock() {
+        Ok(g) => g,
+        Err(e) => {
+            error!(
+                "another daemon appears to be running for this user (pid lock unavailable): {}",
+                e
+            );
+            return Err(e);
+        }
+    };
+
     let local_sock_path = local_attach::socket_path()
         .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/pocketshell-daemon.sock"));
-    // Remove stale socket file from previous run
+    // Safe to drop the stale socket: pid_lock above ensures we're the sole owner.
     let _ = std::fs::remove_file(&local_sock_path);
     let local_listener = match tokio::net::UnixListener::bind(&local_sock_path) {
         Ok(l) => {
@@ -1477,11 +1491,16 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
         }
         let token = store.access_token()?.to_string();
         let mut last_tick;
+        // Wall-clock catches suspends where the monotonic clock paused
+        // (CLOCK_MONOTONIC behavior varies by OS); either gap exceeding
+        // the stall threshold triggers reconnect.
+        let mut last_tick_wall;
         let mut ws = match connect_host_ws(&config.ws_url, &host_id, &token).await {
             Ok(socket) => {
                 info!("control-plane connected");
                 backoff_secs = 1;
                 last_tick = Instant::now();
+                last_tick_wall = SystemTime::now();
                 socket
             }
             Err(err) => {
@@ -1590,12 +1609,31 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
             tokio::select! {
                 _ = heartbeat_tick.tick() => {
                     let now = Instant::now();
-                    if now.duration_since(last_tick) > Duration::from_secs(config.heartbeat_interval_secs * 3) {
-                        warn!("possible sleep/wake detected; forcing reconnect");
+                    let now_wall = SystemTime::now();
+                    let mono_gap = now.duration_since(last_tick);
+                    // `duration_since` errors when the wall clock moved backwards
+                    // (NTP correction, manual reset). Treat the absolute jump as
+                    // the gap so we still reconnect — a backwards leap is just as
+                    // disruptive to long-lived sockets as a forward one.
+                    let wall_gap = match now_wall.duration_since(last_tick_wall) {
+                        Ok(d) => d,
+                        Err(e) => e.duration(),
+                    };
+                    let stall_threshold =
+                        Duration::from_secs(config.heartbeat_interval_secs * 3);
+                    if mono_gap > stall_threshold || wall_gap > stall_threshold {
+                        warn!(
+                            "possible sleep/wake detected (mono_gap={:?}, wall_gap={:?}); forcing reconnect",
+                            mono_gap, wall_gap
+                        );
                         break;
                     }
                     last_tick = now;
+                    last_tick_wall = now_wall;
 
+                    // Detect rotation so we can reconnect — the WS is bound
+                    // to the old JWT in its Authorization header until then.
+                    let token_before = store.access_token().ok().map(str::to_owned);
                     match safe_refresh_if_needed(&backend, &mut store).await {
                         Ok(()) => {}
                         Err(HostError::AuthRevoked) => {
@@ -1611,6 +1649,11 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                             warn!("token refresh failed: {} — will retry next tick", err);
                             continue;
                         }
+                    }
+                    let token_after = store.access_token().ok().map(str::to_owned);
+                    if token_before != token_after {
+                        info!("access token rotated; reconnecting WS to bind new credentials");
+                        break;
                     }
 
                     let payload = HeartbeatRequest {
@@ -3886,6 +3929,66 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
 // Refresh logic now lives in `crate::auth::safe_refresh_if_needed`, which adds
 // cross-process locking + atomic state writes so concurrent refreshes from
 // short-lived CLI commands and the daemon can't burn the rotation.
+
+/// RAII flock on `paths.pid_file` so a second `daemon run` fails fast
+/// instead of racing on the local-attach socket.
+struct DaemonPidLock {
+    _file: File,
+    path: PathBuf,
+}
+
+impl Drop for DaemonPidLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+fn acquire_daemon_pid_lock() -> Result<DaemonPidLock> {
+    use std::os::unix::io::AsRawFd;
+
+    let paths = AppConfig::paths()?;
+    if !paths.state_dir.exists() {
+        std::fs::create_dir_all(&paths.state_dir)?;
+    }
+    let pid_path = paths.pid_file.clone();
+    let file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&pid_path)?;
+
+    // SAFETY: `flock` only inspects the fd we pass; `file` outlives the call.
+    let rc = unsafe { nix::libc::flock(file.as_raw_fd(), nix::libc::LOCK_EX | nix::libc::LOCK_NB) };
+    if rc != 0 {
+        let err = std::io::Error::last_os_error();
+        return Err(HostError::Config(format!(
+            "another pocketshell daemon is running (pid file {}): {}",
+            pid_path.display(),
+            err
+        )));
+    }
+
+    // Stamp our pid so external tools (`daemon stop`, status checks) see the live owner.
+    let pid = std::process::id().to_string();
+    {
+        use std::io::Write as _;
+        let mut writable = file
+            .try_clone()
+            .map_err(|e| HostError::Config(format!("dup pid_file fd: {e}")))?;
+        writable
+            .set_len(0)
+            .map_err(|e| HostError::Config(format!("truncate pid_file: {e}")))?;
+        writable
+            .write_all(pid.as_bytes())
+            .map_err(|e| HostError::Config(format!("write pid_file: {e}")))?;
+    }
+
+    Ok(DaemonPidLock {
+        _file: file,
+        path: pid_path,
+    })
+}
 
 /// Rewrite a Claude stdout line so that embedded `tool_result` payloads keep a
 /// bounded preview instead of the full body. Raw tool results can be hundreds
