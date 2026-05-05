@@ -201,7 +201,11 @@ pub async fn handle_files_action(
                 .get("max_depth")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(10) as usize;
-            search_files(&path_str, query, max_results, max_depth)
+            let files_only = payload
+                .get("files_only")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            search_files(&path_str, query, max_results, max_depth, files_only)
         }
         _ => Err(HostError::Backend(format!(
             "unknown files action: {action}"
@@ -819,12 +823,19 @@ fn glob_to_regex(glob: &str) -> String {
 }
 
 enum SearchMatcher {
+    /// Match-everything sentinel — returned for an empty query so callers can
+    /// still walk a path through `matches()` without special-casing the
+    /// "browse this directory" case.
+    Any,
     Substring(String),
     Glob(regex::Regex),
 }
 
 impl SearchMatcher {
     fn new(query: &str) -> Result<Self> {
+        if query.is_empty() {
+            return Ok(SearchMatcher::Any);
+        }
         let query_lower = query.to_lowercase();
         if is_glob(&query_lower) {
             let pattern = glob_to_regex(&query_lower);
@@ -836,12 +847,27 @@ impl SearchMatcher {
         }
     }
 
-    fn matches(&self, name: &str) -> bool {
-        let lower = name.to_lowercase();
+    /// Match against both the bare filename and its path relative to the
+    /// search root (e.g. `src/main.rs`). Path-shaped queries like
+    /// `src/main` or `*.rs` then hit nested files instead of returning
+    /// nothing because filenames never contain `/`. Inputs are expected to
+    /// be lowercased once at the call site so we don't repeat the work
+    /// per-variant for each entry.
+    fn matches(&self, name_lower: &str, rel_path_lower: &str) -> bool {
         match self {
-            SearchMatcher::Substring(q) => lower.contains(q.as_str()),
-            SearchMatcher::Glob(re) => re.is_match(&lower),
+            SearchMatcher::Any => true,
+            SearchMatcher::Substring(q) => {
+                name_lower.contains(q.as_str()) || rel_path_lower.contains(q.as_str())
+            }
+            SearchMatcher::Glob(re) => re.is_match(name_lower) || re.is_match(rel_path_lower),
         }
+    }
+
+    /// `true` when the matcher reads its arguments — i.e. anything other
+    /// than the empty-query browse case. Lets the walker skip the
+    /// rel-path computation when it would be ignored.
+    fn is_any(&self) -> bool {
+        matches!(self, SearchMatcher::Any)
     }
 }
 
@@ -850,24 +876,29 @@ fn search_files(
     query: &str,
     max_results: usize,
     max_depth: usize,
+    files_only: bool,
 ) -> Result<serde_json::Value> {
-    if query.is_empty() {
-        return Err(HostError::Backend("search query is required".to_string()));
-    }
-
     let dir = resolve_path(path_str)?;
     let canonical = safe_canonicalize(&dir)?;
     let matcher = SearchMatcher::new(query)?;
 
+    // Empty query → browse-style listing of the immediate children, sorted
+    // by modified-time desc. This is what the agent-chat `@` trigger relies
+    // on when no query has been typed yet — the user sees the most recent
+    // files in cwd instead of an arbitrary substring hit on ".".
+    let empty_query = query.is_empty();
+
     let mut results: Vec<FileEntry> = Vec::new();
 
     fn walk(
+        root: &Path,
         dir: &Path,
         matcher: &SearchMatcher,
         results: &mut Vec<FileEntry>,
         max_results: usize,
         depth: usize,
         max_depth: usize,
+        files_only: bool,
     ) {
         if depth > max_depth || results.len() >= max_results {
             return;
@@ -912,7 +943,28 @@ fn search_files(
                 continue;
             }
 
-            if matcher.matches(&name) {
+            // The empty-query (`Any`) branch ignores both arguments to
+            // `matches`, so we skip the rel-path build + lowercasing
+            // entirely for it — that's the hot loop for the agent-chat
+            // `@`-browse case.
+            let pushed = if matcher.is_any() {
+                true
+            } else {
+                let name_lower = name.to_lowercase();
+                let rel_path = entry_path
+                    .strip_prefix(root)
+                    .unwrap_or(&entry_path)
+                    .to_string_lossy()
+                    .replace('\\', "/")
+                    .to_lowercase();
+                matcher.matches(&name_lower, &rel_path)
+            };
+
+            // `files_only` keeps directories out of the result set but
+            // still recurses into them — the agent-chat `@` mention only
+            // wants files, but the host shouldn't stop walking just
+            // because the immediate hit was a directory.
+            if pushed && !(files_only && metadata.is_dir()) {
                 results.push(FileEntry {
                     name: name.clone(),
                     path: entry_path.to_string_lossy().to_string(),
@@ -926,25 +978,45 @@ fn search_files(
 
             if metadata.is_dir() && !is_symlink {
                 walk(
+                    root,
                     &entry_path,
                     matcher,
                     results,
                     max_results,
                     depth + 1,
                     max_depth,
+                    files_only,
                 );
             }
         }
     }
 
-    walk(
-        &canonical,
-        &matcher,
-        &mut results,
-        max_results,
-        0,
-        max_depth,
-    );
+    if empty_query {
+        // Don't recurse — just list the immediate children, sorted by
+        // mtime desc. max_depth is ignored in this branch.
+        walk(
+            &canonical,
+            &canonical,
+            &matcher,
+            &mut results,
+            max_results,
+            0,
+            0,
+            files_only,
+        );
+        results.sort_by(|a, b| b.modified_at.cmp(&a.modified_at));
+    } else {
+        walk(
+            &canonical,
+            &canonical,
+            &matcher,
+            &mut results,
+            max_results,
+            0,
+            max_depth,
+            files_only,
+        );
+    }
 
     Ok(serde_json::json!({
         "entries": results,
@@ -1028,15 +1100,41 @@ mod tests {
 
     #[test]
     fn search_matcher_substring_and_glob() {
+        // `matches` expects pre-lowercased inputs (the walker handles that
+        // once per entry). Tests pass the lowercase form explicitly.
         let sub = SearchMatcher::new("Hello").unwrap();
-        assert!(sub.matches("say hello world"));
-        assert!(sub.matches("HELLO"));
-        assert!(!sub.matches("goodbye"));
+        assert!(sub.matches("say hello world", "say hello world"));
+        assert!(sub.matches("hello", "hello"));
+        assert!(!sub.matches("goodbye", "goodbye"));
 
         let glob = SearchMatcher::new("*.RS").unwrap();
-        assert!(glob.matches("main.rs"));
-        assert!(glob.matches("LIB.RS"));
-        assert!(!glob.matches("main.txt"));
+        assert!(glob.matches("main.rs", "main.rs"));
+        assert!(glob.matches("lib.rs", "lib.rs"));
+        assert!(!glob.matches("main.txt", "main.txt"));
+    }
+
+    #[test]
+    fn search_matcher_matches_relative_path() {
+        // Path-shaped queries (containing `/`) can never substring-match
+        // the bare filename — they have to land on the relative path.
+        let sub = SearchMatcher::new("src/main").unwrap();
+        assert!(sub.matches("main.rs", "src/main.rs"));
+        assert!(!sub.matches("main.rs", "lib/main.rs"));
+
+        // Globs follow the same rule — `*.rs` against `src/main.rs`
+        // succeeds because the regex (`^.*\.rs$`) matches the path.
+        let glob = SearchMatcher::new("*.rs").unwrap();
+        assert!(glob.matches("main.rs", "src/main.rs"));
+        assert!(glob.matches("main.rs", "main.rs"));
+        assert!(!glob.matches("main.txt", "src/main.txt"));
+    }
+
+    #[test]
+    fn search_matcher_any_for_empty_query() {
+        let any = SearchMatcher::new("").unwrap();
+        assert!(any.is_any());
+        assert!(any.matches("anything", "any/where.txt"));
+        assert!(any.matches("", ""));
     }
 
     #[cfg(unix)]
@@ -1319,13 +1417,13 @@ mod tests {
         fs::create_dir(dir.path().join("sub")).unwrap();
         fs::write(dir.path().join("sub/alphabet.rs"), b"").unwrap();
 
-        let res = search_files(&dir.path().to_string_lossy(), "alpha", 10, 5).unwrap();
+        let res = search_files(&dir.path().to_string_lossy(), "alpha", 10, 5, false).unwrap();
         assert_eq!(res["total"], 2);
 
-        let res2 = search_files(&dir.path().to_string_lossy(), "*.rs", 10, 5).unwrap();
+        let res2 = search_files(&dir.path().to_string_lossy(), "*.rs", 10, 5, false).unwrap();
         assert_eq!(res2["total"], 3);
 
-        let res3 = search_files(&dir.path().to_string_lossy(), "*.rs", 1, 5).unwrap();
+        let res3 = search_files(&dir.path().to_string_lossy(), "*.rs", 1, 5, false).unwrap();
         assert_eq!(res3["total"], 1);
     }
 
@@ -1335,15 +1433,77 @@ mod tests {
         fs::create_dir(dir.path().join("node_modules")).unwrap();
         fs::write(dir.path().join("node_modules/match.rs"), b"").unwrap();
         fs::write(dir.path().join("keep.rs"), b"").unwrap();
-        let res = search_files(&dir.path().to_string_lossy(), "*.rs", 50, 5).unwrap();
+        let res = search_files(&dir.path().to_string_lossy(), "*.rs", 50, 5, false).unwrap();
         assert_eq!(res["total"], 1);
     }
 
     #[test]
-    fn search_files_requires_query() {
+    fn search_files_matches_path_shaped_queries() {
+        // Used to return 0 hits because the substring matcher only saw
+        // bare filenames — `src/main` could never match `main.rs`.
         let dir = tempdir().unwrap();
-        let err = search_files(&dir.path().to_string_lossy(), "", 10, 5).unwrap_err();
-        assert!(matches!(err, HostError::Backend(_)));
+        fs::create_dir(dir.path().join("src")).unwrap();
+        fs::write(dir.path().join("src/main.rs"), b"").unwrap();
+        fs::create_dir(dir.path().join("lib")).unwrap();
+        fs::write(dir.path().join("lib/main.rs"), b"").unwrap();
+
+        let res = search_files(&dir.path().to_string_lossy(), "src/main", 10, 5, false).unwrap();
+        assert_eq!(res["total"], 1);
+        let entries = res["entries"].as_array().unwrap();
+        assert_eq!(entries[0]["name"], "main.rs");
+        assert!(
+            entries[0]["path"]
+                .as_str()
+                .unwrap()
+                .ends_with("src/main.rs")
+        );
+    }
+
+    #[test]
+    fn search_files_empty_query_returns_immediate_children() {
+        // Empty query is the agent-chat `@` browse case — return a flat
+        // listing of cwd, no recursion, sorted by mtime desc.
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), b"").unwrap();
+        fs::write(dir.path().join("b.txt"), b"").unwrap();
+        fs::create_dir(dir.path().join("sub")).unwrap();
+        // Nested file must NOT be included — recursion is off.
+        fs::write(dir.path().join("sub/inner.txt"), b"").unwrap();
+
+        let res = search_files(&dir.path().to_string_lossy(), "", 10, 6, false).unwrap();
+        let entries = res["entries"].as_array().unwrap();
+        let names: Vec<&str> = entries
+            .iter()
+            .map(|e| e["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"a.txt"));
+        assert!(names.contains(&"b.txt"));
+        assert!(names.contains(&"sub"));
+        assert!(!names.contains(&"inner.txt"));
+    }
+
+    #[test]
+    fn search_files_files_only_excludes_dirs_but_recurses() {
+        // `files_only` is the agent-chat `@`-mention path — directories
+        // shouldn't take up slots in the result list, but the walker
+        // still has to descend into them to find nested file hits.
+        let dir = tempdir().unwrap();
+        fs::create_dir(dir.path().join("foo_dir")).unwrap();
+        fs::write(dir.path().join("foo_dir/foo_file.txt"), b"").unwrap();
+        fs::write(dir.path().join("foo_top.txt"), b"").unwrap();
+
+        let res =
+            search_files(&dir.path().to_string_lossy(), "foo", 10, 5, true).unwrap();
+        let entries = res["entries"].as_array().unwrap();
+        let names: Vec<&str> = entries
+            .iter()
+            .map(|e| e["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"foo_top.txt"));
+        assert!(names.contains(&"foo_file.txt"));
+        assert!(!names.contains(&"foo_dir"));
+        // No FileEntry should report is_dir=true under files_only.
+        assert!(entries.iter().all(|e| e["is_dir"] == false));
     }
 
     #[tokio::test]
