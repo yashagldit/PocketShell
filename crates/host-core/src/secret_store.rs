@@ -23,6 +23,30 @@ use tracing::{debug, warn};
 
 const SERVICE: &str = "pocketshell-host-agent";
 
+/// Whether to consult the OS keyring at all. The `linux-native` keyring
+/// backend is the kernel keyutils session keyring, which is scoped per
+/// process-tree — secrets written from a `sudo pocketshell pair` invocation
+/// are not visible to a separately-launched daemon, leading to silent loss
+/// of the host signing key. Default off on Linux; the file fallback in this
+/// module's state dir is the canonical store. Set
+/// `POCKETSHELL_USE_KEYRING=1` to opt back in (e.g. when building against
+/// `sync-secret-service` on a desktop with gnome-keyring/kwallet).
+///
+/// macOS and Windows ship persistent per-user keychains, so the keyring is
+/// safe (and preferred) there.
+fn use_keyring() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        std::env::var_os("POCKETSHELL_USE_KEYRING")
+            .map(|v| v != "0" && !v.is_empty())
+            .unwrap_or(false)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        true
+    }
+}
+
 /// Key under which the host's ED25519 private key is stored.
 pub const KEY_HOST_PRIVATE: &str = "host-private-key";
 /// Key under which the long-lived refresh token is stored.
@@ -43,6 +67,9 @@ impl SecretStore {
     /// Read a secret. Returns `Ok(None)` if neither the keyring nor the
     /// fallback file holds a value (first-run case).
     pub fn get(&self, name: &str) -> Result<Option<String>> {
+        if !use_keyring() {
+            return self.get_file(name);
+        }
         match keyring::Entry::new(SERVICE, name) {
             Ok(entry) => match entry.get_password() {
                 Ok(v) => return Ok(Some(v)),
@@ -67,6 +94,9 @@ impl SecretStore {
     /// Write a secret. Prefers the OS keyring; falls back to a 0o600 file
     /// only if the keyring rejects the write (e.g., headless Linux).
     pub fn put(&self, name: &str, value: &str) -> Result<()> {
+        if !use_keyring() {
+            return self.put_file(name, value);
+        }
         match keyring::Entry::new(SERVICE, name) {
             Ok(entry) => match entry.set_password(value) {
                 Ok(()) => {
@@ -95,10 +125,12 @@ impl SecretStore {
     /// Remove a secret from both backends — used on logout and account
     /// deletion. Best-effort; ignores "not found" errors.
     pub fn clear(&self, name: &str) -> Result<()> {
-        if let Ok(entry) = keyring::Entry::new(SERVICE, name) {
-            match entry.delete_credential() {
-                Ok(()) | Err(keyring::Error::NoEntry) => {}
-                Err(e) => debug!("keyring delete({}/{}) error: {}", SERVICE, name, e),
+        if use_keyring() {
+            if let Ok(entry) = keyring::Entry::new(SERVICE, name) {
+                match entry.delete_credential() {
+                    Ok(()) | Err(keyring::Error::NoEntry) => {}
+                    Err(e) => debug!("keyring delete({}/{}) error: {}", SERVICE, name, e),
+                }
             }
         }
         let _ = fs::remove_file(self.fallback_path(name));
