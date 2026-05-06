@@ -21,6 +21,7 @@
   "folder.recent": "Recenti",
   "folder.noSubfolders": "Nessuna sottocartella",
   "folder.use": "Usa",
-  "folder.noConnection": "Nessuna connessione attiva con questo host. Apri prima 'File' per attivarla.",
+  "folder.connecting": "Connessione all'host…",
+  "folder.connectionFailed": "Impossibile connettersi all'host. Torna indietro e riprova.",
   "folder.loadFailed": "Caricamento directory fallito"
 }

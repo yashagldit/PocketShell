@@ -21,6 +21,7 @@
   "folder.recent": "Récents",
   "folder.noSubfolders": "Pas de sous-dossiers",
   "folder.use": "Utiliser",
-  "folder.noConnection": "Aucune connexion active avec cet hôte. Ouvrez d'abord 'Fichiers' pour l'activer.",
+  "folder.connecting": "Connexion à l'hôte…",
+  "folder.connectionFailed": "Impossible de se connecter à l'hôte. Reviens en arrière et réessaie.",
   "folder.loadFailed": "Échec du chargement du répertoire"
 }

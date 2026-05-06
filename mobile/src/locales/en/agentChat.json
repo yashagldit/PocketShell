@@ -37,6 +37,7 @@
   "toast.folderCopied": "Folder path copied",
   "toast.noSessionId": "No session id yet",
   "toast.sessionCopied": "Session id copied",
+  "toast.maxAttachments": "Attachment limit reached",
   "error.openFailed": "Failed to open agent chat",
   "error.resumeFailed": "Failed to resume session",
   "error.loadOlderFailed": "Failed to load older messages",

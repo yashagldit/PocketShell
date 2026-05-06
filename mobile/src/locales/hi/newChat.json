@@ -21,6 +21,7 @@
   "folder.recent": "हाल के",
   "folder.noSubfolders": "कोई सबफ़ोल्डर नहीं",
   "folder.use": "उपयोग करें",
-  "folder.noConnection": "इस होस्ट से कोई सक्रिय कनेक्शन नहीं। पहले फ़ाइलें खोलें ताकि वह शुरू हो सके।",
+  "folder.connecting": "होस्ट से कनेक्ट हो रहा है…",
+  "folder.connectionFailed": "होस्ट से कनेक्ट नहीं हो सका। वापस जाएँ और फिर कोशिश करें.",
   "folder.loadFailed": "डायरेक्टरी लोड करने में विफल"
 }

@@ -21,6 +21,7 @@
   "folder.recent": "Recentes",
   "folder.noSubfolders": "Sem subpastas",
   "folder.use": "Usar",
-  "folder.noConnection": "Sem conexão ativa com este host. Abra 'Arquivos' primeiro para ativar a conexão.",
+  "folder.connecting": "Conectando ao host…",
+  "folder.connectionFailed": "Não foi possível conectar ao host. Volte e tente novamente.",
   "folder.loadFailed": "Falha ao carregar diretório"
 }

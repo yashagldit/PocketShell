@@ -21,6 +21,7 @@
   "folder.recent": "Recent",
   "folder.noSubfolders": "No subfolders",
   "folder.use": "Use",
-  "folder.noConnection": "No active connection to this host. Open Files first to bring it up.",
+  "folder.connecting": "Connecting to host…",
+  "folder.connectionFailed": "Couldn't connect to host. Go back and try again.",
   "folder.loadFailed": "Failed to load directory"
 }

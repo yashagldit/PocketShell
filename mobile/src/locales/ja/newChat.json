@@ -21,6 +21,7 @@
   "folder.recent": "最近",
   "folder.noSubfolders": "サブフォルダはありません",
   "folder.use": "使う",
-  "folder.noConnection": "このホストへのアクティブな接続がありません。先にファイルを開いて接続を確立してください。",
+  "folder.connecting": "ホストに接続中…",
+  "folder.connectionFailed": "ホストに接続できませんでした。戻ってもう一度試してください。",
   "folder.loadFailed": "ディレクトリを読み込めませんでした"
 }

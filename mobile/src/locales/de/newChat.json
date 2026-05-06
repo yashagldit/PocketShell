@@ -21,6 +21,7 @@
   "folder.recent": "Zuletzt",
   "folder.noSubfolders": "Keine Unterordner",
   "folder.use": "Nutzen",
-  "folder.noConnection": "Keine aktive Verbindung zu diesem Host. Öffne zuerst Dateien, um sie herzustellen.",
+  "folder.connecting": "Verbindung zum Host wird hergestellt…",
+  "folder.connectionFailed": "Verbindung zum Host fehlgeschlagen. Geh zurück und versuche es erneut.",
   "folder.loadFailed": "Verzeichnis konnte nicht geladen werden"
 }

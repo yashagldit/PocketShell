@@ -21,6 +21,7 @@
   "folder.recent": "最近使用",
   "folder.noSubfolders": "無子資料夾",
   "folder.use": "使用",
-  "folder.noConnection": "沒有與此主機的活動連接。請先開啟「檔案」以建立連接。",
+  "folder.connecting": "正在連線到主機…",
+  "folder.connectionFailed": "無法連線到主機。請返回並重試。",
   "folder.loadFailed": "載入目錄失敗"
 }
