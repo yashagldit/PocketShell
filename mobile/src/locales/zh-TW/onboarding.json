@@ -13,5 +13,10 @@
   "step_monitor.description": "即時查看 CPU、記憶體、磁碟和網路統計資訊。設置警報閾值，并在需要關注時獲得通知 —— 全部透過安全的 WebRTC 通道。",
   "skip": "跳過",
   "next": "下一步",
-  "get_started": "立即開始"
+  "get_started": "立即開始",
+  "login.terms_prefix": "繼續即表示您同意",
+  "login.terms_link": "服務條款",
+  "login.terms_middle": "和",
+  "login.privacy_link": "隱私政策",
+  "login.terms_suffix": "。"
 }

@@ -731,6 +731,34 @@ fn move_path(path_str: &str, destination: &str, overwrite: bool) -> Result<serde
 
 fn write_file(path_str: &str, data_b64: &str, append: bool) -> Result<serde_json::Value> {
     let file_path = safe_resolve_dest(path_str)?;
+
+    // Reject obviously oversize payloads BEFORE allocating the decoded buffer.
+    // base64 expands raw bytes by 4/3; the +4 covers padding rounding. A 1 GB
+    // base64 string from a malicious client would otherwise OOM the daemon
+    // before the decoded-length check below could fire.
+    let max_b64_len = (MAX_FILE_SIZE as usize)
+        .saturating_mul(4)
+        / 3
+        + 4;
+    if data_b64.len() > max_b64_len {
+        let _ = crate::audit::write_audit_event(crate::audit::AuditEvent {
+            event_type: "file_write_rejected_oversize".to_string(),
+            details: Some(serde_json::json!({
+                "path": path_str,
+                "b64_len": data_b64.len(),
+                "max_b64_len": max_b64_len,
+                "max_file_size": MAX_FILE_SIZE,
+            })),
+            ..crate::audit::AuditEvent::new("file_write_rejected_oversize")
+        });
+        return Err(HostError::Backend(format!(
+            "file payload too large: {} base64 bytes exceeds limit of {} (max file size {} bytes)",
+            data_b64.len(),
+            max_b64_len,
+            MAX_FILE_SIZE
+        )));
+    }
+
     let data = base64::engine::general_purpose::STANDARD
         .decode(data_b64)
         .map_err(|e| HostError::Backend(format!("invalid base64 payload: {e}")))?;

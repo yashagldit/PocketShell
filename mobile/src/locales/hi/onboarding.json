@@ -13,5 +13,10 @@
   "step_monitor.description": "CPU, मेमोरी, डिस्क और नेटवर्क आँकड़े रीयल-टाइम में देखें। अलर्ट थ्रेशोल्ड सेट करें और जब ज़रूरत हो तब नोटिफ़िकेशन पाएँ — सब कुछ सुरक्षित WebRTC चैनल पर।",
   "skip": "छोड़ें",
   "next": "आगे",
-  "get_started": "शुरू करें"
+  "get_started": "शुरू करें",
+  "login.terms_prefix": "जारी रखकर आप ",
+  "login.terms_link": "सेवा की शर्तों",
+  "login.terms_middle": " और ",
+  "login.privacy_link": "गोपनीयता नीति",
+  "login.terms_suffix": " से सहमत हैं।"
 }

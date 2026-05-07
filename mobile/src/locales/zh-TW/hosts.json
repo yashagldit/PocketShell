@@ -85,5 +85,15 @@
   "status_offline": "離線",
   "status_stale": "陳舊",
   "status_unsupported": "不支援",
-  "status_revoked": "已撤回"
+  "status_revoked": "已撤回",
+  "pin.verified": "已驗證主機",
+  "pin.verified_detail": "已透過掃描 QR 碼確認此主機的身分金鑰。端對端驗證已啟用。",
+  "pin.backend_trusted": "後端信任的主機",
+  "pin.backend_trusted_detail": "此主機的身分金鑰來自伺服器,而非直接來自主機。請掃描主機的 QR 碼以啟用端對端驗證。",
+  "pin.backend_trusted_banner": "後端信任的主機。掃描 QR 碼以啟用端對端驗證。",
+  "pin.unpinned": "主機身分未驗證",
+  "pin.unpinned_detail": "尚未為此主機固定身分金鑰。請透過 QR 碼配對以啟用端對端驗證。",
+  "pin.unpinned_banner": "主機身分未驗證。請掃描主機的 QR 碼。",
+  "pin.cta_verify": "用 QR 碼驗證",
+  "pin.cta_dismiss": "關閉"
 }

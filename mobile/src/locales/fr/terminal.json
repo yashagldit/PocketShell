@@ -3,6 +3,7 @@
   "connecting": "Établissement du canal P2P...",
   "reconnecting": "Reconnexion à l'hôte...",
   "failed": "Échec de la connexion",
+  "connection_failed": "Échec de la connexion",
   "closed": "Session fermée",
   "progress.requested": "Session demandée",
   "progress.connecting": "Réglage P2P",
@@ -11,5 +12,8 @@
   "uploading_image": "Envoi de l'image",
   "upload_success": "Envoi réussi",
   "upload_failed": "Échec de l'envoi",
-  "selection_modal_subtitle": "Utilisez les poignées de sélection de texte natives de l'appareil."
+  "selection_modal_subtitle": "Utilisez les poignées de sélection de texte natives de l'appareil.",
+  "banner.backend_trusted": "Vérification de bout en bout non établie. Touchez pour vérifier.",
+  "banner.unpinned": "Identité de l'hôte non vérifiée. Touchez pour vérifier.",
+  "banner.cta_verify": "Vérifier"
 }

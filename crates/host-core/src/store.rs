@@ -4,7 +4,6 @@ use crate::models::{AgentState, SessionRecord, TrustedDeviceRecord};
 use crate::secret_store::{SecretStore, KEY_HOST_PRIVATE, KEY_REFRESH_TOKEN};
 use chrono::Utc;
 use std::fs;
-use std::io::Write;
 use std::path::PathBuf;
 
 #[derive(Debug)]
@@ -23,15 +22,39 @@ impl StateStore {
         harden_dir_permissions(&paths.state_dir)?;
 
         if !paths.state_file.exists() {
-            let mut file = fs::File::create(&paths.state_file)?;
-            file.write_all(
+            // Atomic write so a crash mid-create can't leave a half-written
+            // state.json that the parse path below would treat as corrupt.
+            atomic_write(
+                &paths.state_file,
                 b"{\n  \"pending_devices\": [],\n  \"trusted_devices\": [],\n  \"sessions\": []\n}\n",
             )?;
         }
         harden_file_permissions(&paths.state_file)?;
 
         let raw = fs::read_to_string(&paths.state_file)?;
-        let mut state = serde_json::from_str::<AgentState>(&raw).unwrap_or_default();
+        // Refuse to start on a non-empty but unparseable state.json. The old
+        // `unwrap_or_default()` path silently reset to an empty state on parse
+        // failure, which then made `require_logged_in` shut the daemon down
+        // a few moments later — a confusing crash loop. An empty file is a
+        // legitimate fresh-install signal; non-empty + parse error means a
+        // disk corruption or partial write that the operator must look at.
+        let mut state = if raw.trim().is_empty() {
+            AgentState::default()
+        } else {
+            match serde_json::from_str::<AgentState>(&raw) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!(
+                        "state.json at {} is corrupt and cannot be parsed: {}. \
+                         Refusing to start to prevent identity loss. \
+                         Backup and remove the file to start fresh.",
+                        paths.state_file.display(),
+                        e
+                    );
+                    std::process::exit(2);
+                }
+            }
+        };
 
         let secrets = SecretStore::new(paths.state_dir.clone());
 
@@ -372,11 +395,11 @@ impl StateStore {
 }
 
 /// Write `bytes` to `path` atomically: write to a sibling tempfile, fsync, rename.
-/// Prevents partial writes from a killed/crashing process leaving state.json in
-/// a half-state — the rename is atomic on POSIX, so readers either see the old
+/// Prevents partial writes from a killed/crashing process leaving the destination
+/// in a half-state — the rename is atomic on POSIX, so readers either see the old
 /// contents or the new contents but never a truncation. The 0o600 mode is set
 /// on the tempfile before the rename so the destination is never world-readable.
-fn atomic_write(path: &PathBuf, bytes: &[u8]) -> Result<()> {
+pub(crate) fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
     use std::io::Write;
     let parent = path
         .parent()
@@ -394,12 +417,26 @@ fn atomic_write(path: &PathBuf, bytes: &[u8]) -> Result<()> {
         f.write_all(bytes)?;
         f.sync_all()?;
     }
-    set_file_permissions(&tmp)?;
+    set_file_permissions_path(&tmp)?;
     if let Err(e) = fs::rename(&tmp, path) {
         let _ = fs::remove_file(&tmp);
         return Err(e.into());
     }
-    set_file_permissions(path)?;
+    set_file_permissions_path(path)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_file_permissions_path(path: &std::path::Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut perms = fs::metadata(path)?.permissions();
+    perms.set_mode(0o600);
+    fs::set_permissions(path, perms)?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_file_permissions_path(_path: &std::path::Path) -> Result<()> {
     Ok(())
 }
 

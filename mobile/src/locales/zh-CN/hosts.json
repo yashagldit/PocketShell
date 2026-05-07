@@ -85,5 +85,15 @@
   "status_offline": "离线",
   "status_stale": "陈旧",
   "status_unsupported": "不支持",
-  "status_revoked": "已撤销"
+  "status_revoked": "已撤销",
+  "pin.verified": "已验证主机",
+  "pin.verified_detail": "已通过扫描二维码确认此主机的身份密钥。端到端验证已启用。",
+  "pin.backend_trusted": "后端信任的主机",
+  "pin.backend_trusted_detail": "此主机的身份密钥来自服务器,而非直接来自主机。请扫描主机的二维码以启用端到端验证。",
+  "pin.backend_trusted_banner": "后端信任的主机。扫描二维码以启用端到端验证。",
+  "pin.unpinned": "主机身份未验证",
+  "pin.unpinned_detail": "尚未为此主机固定身份密钥。请通过二维码配对以启用端到端验证。",
+  "pin.unpinned_banner": "主机身份未验证。请扫描主机的二维码。",
+  "pin.cta_verify": "用二维码验证",
+  "pin.cta_dismiss": "关闭"
 }

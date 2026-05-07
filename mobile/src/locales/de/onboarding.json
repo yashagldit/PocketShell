@@ -13,5 +13,10 @@
   "step_monitor.description": "Beobachte CPU-, RAM-, Festplatten- und Netzwerkwerte in Echtzeit. Lege Schwellwerte für Alarme fest und werde benachrichtigt, wenn etwas Aufmerksamkeit braucht — alles über einen sicheren WebRTC-Kanal.",
   "skip": "Überspringen",
   "next": "Weiter",
-  "get_started": "Loslegen"
+  "get_started": "Loslegen",
+  "login.terms_prefix": "Indem du fortfährst, stimmst du den ",
+  "login.terms_link": "Nutzungsbedingungen",
+  "login.terms_middle": " und der ",
+  "login.privacy_link": "Datenschutzerklärung",
+  "login.terms_suffix": " zu."
 }

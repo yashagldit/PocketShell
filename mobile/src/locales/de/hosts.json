@@ -86,5 +86,15 @@
   "status_offline": "offline",
   "status_stale": "veraltet",
   "status_unsupported": "nicht unterstützt",
-  "status_revoked": "widerrufen"
+  "status_revoked": "widerrufen",
+  "pin.verified": "Verifizierter Host",
+  "pin.verified_detail": "Der Identitätsschlüssel dieses Hosts wurde per QR-Code bestätigt. Ende-zu-Ende verifiziert.",
+  "pin.backend_trusted": "Backend-vertrauter Host",
+  "pin.backend_trusted_detail": "Der Identitätsschlüssel dieses Hosts stammt vom Server, nicht direkt vom Host. Scanne den QR-Code des Hosts, um die Ende-zu-Ende-Verifizierung zu aktivieren.",
+  "pin.backend_trusted_banner": "Backend-vertrauter Host. Scanne den QR-Code des Hosts, um Ende-zu-Ende zu verifizieren.",
+  "pin.unpinned": "Host-Identität nicht verifiziert",
+  "pin.unpinned_detail": "Für diesen Host wurde kein Identitätsschlüssel gespeichert. Per QR koppeln, um Ende-zu-Ende-Verifizierung zu aktivieren.",
+  "pin.unpinned_banner": "Host-Identität nicht verifiziert. Scanne den QR-Code des Hosts.",
+  "pin.cta_verify": "Mit QR verifizieren",
+  "pin.cta_dismiss": "Schließen"
 }

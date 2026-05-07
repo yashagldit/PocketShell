@@ -3,6 +3,7 @@
   "connecting": "正在建立 P2P 連接...",
   "reconnecting": "正在重新連接主機...",
   "failed": "連接失敗",
+  "connection_failed": "連接失敗",
   "closed": "工作階段已關閉",
   "progress.requested": "已請求工作階段",
   "progress.connecting": "正在建立 P2P",
@@ -11,5 +12,8 @@
   "uploading_image": "正在上傳圖片",
   "upload_success": "上傳成功",
   "upload_failed": "上傳失敗",
-  "selection_modal_subtitle": "使用設備的原生文本選擇句柄。"
+  "selection_modal_subtitle": "使用設備的原生文本選擇句柄。",
+  "banner.backend_trusted": "尚未建立端對端驗證。點擊以驗證。",
+  "banner.unpinned": "主機身分未驗證。點擊以驗證。",
+  "banner.cta_verify": "驗證"
 }

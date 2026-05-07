@@ -13,5 +13,10 @@
   "step_monitor.description": "实时查看 CPU、内存、磁盘和网络统计信息。设置报警阈值，并在需要关注时获得通知 —— 全部通过安全的 WebRTC 通道。",
   "skip": "跳过",
   "next": "下一步",
-  "get_started": "立即开始"
+  "get_started": "立即开始",
+  "login.terms_prefix": "继续即表示您同意",
+  "login.terms_link": "服务条款",
+  "login.terms_middle": "和",
+  "login.privacy_link": "隐私政策",
+  "login.terms_suffix": "。"
 }

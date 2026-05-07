@@ -86,5 +86,15 @@
   "status_offline": "オフライン",
   "status_stale": "古い",
   "status_unsupported": "非対応",
-  "status_revoked": "取り消し済み"
+  "status_revoked": "取り消し済み",
+  "pin.verified": "検証済みホスト",
+  "pin.verified_detail": "このホストの ID キーは QR コードのスキャンによって確認されました。エンドツーエンドで検証済みです。",
+  "pin.backend_trusted": "バックエンド信頼ホスト",
+  "pin.backend_trusted_detail": "このホストの ID キーはホストから直接ではなくサーバーから取得されました。エンドツーエンドの検証にはホストの QR コードをスキャンしてください。",
+  "pin.backend_trusted_banner": "バックエンド信頼ホスト。QR をスキャンしてエンドツーエンド検証を有効にしてください。",
+  "pin.unpinned": "ホスト ID 未検証",
+  "pin.unpinned_detail": "このホストに対して ID キーが保存されていません。QR でペアリングしてエンドツーエンド検証を有効にしてください。",
+  "pin.unpinned_banner": "ホスト ID 未検証。QR コードをスキャンしてください。",
+  "pin.cta_verify": "QR で検証",
+  "pin.cta_dismiss": "閉じる"
 }

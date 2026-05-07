@@ -3,6 +3,7 @@
   "connecting": "P2P-Verbindung wird hergestellt…",
   "reconnecting": "Verbindung zum Host wird wiederhergestellt…",
   "failed": "Verbindung fehlgeschlagen",
+  "connection_failed": "Verbindung fehlgeschlagen",
   "closed": "Session geschlossen",
   "progress.requested": "Session angefordert",
   "progress.connecting": "P2P wird hergestellt",
@@ -11,5 +12,8 @@
   "uploading_image": "Bild wird hochgeladen",
   "upload_success": "Upload erfolgreich",
   "upload_failed": "Upload fehlgeschlagen",
-  "selection_modal_subtitle": "Verwende die nativen Textauswahl-Griffe des Geräts."
+  "selection_modal_subtitle": "Verwende die nativen Textauswahl-Griffe des Geräts.",
+  "banner.backend_trusted": "Ende-zu-Ende-Verifizierung nicht eingerichtet. Zum Verifizieren tippen.",
+  "banner.unpinned": "Host-Identität nicht verifiziert. Zum Verifizieren tippen.",
+  "banner.cta_verify": "Verifizieren"
 }

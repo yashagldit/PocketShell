@@ -13,5 +13,10 @@
   "step_monitor.description": "CPU, 메모리, 디스크 및 네트워크 통계를 실시간으로 확인하세요. 알림 임계값을 설정하고 주의가 필요한 상황이 발생하면 알림을 받으세요 — 모두 안전한 WebRTC 채널을 통해 이루어집니다.",
   "skip": "건너뛰기",
   "next": "다음",
-  "get_started": "시작하기"
+  "get_started": "시작하기",
+  "login.terms_prefix": "계속하면 ",
+  "login.terms_link": "서비스 약관",
+  "login.terms_middle": " 및 ",
+  "login.privacy_link": "개인정보 처리방침",
+  "login.terms_suffix": "에 동의하게 됩니다."
 }

@@ -3,6 +3,7 @@
   "connecting": "Establishing P2P connection...",
   "reconnecting": "Reconnecting to host...",
   "failed": "Connection failed",
+  "connection_failed": "Connection failed",
   "closed": "Session closed",
   "progress.requested": "Session requested",
   "progress.connecting": "Establishing P2P",
@@ -11,5 +12,8 @@
   "uploading_image": "Uploading image",
   "upload_success": "Upload successful",
   "upload_failed": "Upload failed",
-  "selection_modal_subtitle": "Use the device's native text selection handles."
+  "selection_modal_subtitle": "Use the device's native text selection handles.",
+  "banner.backend_trusted": "End-to-end verification not established. Tap to verify.",
+  "banner.unpinned": "Host identity not verified. Tap to verify.",
+  "banner.cta_verify": "Verify"
 }

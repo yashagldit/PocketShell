@@ -3,6 +3,7 @@
   "connecting": "Stabilendo canale P2P...",
   "reconnecting": "Riconnessione all'host...",
   "failed": "Connessione fallita",
+  "connection_failed": "Connessione fallita",
   "closed": "Sessione chiusa",
   "progress.requested": "Sessione richiesta",
   "progress.connecting": "Sincronizzazione P2P",
@@ -11,5 +12,8 @@
   "uploading_image": "Caricamento immagine",
   "upload_success": "Caricamento riuscito",
   "upload_failed": "Caricamento fallito",
-  "selection_modal_subtitle": "Usa i controlli di selezione testo nativi del dispositivo."
+  "selection_modal_subtitle": "Usa i controlli di selezione testo nativi del dispositivo.",
+  "banner.backend_trusted": "Verifica end-to-end non attiva. Tocca per verificare.",
+  "banner.unpinned": "Identità host non verificata. Tocca per verificare.",
+  "banner.cta_verify": "Verifica"
 }

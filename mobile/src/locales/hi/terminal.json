@@ -3,6 +3,7 @@
   "connecting": "P2P कनेक्शन स्थापित किया जा रहा है…",
   "reconnecting": "होस्ट से फिर से कनेक्ट हो रहा है…",
   "failed": "कनेक्शन विफल",
+  "connection_failed": "कनेक्शन विफल",
   "closed": "सेशन बंद",
   "progress.requested": "सेशन का अनुरोध किया गया",
   "progress.connecting": "P2P स्थापित हो रहा है",
@@ -11,5 +12,8 @@
   "uploading_image": "इमेज अपलोड हो रही है",
   "upload_success": "अपलोड सफल",
   "upload_failed": "अपलोड विफल",
-  "selection_modal_subtitle": "डिवाइस के नेटिव टेक्स्ट चयन हैंडल का उपयोग करें।"
+  "selection_modal_subtitle": "डिवाइस के नेटिव टेक्स्ट चयन हैंडल का उपयोग करें।",
+  "banner.backend_trusted": "एंड-टू-एंड सत्यापन सक्रिय नहीं। सत्यापित करने के लिए टैप करें।",
+  "banner.unpinned": "होस्ट पहचान सत्यापित नहीं। टैप करें।",
+  "banner.cta_verify": "सत्यापित करें"
 }

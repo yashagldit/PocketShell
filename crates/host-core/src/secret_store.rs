@@ -16,7 +16,7 @@
 //! are moved into the keyring and replaced with empty strings. On read, an
 //! empty field falls through to the keyring.
 
-use crate::error::{HostError, Result};
+use crate::error::Result;
 use std::fs;
 use std::path::PathBuf;
 use tracing::{debug, warn};
@@ -156,30 +156,13 @@ impl SecretStore {
             fs::create_dir_all(&self.fallback_dir)?;
         }
         let p = self.fallback_path(name);
-        fs::write(&p, value)?;
-        harden_secret_file(&p)?;
+        // Atomic write + 0o600 chmod-before-rename prevents (a) empty file on
+        // mid-truncate crash and (b) the secret being briefly observable at
+        // default umask between `fs::write` and the chmod. Shared with the
+        // state.json writer in `store.rs`.
+        crate::store::atomic_write(&p, value.as_bytes())?;
         Ok(())
     }
-}
-
-#[cfg(unix)]
-fn harden_secret_file(path: &std::path::Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let mut perms = fs::metadata(path)?.permissions();
-    perms.set_mode(0o600);
-    fs::set_permissions(path, perms).map_err(|e| {
-        HostError::Backend(format!(
-            "could not chmod 0600 secret file {}: {}",
-            path.display(),
-            e
-        ))
-    })?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn harden_secret_file(_path: &std::path::Path) -> Result<()> {
-    Ok(())
 }
 
 #[cfg(test)]

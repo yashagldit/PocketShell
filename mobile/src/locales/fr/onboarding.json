@@ -13,5 +13,10 @@
   "step_monitor.description": "Suivez les statistiques CPU, mémoire, disque et réseau en temps réel. Définissez des seuils d'alerte et recevez des notifications quand quelque chose nécessite votre attention — tout cela via un canal WebRTC sécurisé.",
   "skip": "Passer",
   "next": "Suivant",
-  "get_started": "Commencer"
+  "get_started": "Commencer",
+  "login.terms_prefix": "En continuant, vous acceptez les ",
+  "login.terms_link": "Conditions d'utilisation",
+  "login.terms_middle": " et la ",
+  "login.privacy_link": "Politique de confidentialité",
+  "login.terms_suffix": "."
 }

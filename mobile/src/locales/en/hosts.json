@@ -86,5 +86,15 @@
   "status_offline": "offline",
   "status_stale": "stale",
   "status_unsupported": "unsupported",
-  "status_revoked": "revoked"
+  "status_revoked": "revoked",
+  "pin.verified": "Verified host",
+  "pin.verified_detail": "This host's identity key was confirmed by scanning its QR code. End-to-end verified.",
+  "pin.backend_trusted": "Backend-trusted host",
+  "pin.backend_trusted_detail": "The host identity key for this device came from the server, not directly from the host. For end-to-end verification, scan the host's QR code.",
+  "pin.backend_trusted_banner": "Backend-trusted host. Scan the host's QR code to enable end-to-end verification.",
+  "pin.unpinned": "Host identity not verified",
+  "pin.unpinned_detail": "No identity key has been pinned for this host. Pair via QR to enable end-to-end verification.",
+  "pin.unpinned_banner": "Host identity not verified. Scan the host's QR code to enable end-to-end verification.",
+  "pin.cta_verify": "Verify with QR",
+  "pin.cta_dismiss": "Dismiss"
 }

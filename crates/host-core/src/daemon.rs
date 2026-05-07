@@ -139,6 +139,77 @@ fn jittered(base: Duration) -> Duration {
     Duration::from_millis(final_ms)
 }
 
+/// Resolve `kill` to an absolute path so a poisoned PATH (e.g. attacker code
+/// in `~/.local/bin/kill`) can't be invoked under the daemon's UID.
+fn resolve_kill_binary() -> PathBuf {
+    let candidates: &[&str] = if cfg!(target_os = "macos") {
+        &["/bin/kill"]
+    } else if cfg!(target_os = "linux") {
+        &["/bin/kill", "/usr/bin/kill"]
+    } else {
+        &[]
+    };
+    crate::stats::resolve_system_binary("kill", candidates)
+}
+
+/// Reject kill_process targets the daemon clearly does not own. Pragmatic
+/// containment, not strict authorization:
+///
+/// * accept pids in the daemon's own process group (helpers spawned without
+///   `setsid`),
+/// * otherwise accept pids that share the daemon's effective UID — PTY
+///   children get their own pgrp via `forkpty(3)` but stay under the same
+///   UID, and the daemon already cannot signal another user's processes.
+///
+/// Anything from another user (root, a different login) is refused.
+fn pid_is_in_daemon_pgrp(pid: i32) -> bool {
+    #[cfg(unix)]
+    {
+        use nix::libc;
+        // SAFETY: getpgrp / getpgid have no preconditions.
+        let our_pgrp = unsafe { libc::getpgrp() };
+        let target_pgrp = unsafe { libc::getpgid(pid) };
+        if target_pgrp < 0 {
+            // ESRCH or EPERM — treat as not-ours.
+            return false;
+        }
+        if target_pgrp == our_pgrp {
+            return true;
+        }
+        // Same-UID fallback: cover PTY children that called setsid.
+        #[cfg(target_os = "linux")]
+        {
+            let our_euid = unsafe { libc::geteuid() };
+            if let Ok(s) = std::fs::read_to_string(format!("/proc/{}/status", pid)) {
+                for line in s.lines() {
+                    if let Some(rest) = line.strip_prefix("Uid:") {
+                        if let Some(uid_str) = rest.split_whitespace().next() {
+                            if let Ok(uid) = uid_str.parse::<u32>() {
+                                return uid == our_euid;
+                            }
+                        }
+                    }
+                }
+            }
+            false
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            // macOS: no procfs. kill(2) with signal 0 returns EPERM if the
+            // target is owned by a different UID, and 0 if the daemon would
+            // be allowed to signal it. That's a reasonable proxy for "same
+            // UID" without pulling in libproc.
+            let rc = unsafe { libc::kill(pid, 0) };
+            rc == 0
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
 /// If the host's private key is unavailable or signing fails, returns a plain
 /// SDP payload (no signature) — preserves compatibility with legacy-paired
 /// hosts where the private key may not be stored locally.
@@ -1609,12 +1680,21 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
         let mut shutdown = Box::pin(async {
             #[cfg(unix)]
             {
-                let mut sigterm =
-                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                        .expect("failed to register SIGTERM handler");
-                tokio::select! {
-                    _ = tokio::signal::ctrl_c() => "SIGINT",
-                    _ = sigterm.recv() => "SIGTERM",
+                match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                    Ok(mut sigterm) => {
+                        tokio::select! {
+                            _ = tokio::signal::ctrl_c() => "SIGINT",
+                            _ = sigterm.recv() => "SIGTERM",
+                        }
+                    }
+                    Err(err) => {
+                        warn!(
+                            "failed to register SIGTERM handler ({}), falling back to ctrl-c only",
+                            err
+                        );
+                        tokio::signal::ctrl_c().await.ok();
+                        "SIGINT"
+                    }
                 }
             }
             #[cfg(not(unix))]
@@ -3364,13 +3444,24 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                                 warn!("kill_process rejected: invalid pid {} (non-positive PIDs target process groups)", pid);
                                             } else if pid == 1 {
                                                 warn!("kill_process rejected: refusing to signal pid 1 (init/systemd)");
+                                            } else if !pid_is_in_daemon_pgrp(pid as i32) {
+                                                warn!(
+                                                    "kill_process rejected: pid {} not in daemon process group (refusing cross-pgrp kill)",
+                                                    pid
+                                                );
                                             } else {
                                                 let sig_num = match signal {
                                                     "KILL" | "9" => "9",
                                                     _ => "15",
                                                 };
-                                                info!("kill_process request: pid={} signal={}", pid, sig_num);
-                                                match std::process::Command::new("kill")
+                                                let kill_bin = resolve_kill_binary();
+                                                info!(
+                                                    "kill_process request: pid={} signal={} via {}",
+                                                    pid,
+                                                    sig_num,
+                                                    kill_bin.display()
+                                                );
+                                                match std::process::Command::new(&kill_bin)
                                                     .arg(format!("-{}", sig_num))
                                                     .arg(pid.to_string())
                                                     .output()
@@ -3924,7 +4015,9 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                     }
                 }
                 sig = &mut shutdown => {
-                    info!("daemon shutting down from {}", sig);
+                    info!("shutdown signal received, closing sessions ({})", sig);
+                    sessions.close_all();
+                    webrtc_mgr.close_all().await;
                     if let Ok(token) = store.access_token().map(|s| s.to_string()) {
                         if let Err(e) = tokio::time::timeout(
                             Duration::from_secs(3),
@@ -3933,13 +4026,13 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                             warn!("failed to mark host offline: {}", e);
                         }
                     }
-                    sessions.close_all();
-                    webrtc_mgr.close_all().await;
                     drop(local_clients);
                     let _ = std::fs::remove_file(&local_sock_path);
+                    let reason = if sig == "SIGTERM" { "sigterm" } else { "sigint" };
                     let _ = write_audit_event(AuditEvent {
                         event_type: "daemon_stopped".to_string(),
                         host_id: Some(host_id.clone()),
+                        details: Some(serde_json::json!({ "reason": reason })),
                         ..AuditEvent::new("daemon_stopped")
                     });
                     store.save()?;

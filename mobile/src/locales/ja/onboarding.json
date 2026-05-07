@@ -13,5 +13,10 @@
   "step_monitor.description": "CPU、メモリ、ディスク、ネットワークをリアルタイムで確認。しきい値を設定すれば、異変があったときに通知が届きます——すべて安全なWebRTC経由で。",
   "skip": "スキップ",
   "next": "次へ",
-  "get_started": "はじめる"
+  "get_started": "はじめる",
+  "login.terms_prefix": "続行することで、",
+  "login.terms_link": "利用規約",
+  "login.terms_middle": " および ",
+  "login.privacy_link": "プライバシーポリシー",
+  "login.terms_suffix": " に同意したものとみなされます。"
 }

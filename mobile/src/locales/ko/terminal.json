@@ -3,6 +3,7 @@
   "connecting": "P2P 연결 설정 중...",
   "reconnecting": "호스트에 다시 연결하는 중...",
   "failed": "연결 실패",
+  "connection_failed": "연결 실패",
   "closed": "세션 종료됨",
   "progress.requested": "세션 요청됨",
   "progress.connecting": "P2P 설정 중",
@@ -11,5 +12,8 @@
   "uploading_image": "이미지 업로드 중",
   "upload_success": "업로드 성공",
   "upload_failed": "업로드 실패",
-  "selection_modal_subtitle": "장치 고유의 텍스트 선택 핸들을 사용하세요."
+  "selection_modal_subtitle": "장치 고유의 텍스트 선택 핸들을 사용하세요.",
+  "banner.backend_trusted": "종단간 검증이 설정되지 않았습니다. 검증하려면 탭하세요.",
+  "banner.unpinned": "호스트 ID가 검증되지 않았습니다. 탭하여 검증하세요.",
+  "banner.cta_verify": "검증"
 }

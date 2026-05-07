@@ -3,6 +3,7 @@
   "connecting": "P2P接続を確立中…",
   "reconnecting": "ホストに再接続中…",
   "failed": "接続に失敗しました",
+  "connection_failed": "接続に失敗しました",
   "closed": "セッションを終了しました",
   "progress.requested": "セッションをリクエストしました",
   "progress.connecting": "P2Pを確立中",
@@ -11,5 +12,8 @@
   "uploading_image": "画像をアップロード中",
   "upload_success": "アップロードに成功しました",
   "upload_failed": "アップロードに失敗しました",
-  "selection_modal_subtitle": "デバイス標準のテキスト選択ハンドルを使用してください。"
+  "selection_modal_subtitle": "デバイス標準のテキスト選択ハンドルを使用してください。",
+  "banner.backend_trusted": "エンドツーエンド検証が未確立です。タップして検証してください。",
+  "banner.unpinned": "ホスト ID 未検証です。タップして検証してください。",
+  "banner.cta_verify": "検証"
 }

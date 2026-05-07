@@ -13,5 +13,10 @@
   "step_monitor.description": "Monitora le statistiche di CPU, memoria, disco e rete in tempo reale. Imposta soglie di avviso e ricevi notifiche quando qualcosa richiede attenzione, tutto tramite canale sicuro WebRTC.",
   "skip": "Salta",
   "next": "Avanti",
-  "get_started": "Inizia"
+  "get_started": "Inizia",
+  "login.terms_prefix": "Continuando accetti i ",
+  "login.terms_link": "Termini di servizio",
+  "login.terms_middle": " e l'",
+  "login.privacy_link": "Informativa sulla privacy",
+  "login.terms_suffix": "."
 }

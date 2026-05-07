@@ -98,9 +98,33 @@ fn real_disks(disks: &[Disk]) -> Vec<&Disk> {
     result
 }
 
+/// Resolve a system binary by checking known absolute paths first; fall back
+/// to PATH-relative with a warn-log if none of the absolute paths exist.
+/// Hardens against PATH-injection from a compromised user-writable bin dir
+/// (e.g. ~/.local/bin shadowing /usr/bin).
+pub(crate) fn resolve_system_binary(name: &str, candidates: &[&str]) -> std::path::PathBuf {
+    for candidate in candidates {
+        if std::path::Path::new(candidate).exists() {
+            return std::path::PathBuf::from(candidate);
+        }
+    }
+    tracing::warn!(
+        "no absolute path found for '{}', falling back to PATH lookup (less secure)",
+        name
+    );
+    std::path::PathBuf::from(name)
+}
+
 /// Collect TCP connection counts by parsing `netstat` output.
 fn collect_network_connections() -> Option<NetworkConnection> {
-    let output = std::process::Command::new("netstat")
+    #[cfg(target_os = "macos")]
+    let netstat = resolve_system_binary("netstat", &["/usr/sbin/netstat"]);
+    #[cfg(target_os = "linux")]
+    let netstat = resolve_system_binary("netstat", &["/usr/bin/netstat", "/bin/netstat"]);
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    let netstat = resolve_system_binary("netstat", &[]);
+
+    let output = std::process::Command::new(&netstat)
         .args(["-n", "-p", "tcp"])
         .output()
         .ok()?;
@@ -143,7 +167,12 @@ fn collect_network_connections() -> Option<NetworkConnection> {
 
 /// Collect logged-in users via the `who` command.
 fn collect_logged_in_users() -> Option<Vec<LoggedInUser>> {
-    let output = std::process::Command::new("who").output().ok()?;
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    let who = resolve_system_binary("who", &["/usr/bin/who", "/bin/who"]);
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    let who = resolve_system_binary("who", &[]);
+
+    let output = std::process::Command::new(&who).output().ok()?;
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     let users: Vec<LoggedInUser> = stdout
@@ -178,7 +207,8 @@ fn collect_logged_in_users() -> Option<Vec<LoggedInUser>> {
 fn collect_battery() -> Option<f32> {
     #[cfg(target_os = "macos")]
     {
-        let output = std::process::Command::new("pmset")
+        let pmset = resolve_system_binary("pmset", &["/usr/bin/pmset"]);
+        let output = std::process::Command::new(&pmset)
             .args(["-g", "batt"])
             .output()
             .ok()?;

@@ -85,5 +85,15 @@
   "status_offline": "오프라인",
   "status_stale": "지연됨",
   "status_unsupported": "지원되지 않음",
-  "status_revoked": "취소됨"
+  "status_revoked": "취소됨",
+  "pin.verified": "검증된 호스트",
+  "pin.verified_detail": "이 호스트의 ID 키는 QR 코드 스캔으로 확인되었습니다. 종단간 검증 활성화.",
+  "pin.backend_trusted": "백엔드 신뢰 호스트",
+  "pin.backend_trusted_detail": "이 호스트의 ID 키는 호스트에서 직접 가져온 것이 아니라 서버에서 제공되었습니다. 종단간 검증을 위해 호스트의 QR 코드를 스캔하세요.",
+  "pin.backend_trusted_banner": "백엔드 신뢰 호스트. 종단간 검증을 위해 QR을 스캔하세요.",
+  "pin.unpinned": "호스트 ID 미검증",
+  "pin.unpinned_detail": "이 호스트에 대한 ID 키가 저장되어 있지 않습니다. QR로 페어링하여 종단간 검증을 활성화하세요.",
+  "pin.unpinned_banner": "호스트 ID 미검증. 호스트의 QR을 스캔하세요.",
+  "pin.cta_verify": "QR로 검증",
+  "pin.cta_dismiss": "닫기"
 }

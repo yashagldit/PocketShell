@@ -85,5 +85,15 @@
   "status_offline": "hors ligne",
   "status_stale": "obsolète",
   "status_unsupported": "non supporté",
-  "status_revoked": "révoqué"
+  "status_revoked": "révoqué",
+  "pin.verified": "Hôte vérifié",
+  "pin.verified_detail": "La clé d'identité de cet hôte a été confirmée en scannant son QR code. Vérification de bout en bout active.",
+  "pin.backend_trusted": "Hôte de confiance du backend",
+  "pin.backend_trusted_detail": "La clé d'identité de cet hôte provient du serveur et non directement de l'hôte. Scannez le QR code de l'hôte pour activer la vérification de bout en bout.",
+  "pin.backend_trusted_banner": "Hôte de confiance du backend. Scannez le QR pour la vérification de bout en bout.",
+  "pin.unpinned": "Identité de l'hôte non vérifiée",
+  "pin.unpinned_detail": "Aucune clé d'identité n'a été enregistrée pour cet hôte. Appairez via QR pour activer la vérification de bout en bout.",
+  "pin.unpinned_banner": "Identité de l'hôte non vérifiée. Scannez le QR code de l'hôte.",
+  "pin.cta_verify": "Vérifier avec QR",
+  "pin.cta_dismiss": "Fermer"
 }

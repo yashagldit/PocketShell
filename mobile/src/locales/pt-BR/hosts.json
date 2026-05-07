@@ -85,5 +85,15 @@
   "status_offline": "offline",
   "status_stale": "obsoleto",
   "status_unsupported": "não suportado",
-  "status_revoked": "revogado"
+  "status_revoked": "revogado",
+  "pin.verified": "Host verificado",
+  "pin.verified_detail": "A chave de identidade deste host foi confirmada escaneando seu QR code. Verificação de ponta a ponta ativa.",
+  "pin.backend_trusted": "Host confiável pelo backend",
+  "pin.backend_trusted_detail": "A chave de identidade deste host veio do servidor, não diretamente do host. Escaneie o QR do host para verificação de ponta a ponta.",
+  "pin.backend_trusted_banner": "Host confiável pelo backend. Escaneie o QR para verificação de ponta a ponta.",
+  "pin.unpinned": "Identidade do host não verificada",
+  "pin.unpinned_detail": "Nenhuma chave de identidade foi registrada para este host. Pareie via QR para verificação de ponta a ponta.",
+  "pin.unpinned_banner": "Identidade do host não verificada. Escaneie o QR do host.",
+  "pin.cta_verify": "Verificar com QR",
+  "pin.cta_dismiss": "Fechar"
 }

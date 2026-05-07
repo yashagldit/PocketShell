@@ -13,5 +13,10 @@
   "step_monitor.description": "Sigue las estadísticas de CPU, memoria, disco y red en tiempo real. Configura umbrales de alerta y recibe notificaciones cuando algo necesite atención, todo vía WebRTC seguro.",
   "skip": "Omitir",
   "next": "Siguiente",
-  "get_started": "Empezar"
+  "get_started": "Empezar",
+  "login.terms_prefix": "Al continuar aceptas los ",
+  "login.terms_link": "Términos del servicio",
+  "login.terms_middle": " y la ",
+  "login.privacy_link": "Política de privacidad",
+  "login.terms_suffix": "."
 }

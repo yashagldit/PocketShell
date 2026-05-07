@@ -3,6 +3,7 @@
   "connecting": "正在建立 P2P 连接...",
   "reconnecting": "正在重新连接主机...",
   "failed": "连接失败",
+  "connection_failed": "连接失败",
   "closed": "会话已关闭",
   "progress.requested": "已请求会话",
   "progress.connecting": "正在建立 P2P",
@@ -11,5 +12,8 @@
   "uploading_image": "正在上传图片",
   "upload_success": "上传成功",
   "upload_failed": "上传失败",
-  "selection_modal_subtitle": "使用设备的原生文本选择句柄。"
+  "selection_modal_subtitle": "使用设备的原生文本选择句柄。",
+  "banner.backend_trusted": "尚未建立端到端验证。点击进行验证。",
+  "banner.unpinned": "主机身份未验证。点击进行验证。",
+  "banner.cta_verify": "验证"
 }
