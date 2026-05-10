@@ -9,6 +9,7 @@ use host_core::discovery::SessionDiscovery;
 use host_core::models::{
     AuthState, HostIdentity, HostInitiatedPollOutcome, PairingValidateRequest,
 };
+use host_core::signaling_crypto::sign_pair_attestation;
 use host_core::secure::parse_jwt_exp;
 use host_core::stats::StatsCollector;
 use host_core::store::StateStore;
@@ -207,6 +208,17 @@ async fn pair(config: AppConfig, code: Option<String>, reset: bool) -> Result<()
         generate_keypair()
     };
 
+    // Strategy A: a bad-faith backend that swaps `public_key` in the DB
+    // cannot forge a fresh signature against the new key without re-signing
+    // through the live validate endpoint — that's the threat boundary this
+    // attestation tightens. Failure is non-fatal: the legacy "pin-as-backend"
+    // path still works, just without the trust upgrade on the mobile side.
+    let pair_attestation = sign_pair_attestation(&private_key, &pairing_code, &public_key)
+        .map_err(|e| {
+            eprintln!("warning: failed to produce pair attestation: {e}");
+        })
+        .ok();
+
     let backend = BackendClient::new(config.backend_base_url.clone());
     let result = backend
         .validate_pairing_code(&PairingValidateRequest {
@@ -216,6 +228,7 @@ async fn pair(config: AppConfig, code: Option<String>, reset: bool) -> Result<()
             public_key: public_key.clone(),
             app_version: Some(config.app_version.clone()),
             host_id: existing_host_id.clone(),
+            pair_attestation,
         })
         .await;
 

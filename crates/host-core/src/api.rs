@@ -805,6 +805,7 @@ mod tests {
             public_key: "pk".into(),
             app_version: Some("1.0".into()),
             host_id: None,
+            pair_attestation: None,
         };
 
         let mut host = sample_host_json();
@@ -845,6 +846,7 @@ mod tests {
             public_key: "p".into(),
             app_version: None,
             host_id: None,
+            pair_attestation: None,
         };
         let err = c.validate_pairing_code(&req).await.unwrap_err();
         match err {

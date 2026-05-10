@@ -33,6 +33,17 @@ pub struct HostIdentity {
     pub registered_at: DateTime<Utc>,
 }
 
+/// Wire shape for the Strategy A pair-attestation. The canonical message
+/// signed (and verified) is `pocketshell-pair-attest-v1|<code>|<host_pub>|
+/// <nonce>|<ts>` — see `signaling_crypto::sign_pair_attestation` and the
+/// matching mobile verifier at `mobile/src/services/pairAttestation.ts`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PairAttestation {
+    pub sig: String,
+    pub nonce: String,
+    pub ts: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PairingValidateRequest {
     pub code: String,
@@ -44,6 +55,10 @@ pub struct PairingValidateRequest {
     /// mobile device's trust (device-add flow) rather than registering as a new host.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host_id: Option<String>,
+    /// Skipped when None so old backends without this field keep accepting
+    /// the request unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pair_attestation: Option<PairAttestation>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -505,12 +520,15 @@ mod tests {
             public_key: "pk".into(),
             app_version: None,
             host_id: None,
+            pair_attestation: None,
         };
         let v: serde_json::Value = serde_json::to_value(&req).unwrap();
         assert!(
             v.get("host_id").is_none(),
             "host_id should be skipped when None"
         );
+        // pair_attestation also has skip_serializing_if so old backends keep parsing.
+        assert!(v.get("pair_attestation").is_none());
         // app_version doesn't have skip_serializing_if, so it should be present as null.
         assert!(v.get("app_version").is_some());
         assert!(v["app_version"].is_null());
@@ -525,9 +543,17 @@ mod tests {
             public_key: "k".into(),
             app_version: Some("1.0".into()),
             host_id: Some("host-123".into()),
+            pair_attestation: Some(crate::models::PairAttestation {
+                sig: "s".into(),
+                nonce: "n".into(),
+                ts: 1700000000,
+            }),
         };
         let v = serde_json::to_value(&req).unwrap();
         assert_eq!(v["host_id"], "host-123");
+        assert_eq!(v["pair_attestation"]["sig"], "s");
+        assert_eq!(v["pair_attestation"]["nonce"], "n");
+        assert_eq!(v["pair_attestation"]["ts"], 1700000000);
     }
 
     #[test]

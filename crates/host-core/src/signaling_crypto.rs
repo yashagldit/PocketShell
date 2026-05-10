@@ -19,6 +19,9 @@ pub const SDP_SIGNING_PREFIX: &str = "pocketshell-sdp-v1";
 /// Shared signing-context prefix for X25519 key exchange transcripts. MUST
 /// match `X25519_SIGNING_PREFIX` in `mobile/src/services/signalingService.ts`.
 pub const X25519_SIGNING_PREFIX: &str = "pocketshell-x25519-v1";
+/// Shared signing-context prefix for Strategy A pair-attestations. MUST match
+/// the constant in `mobile/src/services/pairAttestation.ts`.
+pub const PAIR_ATTEST_SIGNING_PREFIX: &str = "pocketshell-pair-attest-v1";
 
 /// Direction flag for nonce construction — prevents nonce collision between sides.
 const DIRECTION_HOST_TO_MOBILE: u32 = 0x00000001;
@@ -247,6 +250,18 @@ fn canonical_signing_payload(sdp_type: &str, nonce_b64: &str, ts: i64, sdp: &str
     )
 }
 
+fn canonical_pair_attest_payload(
+    code: &str,
+    host_pub_b64: &str,
+    nonce_b64: &str,
+    ts: i64,
+) -> String {
+    format!(
+        "{}|{}|{}|{}|{}",
+        PAIR_ATTEST_SIGNING_PREFIX, code, host_pub_b64, nonce_b64, ts
+    )
+}
+
 fn canonical_x25519_response_payload(
     host_id: &str,
     mobile_device_id: &str,
@@ -357,6 +372,36 @@ pub fn sign_x25519_key_response(
     })
 }
 
+/// Strategy A: sign a pair-attestation binding the host's ED25519 public key
+/// to the pairing code the user typed in the mobile app. The mobile verifies
+/// against the host-reported pubkey and, on success, upgrades the local pin
+/// source from "backend" to "qr".
+///
+/// Returns the wire-shape `PairAttestation` directly so the agent can drop it
+/// into `PairingValidateRequest.pair_attestation` without remapping fields.
+pub fn sign_pair_attestation(
+    private_key_b64: &str,
+    code: &str,
+    host_pub_b64: &str,
+) -> Result<crate::models::PairAttestation> {
+    let signing_key = parse_ed25519_signing_key(private_key_b64)?;
+
+    let mut nonce = [0u8; 16];
+    OsRng.fill_bytes(&mut nonce);
+    let nonce_b64 = base64::engine::general_purpose::STANDARD.encode(nonce);
+    let ts = chrono::Utc::now().timestamp();
+
+    let payload = canonical_pair_attest_payload(code, host_pub_b64, &nonce_b64, ts);
+    let sig = signing_key.sign(payload.as_bytes());
+    let sig_b64 = base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
+
+    Ok(crate::models::PairAttestation {
+        sig: sig_b64,
+        nonce: nonce_b64,
+        ts,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -436,6 +481,35 @@ mod tests {
             signed.ts,
         );
         assert!(vk.verify(tampered.as_bytes(), &sig).is_err());
+    }
+
+    #[test]
+    fn test_sign_pair_attestation_roundtrip() {
+        let sk = SigningKey::generate(&mut OsRng);
+        let vk: VerifyingKey = sk.verifying_key();
+        let sk_b64 = base64::engine::general_purpose::STANDARD.encode(sk.to_bytes());
+        let host_pub_b64 = base64::engine::general_purpose::STANDARD.encode(vk.to_bytes());
+
+        let signed = sign_pair_attestation(&sk_b64, "ABC123", &host_pub_b64).unwrap();
+
+        let canon =
+            canonical_pair_attest_payload("ABC123", &host_pub_b64, &signed.nonce, signed.ts);
+        let sig_bytes = base64::engine::general_purpose::STANDARD
+            .decode(&signed.sig)
+            .unwrap();
+        let sig = Signature::from_slice(&sig_bytes).unwrap();
+        vk.verify(canon.as_bytes(), &sig).unwrap();
+
+        // Binding to the user's pairing event: a different code must not verify.
+        let bad =
+            canonical_pair_attest_payload("WRONG", &host_pub_b64, &signed.nonce, signed.ts);
+        assert!(vk.verify(bad.as_bytes(), &sig).is_err());
+
+        // The attacker scenario this attestation defends against: a substituted
+        // pubkey under the same code must not verify.
+        let bad_pub =
+            canonical_pair_attest_payload("ABC123", "evil-pub", &signed.nonce, signed.ts);
+        assert!(vk.verify(bad_pub.as_bytes(), &sig).is_err());
     }
 
     #[test]
