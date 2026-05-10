@@ -82,20 +82,6 @@ The daemon connects out to the signaling backend over WSS and waits for a peer o
 
 ---
 
-## Self-hosting the backend
-
-The default backend is `https://tapi.pocketshell.app` — overridable:
-
-```bash
-export POCKETSHELL_BACKEND_URL=https://your-backend.example.com
-export POCKETSHELL_WS_URL=wss://your-backend.example.com/ws/host
-pocketshell daemon start
-```
-
-The backend itself isn't open-source. If you want to run a fully self-hosted setup, the protocol is documented enough in this repo's `host-core/src/{api,transport,signaling_crypto}.rs` for a determined reader to reimplement the control plane. Contact us if you're serious about it.
-
----
-
 ## Security model
 
 | Layer | Primitive |
