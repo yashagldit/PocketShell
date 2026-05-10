@@ -7,8 +7,8 @@ name: Release host agent
 #   git tag v0.1.0 && git push origin v0.1.0
 #
 # Required repository secrets (Settings → Secrets and variables → Actions):
-#   POCKETSHELL_DEFAULT_BACKEND_URL  e.g. https://tapi.pocketshell.app
-#   POCKETSHELL_DEFAULT_WS_URL       e.g. wss://tapi.pocketshell.app/ws/host
+#   POCKETSHELL_DEFAULT_BACKEND_URL  e.g. https://api.pocketshell.app
+#   POCKETSHELL_DEFAULT_WS_URL       e.g. wss://api.pocketshell.app/ws/host
 # These are baked into the binary at compile time via option_env! in
 # crates/host-core/src/config.rs. Without them the binary will start with
 # empty defaults and refuse to connect.
