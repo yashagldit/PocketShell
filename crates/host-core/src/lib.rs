@@ -22,6 +22,7 @@ pub mod signaling_crypto;
 pub mod stats;
 pub mod store;
 pub mod transport;
+pub mod update;
 #[cfg(feature = "webrtc")]
 pub mod webrtc_manager;
 #[cfg(feature = "webrtc")]

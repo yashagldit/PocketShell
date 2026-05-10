@@ -72,6 +72,28 @@ enum Commands {
         #[command(subcommand)]
         command: Option<SessionCommands>,
     },
+    /// Restart the daemon. Kills the running daemon (service or PID-based)
+    /// and starts a fresh one — used to reload state after pairing changes
+    /// or after `pocketshell update` swaps the binary on disk.
+    Restart,
+    /// Update the host agent to the latest release (or `--version`).
+    /// Verifies the SHA-256 checksum, replaces the binary in-place, and
+    /// restarts the daemon if it's running.
+    Update {
+        /// Don't apply the update — just report whether one is available.
+        #[arg(long)]
+        check: bool,
+        /// Apply the update even if the local version already matches.
+        #[arg(long)]
+        force: bool,
+        /// Install a specific version (e.g. `0.1.0` or `v0.1.0`) instead of latest.
+        #[arg(long)]
+        version: Option<String>,
+        /// Override the release host base URL (must match the directory
+        /// layout described in `host_core::update`).
+        #[arg(long, default_value = host_core::update::DEFAULT_BASE_URL)]
+        base_url: String,
+    },
     /// Expose a terminal session for mobile access.
     /// Creates a named tmux session that the daemon auto-discovers.
     #[command(alias = "rc")]
@@ -112,6 +134,8 @@ enum SessionCommands {
 enum DaemonCommands {
     Start,
     Stop,
+    /// Stop the daemon (if running) and start it again.
+    Restart,
     Run,
 }
 
@@ -144,6 +168,13 @@ async fn main() -> Result<()> {
         Some(Commands::Daemon { command }) => daemon_cmd(config, command).await,
         Some(Commands::Stats { watch }) => stats_cmd(watch).await,
         Some(Commands::Sessions { command }) => sessions_cmd(config, command).await,
+        Some(Commands::Restart) => daemon_restart(),
+        Some(Commands::Update {
+            check,
+            force,
+            version,
+            base_url,
+        }) => update_cmd(check, force, version, base_url).await,
         Some(Commands::Remote {
             name,
             detached,
@@ -980,6 +1011,7 @@ async fn daemon_cmd(config: AppConfig, command: DaemonCommands) -> Result<()> {
     match command {
         DaemonCommands::Start => daemon_start(),
         DaemonCommands::Stop => daemon_stop(),
+        DaemonCommands::Restart => daemon_restart(),
         DaemonCommands::Run => daemon::run_foreground(config)
             .await
             .map_err(|e| anyhow!(e.to_string())),
@@ -1051,6 +1083,116 @@ fn daemon_stop() -> Result<()> {
         println!("daemon stopped");
     } else {
         println!("daemon not running");
+    }
+
+    Ok(())
+}
+
+/// Restart the daemon regardless of how it's running. Reuses the service
+/// manager when available (launchctl kickstart / systemctl restart) so the
+/// auto-start config is preserved; otherwise falls back to killing the
+/// PID-based daemon and spawning a fresh detached process.
+fn daemon_restart() -> Result<()> {
+    use host_core::service::RestartStatus;
+
+    // 1. If a PID-based daemon is alive AND no service is supervising it,
+    //    SIGTERM it first. `service::restart()` won't know about it and
+    //    would otherwise leave a duplicate running.
+    let paths = AppConfig::paths()?;
+    let pid = read_pid(&paths.pid_file).filter(|&p| pid_running(p));
+    let service_running = host_core::service::is_service_running();
+    if let Some(p) = pid {
+        if !service_running {
+            let _ = kill(Pid::from_raw(p), Signal::SIGTERM);
+            for _ in 0..50 {
+                if !pid_running(p) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            let _ = fs::remove_file(&paths.pid_file);
+        }
+    }
+
+    let status = host_core::service::restart()
+        .map_err(|e| anyhow!("failed to restart daemon: {e}"))?;
+
+    let _ = write_audit_event(AuditEvent::new("daemon_restart_command"));
+
+    match status {
+        RestartStatus::RestartedService => println!("daemon restarted via system service"),
+        RestartStatus::StartedDaemon => println!("daemon restarted as background process"),
+    }
+    Ok(())
+}
+
+async fn update_cmd(
+    check_only: bool,
+    force: bool,
+    version: Option<String>,
+    base_url: String,
+) -> Result<()> {
+    use host_core::update;
+
+    let current_version = env!("CARGO_PKG_VERSION");
+
+    print!("checking for updates ({base_url})...");
+    let _ = io::stdout().flush();
+    let info = update::check(&base_url, current_version, version.as_deref())
+        .await
+        .context("checking for update")?;
+    println!(" done");
+
+    println!(
+        "  current: v{}\n  target:  {}\n  arch:    {}",
+        info.current_version, info.target_version, info.target_triple
+    );
+
+    if info.up_to_date && !force {
+        println!("✓ already on the latest version");
+        return Ok(());
+    }
+
+    if check_only {
+        if info.up_to_date {
+            println!("(up to date — pass --force to reinstall)");
+        } else {
+            println!("update available — run `pocketshell update` to install");
+        }
+        return Ok(());
+    }
+
+    println!("downloading and installing...");
+    let installed = update::download_and_install(&info)
+        .await
+        .context("installing update")?;
+
+    let _ = write_audit_event(AuditEvent::new("self_update"));
+
+    println!("✓ installed {} → {}", info.target_version, installed.display());
+    println!("  previous binary saved at {}.old", installed.display());
+
+    // The currently-running CLI process is still using the OLD binary in
+    // memory; the daemon (separate process) is too. Restart the daemon so
+    // it picks up the new code immediately.
+    let pid = AppConfig::paths()
+        .ok()
+        .and_then(|p| read_pid(&p.pid_file))
+        .filter(|&p| pid_running(p));
+    if host_core::service::is_service_running() || pid.is_some() {
+        print!("restarting daemon to load new binary...");
+        let _ = io::stdout().flush();
+        match daemon_restart() {
+            Ok(()) => {}
+            Err(e) => {
+                println!(" failed");
+                eprintln!(
+                    "warning: could not auto-restart daemon ({e}); run `pocketshell restart` manually"
+                );
+            }
+        }
+    } else {
+        println!("(daemon is not running — start it with `pocketshell daemon start`)");
     }
 
     Ok(())
@@ -1391,6 +1533,9 @@ enum MenuAction {
     Status,
     DaemonStart,
     DaemonStop,
+    DaemonRestart,
+    CheckForUpdate,
+    Update,
     Logout,
     Quit,
 }
@@ -1405,6 +1550,9 @@ impl MenuAction {
             Self::Status => "Show status",
             Self::DaemonStart => "Daemon: start",
             Self::DaemonStop => "Daemon: stop",
+            Self::DaemonRestart => "Daemon: restart",
+            Self::CheckForUpdate => "Check for updates",
+            Self::Update => "Update host agent",
             Self::Logout => "Logout",
             Self::Quit => "Quit",
         }
@@ -1443,11 +1591,22 @@ async fn interactive_menu(config: AppConfig) -> Result<()> {
                 MenuAction::Status,
                 MenuAction::DaemonStart,
                 MenuAction::DaemonStop,
+                MenuAction::DaemonRestart,
+                MenuAction::CheckForUpdate,
+                MenuAction::Update,
                 MenuAction::Logout,
                 MenuAction::Quit,
             ]
         } else {
-            &[MenuAction::PairQr, MenuAction::Status, MenuAction::Quit]
+            // Pre-pairing menu still gets `Update` so users can self-upgrade
+            // before finishing setup (e.g. install.sh ran a stale version).
+            &[
+                MenuAction::PairQr,
+                MenuAction::Status,
+                MenuAction::CheckForUpdate,
+                MenuAction::Update,
+                MenuAction::Quit,
+            ]
         };
         let labels: Vec<&str> = actions.iter().map(|a| a.label()).collect();
 
@@ -1473,6 +1632,12 @@ async fn interactive_menu(config: AppConfig) -> Result<()> {
             MenuAction::Status => status(config.clone()).await,
             MenuAction::DaemonStart => daemon_start(),
             MenuAction::DaemonStop => daemon_stop(),
+            MenuAction::DaemonRestart => daemon_restart(),
+            MenuAction::CheckForUpdate => {
+                update_cmd(true, false, None, host_core::update::DEFAULT_BASE_URL.to_string())
+                    .await
+            }
+            MenuAction::Update => menu_update(&theme).await,
             MenuAction::Logout => menu_logout(&theme),
             MenuAction::Quit => unreachable!(),
         };
@@ -1639,6 +1804,49 @@ async fn menu_sessions(
         return Ok(());
     };
     sessions_attach(attachable[idx].name.clone()).await
+}
+
+async fn menu_update(theme: &dialoguer::theme::ColorfulTheme) -> Result<()> {
+    use dialoguer::Confirm;
+    use host_core::update;
+
+    let current = env!("CARGO_PKG_VERSION");
+    let info = update::check(update::DEFAULT_BASE_URL, current, None)
+        .await
+        .context("checking for update")?;
+
+    println!(
+        "  current: v{}\n  latest:  {}\n  arch:    {}",
+        info.current_version, info.target_version, info.target_triple
+    );
+
+    if info.up_to_date {
+        let force = Confirm::with_theme(theme)
+            .with_prompt("Already up to date — reinstall anyway?")
+            .default(false)
+            .interact_opt()
+            .map_err(|e| anyhow!("confirm error: {e}"))?
+            .unwrap_or(false);
+        if !force {
+            return Ok(());
+        }
+        return update_cmd(false, true, None, update::DEFAULT_BASE_URL.to_string()).await;
+    }
+
+    let proceed = Confirm::with_theme(theme)
+        .with_prompt(format!(
+            "Install {} (will replace this binary and restart the daemon)?",
+            info.target_version
+        ))
+        .default(true)
+        .interact_opt()
+        .map_err(|e| anyhow!("confirm error: {e}"))?
+        .unwrap_or(false);
+    if !proceed {
+        println!("update cancelled");
+        return Ok(());
+    }
+    update_cmd(false, false, None, update::DEFAULT_BASE_URL.to_string()).await
 }
 
 fn menu_logout(theme: &dialoguer::theme::ColorfulTheme) -> Result<()> {

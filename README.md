@@ -46,8 +46,15 @@ Pre-built binaries:
 
 ```bash
 # linux · macOS · arm64 · x86_64
-curl -sSf https://get.pocketshell.app | sh
+curl -fsSL https://pocketshell.app/install.sh | bash
 ```
+
+Detects your OS and arch, fetches the matching tarball from the latest
+[GitHub Release](https://github.com/yashagldit/PocketShellApp/releases),
+verifies its SHA-256 checksum, and installs to `~/.local/bin/pocketshell`
+(or `/usr/local/bin/pocketshell` if run as root). Read the script first
+if you'd rather not pipe to bash blindly — it's served from the static
+site and intentionally short.
 
 From source (Rust 1.78+):
 

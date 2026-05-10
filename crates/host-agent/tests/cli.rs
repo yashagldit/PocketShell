@@ -35,7 +35,9 @@ fn top_level_help_lists_all_subcommands() {
         .stdout(predicate::str::contains("daemon"))
         .stdout(predicate::str::contains("stats"))
         .stdout(predicate::str::contains("sessions"))
-        .stdout(predicate::str::contains("remote"));
+        .stdout(predicate::str::contains("remote"))
+        .stdout(predicate::str::contains("restart"))
+        .stdout(predicate::str::contains("update"));
 }
 
 #[test]
@@ -131,7 +133,31 @@ fn daemon_help_succeeds_and_lists_subcommands() {
         .success()
         .stdout(predicate::str::contains("start"))
         .stdout(predicate::str::contains("stop"))
+        .stdout(predicate::str::contains("restart"))
         .stdout(predicate::str::contains("run"));
+}
+
+#[test]
+fn restart_help_succeeds() {
+    let tmp = TempDir::new().unwrap();
+    cmd(&tmp)
+        .args(["restart", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Restart").or(predicate::str::contains("restart")));
+}
+
+#[test]
+fn update_help_succeeds_and_lists_flags() {
+    let tmp = TempDir::new().unwrap();
+    cmd(&tmp)
+        .args(["update", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--check"))
+        .stdout(predicate::str::contains("--force"))
+        .stdout(predicate::str::contains("--version"))
+        .stdout(predicate::str::contains("--base-url"));
 }
 
 #[test]
