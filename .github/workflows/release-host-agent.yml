@@ -35,10 +35,21 @@ jobs:
         include:
           - target: aarch64-apple-darwin
             os: macos-14
+            strip: strip
           - target: x86_64-apple-darwin
             os: macos-13
+            strip: strip
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
+            strip: strip
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            strip: aarch64-linux-gnu-strip
+            cross_apt: gcc-aarch64-linux-gnu
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            strip: strip
+            cross_apt: musl-tools
     runs-on: ${{ matrix.os }}
     env:
       # Production backend URLs are injected at compile time via option_env!
@@ -50,6 +61,11 @@ jobs:
       # workflow expressions directly (defense-in-depth against actions
       # injection, even though these values are workflow-controlled).
       TARGET: ${{ matrix.target }}
+      STRIP_BIN: ${{ matrix.strip }}
+      CROSS_APT: ${{ matrix.cross_apt }}
+      # Cargo only reads the per-target linker var when building that target,
+      # so setting these unconditionally on Linux runners is safe.
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -61,6 +77,13 @@ jobs:
             echo "::error::POCKETSHELL_DEFAULT_BACKEND_URL and POCKETSHELL_DEFAULT_WS_URL must be set as repository secrets."
             exit 1
           fi
+
+      - name: Install cross-compile toolchain
+        if: matrix.cross_apt != ''
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y $CROSS_APT
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -78,7 +101,7 @@ jobs:
 
       - name: Strip binary
         shell: bash
-        run: strip "target/$TARGET/release/pocketshell"
+        run: $STRIP_BIN "target/$TARGET/release/pocketshell"
 
       - name: Verify backend URL was baked in
         shell: bash
