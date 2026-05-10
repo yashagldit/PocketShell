@@ -32,7 +32,8 @@ packaging/
   macos/          # launchd plist
 mobile/src/locales/   # 12-language UI translation files (community-maintained)
 mobile/src/i18n/      # i18n loader
-LICENSE           # MIT
+LICENSE           # Apache-2.0
+NOTICE            # required attribution per Apache-2.0 §4(d)
 ```
 
 The `mobile/src/locales/` tree is here because translations benefit from being public — the rest of the mobile app source isn't in this repo.
@@ -79,6 +80,113 @@ log stream --predicate 'process == "pocketshell"' # macOS
 ```
 
 The daemon connects out to the signaling backend over WSS and waits for a peer offer. When your phone wants a session, the backend signals; the data channel is end-to-end encrypted between phone and host.
+
+---
+
+## How it works
+
+Two planes, deliberately separated. The **control plane** (HTTPS + WebSocket to the backend) carries auth, pairing, presence, SDP offers / answers, and ICE candidates. The **data plane** (WebRTC peer connection) carries every byte of your shell — PTY I/O, file chunks, stats samples, agent stdio — directly between phone and host, sealed with ChaCha20-Poly1305.
+
+```mermaid
+flowchart TB
+    subgraph Mobile["📱  Mobile app  (closed source)"]
+        direction TB
+        M_auth["Email OTP → JWT<br/>(15 min access · 30 day refresh)"]
+        M_key["ED25519 device key<br/>Expo SecureStore"]
+        M_ui["Terminal · Files · Stats<br/>Agent chat · Alerts · Workspaces"]
+        M_ws["Signaling WS client<br/>/ws/mobile"]
+        M_rtc["WebRTC peer<br/>(react-native-webrtc)"]
+    end
+
+    subgraph Backend["☁️  Backend control plane  (closed source)"]
+        direction TB
+        B_api["FastAPI · /api/v1/*<br/>auth · devices · pairing · sessions<br/>presence · turn · alerts · workspaces"]
+        B_ws["ConnectionManager<br/>/ws/mobile  ·  /ws/host<br/>signaling relay only"]
+        B_pg[("PostgreSQL<br/>users · hosts · sessions<br/>trusted_devices · audit_log")]
+        B_redis[("Redis<br/>presence · live stats<br/>rate-limit · pub/sub relay")]
+        B_turn["TURN server<br/>(rotating HMAC creds)"]
+    end
+
+    subgraph Host["🖥️  Host agent  (this repo)"]
+        direction TB
+        H_cli["pocketshell CLI<br/>pair · daemon · devices · stats"]
+        H_key["ED25519 host key<br/>OS keychain"]
+        H_ws["transport.rs<br/>WS client → /ws/host"]
+        H_rtc["webrtc_manager.rs<br/>peer-per-mobile-device"]
+        H_pty["pty.rs · discovery.rs<br/>tmux / screen / shell"]
+        H_stats["stats.rs · files.rs<br/>agent_session.rs · alerts.rs"]
+    end
+
+    M_auth -. "HTTPS · JWT" .-> B_api
+    M_ws  -. "WSS · signaling<br/>session_offer / answer<br/>ice_candidate · stats_offer<br/>files_offer · agent_offer" .-> B_ws
+    H_cli -. "HTTPS · pair / refresh" .-> B_api
+    H_ws  -. "WSS · signaling<br/>session_ack · session_event<br/>alert · host_summary<br/>stats_snapshot" .-> B_ws
+
+    B_api --- B_pg
+    B_ws  --- B_redis
+    B_api --- B_turn
+
+    M_rtc <==>|"WebRTC data channels — E2E encrypted, never touches backend<br/><br/><b>terminal</b> (PTY bytes) · <b>stats</b> (JSON ~1 Hz)<br/><b>files</b> (framed JSON + chunks) · <b>agent-{id}</b> (Claude / Codex stdio)<br/><br/>P2P direct  ·  TURN relay only when NAT blocks P2P"| H_rtc
+
+    B_turn -. "TURN relay path<br/>(opaque to backend)" .-> M_rtc
+    B_turn -. "TURN relay path" .-> H_rtc
+
+    classDef mobile  fill:#1e3a5f,stroke:#4a90e2,color:#fff
+    classDef backend fill:#3a2f5c,stroke:#9b6dd1,color:#fff
+    classDef host    fill:#2d4a3e,stroke:#5cb88c,color:#fff
+    class M_auth,M_key,M_ui,M_ws,M_rtc mobile
+    class B_api,B_ws,B_pg,B_redis,B_turn backend
+    class H_cli,H_key,H_ws,H_rtc,H_pty,H_stats host
+```
+
+### Session establishment (the happy path)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant M as 📱 Mobile
+    participant B as ☁️ Backend
+    participant H as 🖥️ Host daemon
+
+    Note over M,H: Both sides are already authed and connected to /ws/mobile and /ws/host.
+
+    M->>B: POST /api/v1/sessions  (host_id, purpose=terminal)
+    B-->>M: 201 · session_id  (state = REQUESTED)
+    M->>B: WS  session_offer  (SDP, signed)
+    B->>H: relay  session_offer
+    H->>H: verify ED25519 sig over SDP · spawn PTY
+    H-->>B: WS  session_ack { accepted: true }
+    B-->>M: relay  session_ack  → state = APPROVED
+    H->>B: WS  session_answer  (SDP)
+    B->>M: relay  session_answer
+    M-->>H: WS  ice_candidate (× N, both directions, via backend)
+    H-->>M: WS  ice_candidate (× N)
+
+    rect rgba(92, 184, 140, 0.15)
+      Note over M,H: ── WebRTC data channel established ──
+      M-->>H: terminal · keystrokes (ChaCha20-Poly1305)
+      H-->>M: terminal · PTY output
+      H-->>M: stats · JSON snapshots ~1 Hz
+      M-->>H: files · list / read / write
+      Note right of B: Backend sees zero bytes of this traffic.
+    end
+
+    Note over M,H: On host disconnect: state → DETACHED. PTY survives; mobile can rejoin.
+```
+
+### What flows where
+
+| Plane | Carrier | Payload |
+|---|---|---|
+| Auth | HTTPS `/api/v1/auth/*` | OTP, JWT issue / refresh, host pair / re-auth |
+| Signaling | WSS `/ws/mobile`, `/ws/host` | `session_offer` · `session_answer` · `ice_candidate` · `session_event` · `stats_offer` · `files_offer` · `agent_offer` · `alert` · `host_summary` · `available_sessions` |
+| Presence & metrics fallback | HTTPS `/api/v1/presence/*` | last-seen, cached stats history (when P2P unavailable) |
+| **Terminal I/O** | **WebRTC `terminal` channel** | **PTY bytes — never touches backend** |
+| **Stats stream** | **WebRTC `stats` channel** | **JSON snapshots, separate peer connection** |
+| **File ops** | **WebRTC `files` channel** | **Framed JSON + base64 chunks (sentinel `\x00PSFC`)** |
+| **Agent chat** | **WebRTC `agent-{id}` channel** | **Claude / Codex stdio, JSON framed** |
+
+The backend is a switchboard — it can refuse a connection, throttle it, or route it through TURN, but once the data channel is up it sees ciphertext at best and nothing at all on direct P2P.
 
 ---
 
@@ -136,7 +244,12 @@ PRs are welcome. A few notes:
 
 ## License
 
-MIT. See [LICENSE](./LICENSE).
+Licensed under the [Apache License, Version 2.0](./LICENSE).
+
+Unless you explicitly state otherwise, any contribution intentionally
+submitted for inclusion in this project shall be licensed as Apache-2.0,
+without any additional terms or conditions, per §5 of the License. See
+also [NOTICE](./NOTICE).
 
 ---
 
