@@ -171,7 +171,7 @@ sequenceDiagram
       Note right of B: Backend sees zero bytes of this traffic.
     end
 
-    Note over M,H: On host disconnect: state → DETACHED. PTY survives; mobile can rejoin.
+    Note over M,H: On host disconnect, state becomes DETACHED. PTY survives — mobile can rejoin.
 ```
 
 ### What flows where
