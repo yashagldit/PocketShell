@@ -29,10 +29,22 @@ pub struct AppPaths {
 
 impl AppConfig {
     pub fn from_env() -> Self {
+        // Backend URLs are not hardcoded in source. Production binaries bake
+        // them in at compile time via the POCKETSHELL_DEFAULT_BACKEND_URL /
+        // POCKETSHELL_DEFAULT_WS_URL env vars (see option_env! below). Builds
+        // from source without those compile-time env vars will start with
+        // empty defaults, and must supply POCKETSHELL_BACKEND_URL /
+        // POCKETSHELL_WS_URL at runtime.
         let backend_base_url = env::var("POCKETSHELL_BACKEND_URL")
-            .unwrap_or_else(|_| "https://tapi.pocketshell.app".to_string());
+            .ok()
+            .filter(|s| !s.is_empty())
+            .or_else(|| option_env!("POCKETSHELL_DEFAULT_BACKEND_URL").map(str::to_string))
+            .unwrap_or_default();
         let ws_url = env::var("POCKETSHELL_WS_URL")
-            .unwrap_or_else(|_| "wss://tapi.pocketshell.app/ws/host".to_string());
+            .ok()
+            .filter(|s| !s.is_empty())
+            .or_else(|| option_env!("POCKETSHELL_DEFAULT_WS_URL").map(str::to_string))
+            .unwrap_or_default();
         let app_version =
             env::var("POCKETSHELL_APP_VERSION").unwrap_or_else(|_| "0.1.0".to_string());
         let min_backend_host_version = env::var("POCKETSHELL_MIN_HOST_VERSION").ok();
@@ -158,8 +170,10 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap();
         clear_all();
         let cfg = AppConfig::from_env();
-        assert_eq!(cfg.backend_base_url, "https://tapi.pocketshell.app");
-        assert_eq!(cfg.ws_url, "wss://tapi.pocketshell.app/ws/host");
+        // backend_base_url and ws_url have no in-source default — they're
+        // injected at compile time for production builds and fall back to
+        // empty otherwise. We don't assert on their value here to avoid
+        // pinning a URL into source-controlled tests.
         assert_eq!(cfg.app_version, "0.1.0");
         assert!(cfg.min_backend_host_version.is_none());
         assert_eq!(cfg.heartbeat_interval_secs, 20);
