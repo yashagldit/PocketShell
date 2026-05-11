@@ -301,14 +301,16 @@ fn compute_cpu_times_delta(
     })
 }
 
-/// Sort key accepted by [`StatsCollector::list_processes`]. Unknown values fall
-/// back to `Cpu` (descending) — matching the live-stream ordering.
-#[derive(Debug, Clone, Copy)]
+/// Sort key accepted by [`StatsCollector::list_processes`]. Unknown values
+/// fall back to `Cpu` to match the live-stream ordering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcessSortKey {
     Cpu,
     Memory,
     Name,
     Pid,
+    User,
+    Status,
 }
 
 impl ProcessSortKey {
@@ -317,16 +319,42 @@ impl ProcessSortKey {
             "mem" | "memory" => Self::Memory,
             "name" => Self::Name,
             "pid" => Self::Pid,
+            "user" => Self::User,
+            "status" => Self::Status,
             _ => Self::Cpu,
+        }
+    }
+
+    /// The "natural" direction for this column when the caller doesn't specify
+    /// one — numeric usage columns descend, identifier columns ascend.
+    pub fn default_direction(self) -> SortDirection {
+        match self {
+            Self::Cpu | Self::Memory => SortDirection::Desc,
+            Self::Name | Self::Pid | Self::User | Self::Status => SortDirection::Asc,
         }
     }
 }
 
-/// Hard upper bound on `list_processes` responses. The control-channel RPC
-/// returns the full list in a single WebRTC message; SCTP per-message limits
-/// (commonly 256 KB negotiated) put a ceiling on what we can send safely.
-/// At ~250 B per process JSON, 1000 stays comfortably under that cap.
-pub const LIST_PROCESSES_HARD_CAP: usize = 1000;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortDirection {
+    Asc,
+    Desc,
+}
+
+impl SortDirection {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "asc" => Some(Self::Asc),
+            "desc" => Some(Self::Desc),
+            _ => None,
+        }
+    }
+}
+
+/// Default page size when the caller doesn't specify a `limit`. 200 entries at
+/// ~250 B each fits comfortably under the SCTP per-message cap (64 KB default
+/// in webrtc-rs); mobile uses infinite scroll to walk the full list.
+pub const LIST_PROCESSES_DEFAULT_LIMIT: usize = 200;
 
 /// Map a single sysinfo `Process` into the wire shape used by both the live
 /// stream and the `system/list_processes` RPC.
@@ -423,19 +451,29 @@ impl StatsCollector {
         self.collect(true)
     }
 
-    /// Enumerate every process visible to the host, sorted by `sort`, and
-    /// truncate the returned vector to `limit` entries (or [`LIST_PROCESSES_HARD_CAP`]
-    /// when `limit` is `None` or exceeds the cap).
+    /// Server-side page of the host's full process table.
     ///
-    /// Returns `(procs, total_observed)`. The total is the unfiltered count
-    /// so callers can detect and report truncation. CPU% is computed against
-    /// the previous `refresh_processes` call on this collector — since the
-    /// daemon refreshes every 2s, on-demand callers piggyback on warm data.
+    /// Sorts every visible process by `sort`/`dir`, skips the first `offset`
+    /// entries, and returns the next `limit` (default
+    /// [`LIST_PROCESSES_DEFAULT_LIMIT`]). The page size keeps each response
+    /// under the SCTP per-message ceiling; callers paginate by bumping
+    /// `offset` until `more` is false.
+    ///
+    /// Returns `(page, total, more)` — `total` is the unfiltered process
+    /// count from this snapshot (stable across the same TTL window so the
+    /// mobile client can compute progress against it), `more` is true when
+    /// further pages remain.
+    ///
+    /// CPU% is computed against the previous `refresh_processes` call on this
+    /// collector — since the daemon refreshes every 2s, on-demand callers
+    /// piggyback on warm data.
     pub fn list_processes(
         &mut self,
         sort: ProcessSortKey,
+        dir: SortDirection,
+        offset: usize,
         limit: Option<usize>,
-    ) -> (Vec<ProcessInfo>, usize) {
+    ) -> (Vec<ProcessInfo>, usize, bool) {
         let stale = self
             .processes_refreshed_at
             .map(|t| t.elapsed().as_millis() >= PROCESSES_REFRESH_TTL_MS)
@@ -451,26 +489,39 @@ impl StatsCollector {
             .values()
             .map(|p| build_process_info(p, &self.users))
             .collect();
-
         let total = procs.len();
 
+        // Sort ascending by the chosen column, then reverse if descending.
+        // Doing it this way (instead of a 12-arm match) keeps the comparator
+        // table half the size and reuses one direction-flip at the end.
         match sort {
             ProcessSortKey::Cpu => procs.sort_by(|a, b| {
-                b.cpu_percent
-                    .partial_cmp(&a.cpu_percent)
+                a.cpu_percent
+                    .partial_cmp(&b.cpu_percent)
                     .unwrap_or(std::cmp::Ordering::Equal)
             }),
-            ProcessSortKey::Memory => procs.sort_by(|a, b| b.memory_bytes.cmp(&a.memory_bytes)),
+            ProcessSortKey::Memory => procs.sort_by(|a, b| a.memory_bytes.cmp(&b.memory_bytes)),
             ProcessSortKey::Name => procs.sort_by(|a, b| a.name.cmp(&b.name)),
             ProcessSortKey::Pid => procs.sort_by(|a, b| a.pid.cmp(&b.pid)),
+            ProcessSortKey::User => procs.sort_by(|a, b| {
+                a.user
+                    .as_deref()
+                    .unwrap_or("")
+                    .cmp(b.user.as_deref().unwrap_or(""))
+            }),
+            ProcessSortKey::Status => procs.sort_by(|a, b| a.status.cmp(&b.status)),
+        }
+        if matches!(dir, SortDirection::Desc) {
+            procs.reverse();
         }
 
-        let effective_cap = limit
-            .map(|n| n.min(LIST_PROCESSES_HARD_CAP))
-            .unwrap_or(LIST_PROCESSES_HARD_CAP);
-        procs.truncate(effective_cap);
+        let page_size = limit.unwrap_or(LIST_PROCESSES_DEFAULT_LIMIT);
+        let start = offset.min(total);
+        let end = start.saturating_add(page_size).min(total);
+        let page: Vec<ProcessInfo> = procs.drain(start..end).collect();
+        let more = end < total;
 
-        (procs, total)
+        (page, total, more)
     }
 
     fn refresh_disk_if_stale(&mut self) {

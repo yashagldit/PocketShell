@@ -128,35 +128,50 @@ pub async fn dispatch(req: RpcRequest) -> RpcResponse {
 /// daemon's collector is already warm from the 2s stats stream tick).
 ///
 /// Params (all optional):
-/// - `limit`: u32 — caller-supplied cap, clamped to [`crate::stats::LIST_PROCESSES_HARD_CAP`].
-/// - `sort`: "cpu" | "mem" | "name" | "pid" — defaults to "cpu" (descending).
+/// - `sort`: "cpu" | "mem" | "name" | "pid" | "user" | "status" (default: "cpu")
+/// - `dir`:  "asc" | "desc" (default: column-specific — usage cols desc, identifier cols asc)
+/// - `offset`: u32 (default: 0) — skip the first N entries of the sorted list
+/// - `limit`: u32 (default: [`crate::stats::LIST_PROCESSES_DEFAULT_LIMIT`])
 ///
-/// Response: `{ processes: [...], total: usize, truncated: bool, captured_at_ms: i64 }`.
+/// Response: `{ processes, total, more, captured_at_ms }`. The mobile client
+/// paginates by bumping `offset` until `more` is false; `total` is stable
+/// inside the snapshot TTL window so it can drive a progress indicator.
 pub fn handle_list_processes(
     collector: &mut crate::stats::StatsCollector,
     req: RpcRequest,
 ) -> RpcResponse {
-    use crate::stats::ProcessSortKey;
+    use crate::stats::{ProcessSortKey, SortDirection};
     let id = req.id;
-    let limit = req
-        .params
-        .get("limit")
-        .and_then(|v| v.as_u64())
-        .map(|n| n as usize);
     let sort = req
         .params
         .get("sort")
         .and_then(|v| v.as_str())
         .map(ProcessSortKey::parse)
         .unwrap_or(ProcessSortKey::Cpu);
+    let dir = req
+        .params
+        .get("dir")
+        .and_then(|v| v.as_str())
+        .and_then(SortDirection::parse)
+        .unwrap_or_else(|| sort.default_direction());
+    let offset = req
+        .params
+        .get("offset")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as usize)
+        .unwrap_or(0);
+    let limit = req
+        .params
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as usize);
 
-    let (procs, total) = collector.list_processes(sort, limit);
-    let truncated = total > procs.len();
+    let (procs, total, more) = collector.list_processes(sort, dir, offset, limit);
 
     let result = serde_json::json!({
         "processes": procs,
         "total": total,
-        "truncated": truncated,
+        "more": more,
         "captured_at_ms": now_ms(),
     });
     RpcResponse::ok(id, result)
@@ -516,85 +531,152 @@ mod tests {
     }
 
     #[test]
-    fn list_processes_returns_self_and_reports_total() {
-        // Construct a real collector against the current process table — every
-        // host running these tests has at least one process (us), so the result
-        // must be non-empty and contain our own PID. We avoid a small `limit`
-        // here because sort=pid + tiny limit would slice off the test process.
+    fn list_processes_returns_a_page_and_reports_total() {
         let mut c = crate::stats::StatsCollector::new();
         let req = RpcRequest {
             id: "lp1".into(),
             method: "system/list_processes".into(),
-            params: serde_json::json!({ "sort": "pid" }),
+            params: serde_json::json!({ "sort": "pid", "limit": 10 }),
         };
         let resp = handle_list_processes(&mut c, req);
         assert_eq!(resp.id, "lp1");
         let result = resp.result.expect("ok response");
         let procs = result.get("processes").unwrap().as_array().unwrap();
         let total = result.get("total").unwrap().as_u64().unwrap() as usize;
+        let more = result.get("more").unwrap().as_bool().unwrap();
         assert!(!procs.is_empty(), "expected at least one process");
+        assert!(procs.len() <= 10, "page size not respected: {}", procs.len());
         assert!(total >= procs.len(), "total must be >= returned count");
-
-        // Truncated flag is set iff we trimmed (only happens above the hard cap).
-        let truncated = result.get("truncated").unwrap().as_bool().unwrap();
-        assert_eq!(truncated, total > procs.len());
-
-        let own_pid = std::process::id();
-        let saw_self = procs
-            .iter()
-            .any(|p| p.get("pid").and_then(|v| v.as_u64()) == Some(own_pid as u64));
-        // On systems with more procs than the hard cap, sort=pid puts our
-        // (higher) PID outside the window — only assert when not truncated.
-        if !truncated {
-            assert!(saw_self, "expected own pid {own_pid} in process list");
-        }
+        assert_eq!(more, total > procs.len());
     }
 
     #[test]
-    fn list_processes_applies_caller_limit() {
+    fn list_processes_pagination_walks_full_table() {
+        // Two sequential page fetches should cover the table without
+        // duplicates: page1 + page2 (where page1 has all-but-one) yields
+        // exactly `total` distinct PIDs.
         let mut c = crate::stats::StatsCollector::new();
-        let req = RpcRequest {
-            id: "lp1b".into(),
-            method: "system/list_processes".into(),
-            params: serde_json::json!({ "limit": 3 }),
+        let page1 = handle_list_processes(
+            &mut c,
+            RpcRequest {
+                id: "p1".into(),
+                method: "system/list_processes".into(),
+                params: serde_json::json!({ "sort": "pid", "offset": 0, "limit": 5 }),
+            },
+        )
+        .result
+        .unwrap();
+        let page2 = handle_list_processes(
+            &mut c,
+            RpcRequest {
+                id: "p2".into(),
+                method: "system/list_processes".into(),
+                params: serde_json::json!({ "sort": "pid", "offset": 5, "limit": 5 }),
+            },
+        )
+        .result
+        .unwrap();
+
+        let total: usize = page1.get("total").unwrap().as_u64().unwrap() as usize;
+        let collect_pids = |v: &serde_json::Value| -> Vec<u64> {
+            v.get("processes")
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|p| p.get("pid").unwrap().as_u64().unwrap())
+                .collect()
         };
-        let resp = handle_list_processes(&mut c, req);
-        let result = resp.result.unwrap();
-        let returned = result.get("processes").unwrap().as_array().unwrap().len();
-        assert!(returned <= 3, "limit not applied: {returned}");
+        let mut pids = collect_pids(&page1);
+        pids.extend(collect_pids(&page2));
+        let unique: std::collections::HashSet<_> = pids.iter().copied().collect();
+        assert_eq!(unique.len(), pids.len(), "pages must not overlap");
+        assert!(pids.len() <= total, "pages cannot exceed total");
     }
 
     #[test]
-    fn list_processes_sort_by_pid_is_ascending() {
+    fn list_processes_offset_past_end_returns_empty_page() {
         let mut c = crate::stats::StatsCollector::new();
-        let req = RpcRequest {
-            id: "lp2".into(),
-            method: "system/list_processes".into(),
-            params: serde_json::json!({ "sort": "pid", "limit": 20 }),
-        };
-        let resp = handle_list_processes(&mut c, req);
+        let resp = handle_list_processes(
+            &mut c,
+            RpcRequest {
+                id: "off".into(),
+                method: "system/list_processes".into(),
+                params: serde_json::json!({ "offset": 10_000_000u64, "limit": 50 }),
+            },
+        );
         let result = resp.result.unwrap();
-        let procs = result.get("processes").unwrap().as_array().unwrap();
+        assert_eq!(result.get("processes").unwrap().as_array().unwrap().len(), 0);
+        assert_eq!(result.get("more").unwrap().as_bool().unwrap(), false);
+    }
+
+    #[test]
+    fn list_processes_sort_pid_ascending() {
+        let mut c = crate::stats::StatsCollector::new();
+        let resp = handle_list_processes(
+            &mut c,
+            RpcRequest {
+                id: "lp2".into(),
+                method: "system/list_processes".into(),
+                params: serde_json::json!({ "sort": "pid", "limit": 20 }),
+            },
+        );
+        let procs = resp
+            .result
+            .unwrap()
+            .get("processes")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .clone();
         let pids: Vec<u64> = procs
             .iter()
             .map(|p| p.get("pid").unwrap().as_u64().unwrap())
             .collect();
         let mut sorted = pids.clone();
         sorted.sort();
-        assert_eq!(pids, sorted, "pid sort must be ascending");
+        assert_eq!(pids, sorted, "pid sort must be ascending by default");
+    }
+
+    #[test]
+    fn list_processes_dir_desc_overrides_default() {
+        let mut c = crate::stats::StatsCollector::new();
+        let resp = handle_list_processes(
+            &mut c,
+            RpcRequest {
+                id: "lp_dir".into(),
+                method: "system/list_processes".into(),
+                params: serde_json::json!({ "sort": "pid", "dir": "desc", "limit": 20 }),
+            },
+        );
+        let procs = resp
+            .result
+            .unwrap()
+            .get("processes")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .clone();
+        let pids: Vec<u64> = procs
+            .iter()
+            .map(|p| p.get("pid").unwrap().as_u64().unwrap())
+            .collect();
+        for w in pids.windows(2) {
+            assert!(w[0] >= w[1], "pid+desc must be descending: {:?}", pids);
+        }
     }
 
     #[test]
     fn list_processes_unknown_sort_falls_back_to_cpu() {
-        // "cpu" is descending; unknown sort keys must not error and must
-        // produce the same ordering as "cpu".
         let mut c = crate::stats::StatsCollector::new();
-        let req = RpcRequest {
-            id: "lp3".into(),
-            method: "system/list_processes".into(),
-            params: serde_json::json!({ "sort": "garbage", "limit": 10 }),
-        };
-        let resp = handle_list_processes(&mut c, req);
+        let resp = handle_list_processes(
+            &mut c,
+            RpcRequest {
+                id: "lp3".into(),
+                method: "system/list_processes".into(),
+                params: serde_json::json!({ "sort": "garbage", "limit": 10 }),
+            },
+        );
         assert!(resp.error.is_none());
         let procs = resp
             .result
@@ -614,18 +696,26 @@ mod tests {
     }
 
     #[test]
-    fn list_processes_caps_at_hard_limit() {
-        // Even if caller asks for a huge number, the server clamps to the cap.
+    fn list_processes_default_page_size_applied() {
+        // No explicit limit → server applies the default page size.
         let mut c = crate::stats::StatsCollector::new();
-        let req = RpcRequest {
-            id: "lp4".into(),
-            method: "system/list_processes".into(),
-            params: serde_json::json!({ "limit": 999_999u64 }),
-        };
-        let resp = handle_list_processes(&mut c, req);
-        let result = resp.result.unwrap();
-        let returned = result.get("processes").unwrap().as_array().unwrap().len();
-        assert!(returned <= crate::stats::LIST_PROCESSES_HARD_CAP);
+        let resp = handle_list_processes(
+            &mut c,
+            RpcRequest {
+                id: "lp4".into(),
+                method: "system/list_processes".into(),
+                params: serde_json::json!({}),
+            },
+        );
+        let returned = resp
+            .result
+            .unwrap()
+            .get("processes")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .len();
+        assert!(returned <= crate::stats::LIST_PROCESSES_DEFAULT_LIMIT);
     }
 
     #[tokio::test]
