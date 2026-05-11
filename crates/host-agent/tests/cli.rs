@@ -51,27 +51,23 @@ fn short_help_flag_succeeds() {
 }
 
 #[test]
-fn version_flag_is_not_exposed() {
-    // The CLI does not opt into clap's auto-`--version` (no `#[command(version)]`
-    // on `Cli`). Lock in that behavior so anyone adding it consciously updates
-    // this test. If you intentionally add a version flag, flip this to assert
-    // success + stdout contains "pocketshell".
+fn version_flag_succeeds() {
     let tmp = TempDir::new().unwrap();
     cmd(&tmp)
         .arg("--version")
         .assert()
-        .failure()
-        .stderr(predicate::str::contains("unexpected argument"));
+        .success()
+        .stdout(predicate::str::contains("pocketshell"));
 }
 
 #[test]
-fn no_args_exits_with_usage_error() {
+fn no_args_starts_interactive_menu_and_requires_tty() {
     let tmp = TempDir::new().unwrap();
-    // clap requires a subcommand; running with none should fail with a usage message.
     cmd(&tmp)
         .assert()
         .failure()
-        .stderr(predicate::str::contains("Usage").or(predicate::str::contains("usage")));
+        .stdout(predicate::str::contains("PocketShell"))
+        .stderr(predicate::str::contains("not a terminal"));
 }
 
 #[test]
