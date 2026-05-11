@@ -32,5 +32,8 @@
   "list.user": "USER",
   "list.st": "ST",
   "list.no_match": "No processes match your search",
-  "list.no_data": "No process data available"
+  "list.no_data": "No process data available",
+  "list.error": "Couldn't load processes: {{message}}",
+  "list.retry": "Retry",
+  "list.truncated": "Showing {{count}} of {{total}} (host cap reached)"
 }

@@ -609,6 +609,28 @@ async fn send_files_stream_frame(
     Ok(())
 }
 
+/// Serialize an RPC response and send it on the control channel, logging
+/// either failure mode. Shared between the inline (stateful) and spawned
+/// (stateless) dispatch paths.
+async fn send_control_rpc_response(
+    channel: std::sync::Arc<webrtc::data_channel::RTCDataChannel>,
+    resp: &crate::rpc::RpcResponse,
+    method: &str,
+    req_id: &str,
+) {
+    match serde_json::to_vec(resp) {
+        Ok(bytes) => {
+            if let Err(err) = channel.send(&bytes::Bytes::from(bytes)).await {
+                warn!(
+                    "control RPC response send failed for method={} id={}: {}",
+                    method, req_id, err
+                );
+            }
+        }
+        Err(err) => warn!("control RPC response encode failed: {}", err),
+    }
+}
+
 fn spawn_files_reply(
     channel: &std::sync::Arc<webrtc::data_channel::RTCDataChannel>,
     response: serde_json::Value,
@@ -3592,21 +3614,33 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                             } else if let Some(req) = crate::rpc::parse_request(&data) {
                                 let method = req.method.clone();
                                 let req_id = req.id.clone();
-                                // Dispatch on a blocking-friendly future; RPC handlers are cheap
-                                // and synchronous, but spawn to avoid holding the event loop
-                                // if future handlers block (e.g. on command execution).
                                 let ch = Arc::clone(&channel);
-                                tokio::spawn(async move {
-                                    let resp = crate::rpc::dispatch(req).await;
-                                    match serde_json::to_vec(&resp) {
-                                        Ok(bytes) => {
-                                            if let Err(err) = ch.send(&bytes::Bytes::from(bytes)).await {
-                                                warn!("control RPC response send failed for method={} id={}: {}", method, req_id, err);
-                                            }
+                                if crate::rpc::is_stateful_method(&method) {
+                                    // Borrow the daemon's warm StatsCollector to keep CPU%
+                                    // accurate (the 2s stream tick has just refreshed it).
+                                    // Worst case ~30 ms on a 1000-process host briefly delays
+                                    // the next stream tick and other select arms; terminal
+                                    // I/O runs in spawned tasks so it is unaffected.
+                                    let resp = match method.as_str() {
+                                        "system/list_processes" => {
+                                            crate::rpc::handle_list_processes(&mut stats, req)
                                         }
-                                        Err(err) => warn!("control RPC response encode failed: {}", err),
-                                    }
-                                });
+                                        other => crate::rpc::RpcResponse::err(
+                                            req_id.clone(),
+                                            crate::rpc::RpcError::internal(format!(
+                                                "stateful method '{other}' has no inline handler"
+                                            )),
+                                        ),
+                                    };
+                                    send_control_rpc_response(ch, &resp, &method, &req_id).await;
+                                } else {
+                                    // Stateless dispatch: spawn so handlers that may block
+                                    // (kill, reboot) don't stall the event loop.
+                                    tokio::spawn(async move {
+                                        let resp = crate::rpc::dispatch(req).await;
+                                        send_control_rpc_response(ch, &resp, &method, &req_id).await;
+                                    });
+                                }
                             } else {
                                 warn!("control RPC parse failed from device {} (bytes={})", mobile_device_id, data.len());
                             }

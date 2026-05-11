@@ -32,5 +32,8 @@
   "list.user": "用戶",
   "list.st": "狀態",
   "list.no_match": "沒有匹配搜尋的程序",
-  "list.no_data": "無程序數據"
+  "list.no_data": "無程序數據",
+  "list.error": "Couldn't load processes: {{message}}",
+  "list.retry": "Retry",
+  "list.truncated": "Showing {{count}} of {{total}} (host cap reached)"
 }

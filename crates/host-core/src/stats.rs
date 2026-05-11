@@ -18,6 +18,11 @@ const BATTERY_REFRESH_INTERVAL_SECS: u64 = 60;
 const NET_CONN_REFRESH_INTERVAL_SECS: u64 = 30;
 const USERS_REFRESH_INTERVAL_SECS: u64 = 30;
 
+/// `refresh_processes(All)` stat()s every entry in /proc — 5–30 ms on busy
+/// hosts. When the on-demand list_processes RPC lands within this window of
+/// the 2s stream tick, skip the second refresh and serve from warm data.
+const PROCESSES_REFRESH_TTL_MS: u128 = 500;
+
 pub struct StatsCollector {
     system: System,
     networks: Networks,
@@ -42,6 +47,9 @@ pub struct StatsCollector {
     // Logged-in users cache (avoids spawning `who` every 2s)
     cached_logged_in_users: Option<Vec<LoggedInUser>>,
     users_refreshed_at: Instant,
+    // Tracks the last `refresh_processes` so the on-demand list_processes RPC
+    // can skip a redundant refresh if the stream tick just ran (~2s cadence).
+    processes_refreshed_at: Option<Instant>,
     // Previous CPU times for delta computation (Linux only)
     #[cfg(target_os = "linux")]
     prev_cpu_jiffies: Option<(u64, u64, u64, u64, u64)>, // user, system, idle, iowait, total
@@ -293,6 +301,68 @@ fn compute_cpu_times_delta(
     })
 }
 
+/// Sort key accepted by [`StatsCollector::list_processes`]. Unknown values fall
+/// back to `Cpu` (descending) — matching the live-stream ordering.
+#[derive(Debug, Clone, Copy)]
+pub enum ProcessSortKey {
+    Cpu,
+    Memory,
+    Name,
+    Pid,
+}
+
+impl ProcessSortKey {
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "mem" | "memory" => Self::Memory,
+            "name" => Self::Name,
+            "pid" => Self::Pid,
+            _ => Self::Cpu,
+        }
+    }
+}
+
+/// Hard upper bound on `list_processes` responses. The control-channel RPC
+/// returns the full list in a single WebRTC message; SCTP per-message limits
+/// (commonly 256 KB negotiated) put a ceiling on what we can send safely.
+/// At ~250 B per process JSON, 1000 stays comfortably under that cap.
+pub const LIST_PROCESSES_HARD_CAP: usize = 1000;
+
+/// Map a single sysinfo `Process` into the wire shape used by both the live
+/// stream and the `system/list_processes` RPC.
+fn build_process_info(p: &sysinfo::Process, users: &Users) -> ProcessInfo {
+    let user = p
+        .user_id()
+        .and_then(|uid| users.get_user_by_id(uid).map(|u| u.name().to_string()));
+    let command = {
+        let cmd = p.cmd();
+        if cmd.is_empty() {
+            None
+        } else {
+            let mut full = cmd
+                .iter()
+                .map(|s| s.to_string_lossy())
+                .collect::<Vec<_>>()
+                .join(" ");
+            if full.len() > 120 {
+                full.truncate(120);
+            }
+            Some(full)
+        }
+    };
+    ProcessInfo {
+        pid: p.pid().as_u32(),
+        name: p.name().to_string_lossy().to_string(),
+        cpu_percent: p.cpu_usage(),
+        memory_bytes: p.memory(),
+        status: format!("{:?}", p.status()),
+        parent_pid: p.parent().map(|pid| pid.as_u32()),
+        user,
+        command,
+        run_time_secs: Some(p.run_time()),
+    }
+}
+
 impl StatsCollector {
     pub fn new() -> Self {
         let mut system = System::new_all();
@@ -337,6 +407,7 @@ impl StatsCollector {
             cached_logged_in_users: None,
             users_refreshed_at: Instant::now()
                 - std::time::Duration::from_secs(USERS_REFRESH_INTERVAL_SECS + 1),
+            processes_refreshed_at: None,
             #[cfg(target_os = "linux")]
             prev_cpu_jiffies: None,
         }
@@ -350,6 +421,56 @@ impl StatsCollector {
     /// Full snapshot with per-process data (for live WebRTC streaming).
     pub fn snapshot_with_processes(&mut self) -> StatsSnapshot {
         self.collect(true)
+    }
+
+    /// Enumerate every process visible to the host, sorted by `sort`, and
+    /// truncate the returned vector to `limit` entries (or [`LIST_PROCESSES_HARD_CAP`]
+    /// when `limit` is `None` or exceeds the cap).
+    ///
+    /// Returns `(procs, total_observed)`. The total is the unfiltered count
+    /// so callers can detect and report truncation. CPU% is computed against
+    /// the previous `refresh_processes` call on this collector — since the
+    /// daemon refreshes every 2s, on-demand callers piggyback on warm data.
+    pub fn list_processes(
+        &mut self,
+        sort: ProcessSortKey,
+        limit: Option<usize>,
+    ) -> (Vec<ProcessInfo>, usize) {
+        let stale = self
+            .processes_refreshed_at
+            .map(|t| t.elapsed().as_millis() >= PROCESSES_REFRESH_TTL_MS)
+            .unwrap_or(true);
+        if stale {
+            self.system.refresh_processes(ProcessesToUpdate::All, true);
+            self.processes_refreshed_at = Some(Instant::now());
+        }
+
+        let mut procs: Vec<ProcessInfo> = self
+            .system
+            .processes()
+            .values()
+            .map(|p| build_process_info(p, &self.users))
+            .collect();
+
+        let total = procs.len();
+
+        match sort {
+            ProcessSortKey::Cpu => procs.sort_by(|a, b| {
+                b.cpu_percent
+                    .partial_cmp(&a.cpu_percent)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            }),
+            ProcessSortKey::Memory => procs.sort_by(|a, b| b.memory_bytes.cmp(&a.memory_bytes)),
+            ProcessSortKey::Name => procs.sort_by(|a, b| a.name.cmp(&b.name)),
+            ProcessSortKey::Pid => procs.sort_by(|a, b| a.pid.cmp(&b.pid)),
+        }
+
+        let effective_cap = limit
+            .map(|n| n.min(LIST_PROCESSES_HARD_CAP))
+            .unwrap_or(LIST_PROCESSES_HARD_CAP);
+        procs.truncate(effective_cap);
+
+        (procs, total)
     }
 
     fn refresh_disk_if_stale(&mut self) {
@@ -474,6 +595,7 @@ impl StatsCollector {
         // Collect processes and task counts in a single pass
         let (processes, task_counts) = if include_processes {
             self.system.refresh_processes(ProcessesToUpdate::All, true);
+            self.processes_refreshed_at = Some(Instant::now());
             let mut running = 0u32;
             let mut sleeping = 0u32;
             let mut stopped = 0u32;
@@ -492,36 +614,7 @@ impl StatsCollector {
                         ProcessStatus::Zombie => zombie += 1,
                         _ => {} // Dead, Unknown, etc. — not counted in any bucket
                     }
-                    let user = p.user_id().and_then(|uid| {
-                        self.users.get_user_by_id(uid).map(|u| u.name().to_string())
-                    });
-                    let command = {
-                        let cmd = p.cmd();
-                        if cmd.is_empty() {
-                            None
-                        } else {
-                            let mut full = cmd
-                                .iter()
-                                .map(|s| s.to_string_lossy())
-                                .collect::<Vec<_>>()
-                                .join(" ");
-                            if full.len() > 120 {
-                                full.truncate(120);
-                            }
-                            Some(full)
-                        }
-                    };
-                    ProcessInfo {
-                        pid: p.pid().as_u32(),
-                        name: p.name().to_string_lossy().to_string(),
-                        cpu_percent: p.cpu_usage(),
-                        memory_bytes: p.memory(),
-                        status: format!("{:?}", p.status()),
-                        parent_pid: p.parent().map(|pid| pid.as_u32()),
-                        user,
-                        command,
-                        run_time_secs: Some(p.run_time()),
-                    }
+                    build_process_info(p, &self.users)
                 })
                 .collect();
             procs.sort_by(|a, b| {
@@ -529,6 +622,11 @@ impl StatsCollector {
                     .partial_cmp(&a.cpu_percent)
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
+            // The live stats stream is push-on-tick over a single WebRTC SCTP
+            // message — keep the payload comfortably under the per-message
+            // cap by capping at the top 50 by CPU. The dedicated Process List
+            // screen fetches the full list on demand via the
+            // `system/list_processes` RPC (see `list_processes` below).
             procs.truncate(50);
             (
                 Some(procs),

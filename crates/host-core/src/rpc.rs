@@ -89,12 +89,20 @@ pub fn parse_request(data: &[u8]) -> Option<RpcRequest> {
     serde_json::from_str::<RpcRequest>(s).ok()
 }
 
+/// True for methods that require borrowing the daemon's [`StatsCollector`]
+/// and therefore cannot be dispatched through the stateless [`dispatch`]
+/// fast path. The control-message handler in `daemon.rs` checks this and
+/// routes stateful methods inline so it can pass `&mut StatsCollector`.
+pub fn is_stateful_method(method: &str) -> bool {
+    matches!(method, "system/list_processes")
+}
+
 /// Dispatch an RPC request to the matching handler.
 ///
-/// The dispatcher is a plain `match` on `method` — simple and branch-predictable.
-/// A hashmap-of-handlers was considered but is over-engineered for the current
-/// handful of methods and requires `Box<dyn Fn>` acrobatics for async bodies;
-/// we can refactor when method count climbs past ~10.
+/// Stateful methods (see [`is_stateful_method`]) are intercepted by the
+/// daemon's event loop before reaching here so they can borrow shared
+/// resources like `StatsCollector`; if one slips through we surface it as
+/// `internal` rather than `unknown_method` to make the routing mistake loud.
 pub async fn dispatch(req: RpcRequest) -> RpcResponse {
     let id = req.id.clone();
     let result: std::result::Result<Value, RpcError> = match req.method.as_str() {
@@ -102,6 +110,9 @@ pub async fn dispatch(req: RpcRequest) -> RpcResponse {
         "version/info" => Ok(method_version_info()),
         "system/kill_process" => method_kill_process(&req.params),
         "system/reboot" => method_reboot(&req.params),
+        m if is_stateful_method(m) => Err(RpcError::internal(format!(
+            "stateful method '{m}' must be routed via the daemon event loop"
+        ))),
         other => Err(RpcError::unknown_method(format!(
             "unknown RPC method: {other}"
         ))),
@@ -110,6 +121,45 @@ pub async fn dispatch(req: RpcRequest) -> RpcResponse {
         Ok(v) => RpcResponse::ok(id, v),
         Err(e) => RpcResponse::err(id, e),
     }
+}
+
+/// Stateful handler for `system/list_processes`. Pulled out of [`dispatch`]
+/// because it needs a live `StatsCollector` to compute meaningful CPU% (the
+/// daemon's collector is already warm from the 2s stats stream tick).
+///
+/// Params (all optional):
+/// - `limit`: u32 — caller-supplied cap, clamped to [`crate::stats::LIST_PROCESSES_HARD_CAP`].
+/// - `sort`: "cpu" | "mem" | "name" | "pid" — defaults to "cpu" (descending).
+///
+/// Response: `{ processes: [...], total: usize, truncated: bool, captured_at_ms: i64 }`.
+pub fn handle_list_processes(
+    collector: &mut crate::stats::StatsCollector,
+    req: RpcRequest,
+) -> RpcResponse {
+    use crate::stats::ProcessSortKey;
+    let id = req.id;
+    let limit = req
+        .params
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as usize);
+    let sort = req
+        .params
+        .get("sort")
+        .and_then(|v| v.as_str())
+        .map(ProcessSortKey::parse)
+        .unwrap_or(ProcessSortKey::Cpu);
+
+    let (procs, total) = collector.list_processes(sort, limit);
+    let truncated = total > procs.len();
+
+    let result = serde_json::json!({
+        "processes": procs,
+        "total": total,
+        "truncated": truncated,
+        "captured_at_ms": now_ms(),
+    });
+    RpcResponse::ok(id, result)
 }
 
 fn now_ms() -> i64 {
@@ -441,6 +491,141 @@ mod tests {
         let err = resp.error.unwrap();
         // Should not be invalid_params — the signal "15" is valid.
         assert_ne!(err.code, "invalid_params");
+    }
+
+    #[test]
+    fn is_stateful_method_flags_list_processes() {
+        assert!(is_stateful_method("system/list_processes"));
+        assert!(!is_stateful_method("ping"));
+        assert!(!is_stateful_method("system/kill_process"));
+        assert!(!is_stateful_method("system/reboot"));
+        assert!(!is_stateful_method("nope"));
+    }
+
+    #[tokio::test]
+    async fn dispatch_rejects_stateful_method_with_internal() {
+        let req = RpcRequest {
+            id: "lp".into(),
+            method: "system/list_processes".into(),
+            params: Value::Null,
+        };
+        let resp = dispatch(req).await;
+        let err = resp.error.unwrap();
+        assert_eq!(err.code, "internal");
+        assert!(err.message.contains("stateful"));
+    }
+
+    #[test]
+    fn list_processes_returns_self_and_reports_total() {
+        // Construct a real collector against the current process table — every
+        // host running these tests has at least one process (us), so the result
+        // must be non-empty and contain our own PID. We avoid a small `limit`
+        // here because sort=pid + tiny limit would slice off the test process.
+        let mut c = crate::stats::StatsCollector::new();
+        let req = RpcRequest {
+            id: "lp1".into(),
+            method: "system/list_processes".into(),
+            params: serde_json::json!({ "sort": "pid" }),
+        };
+        let resp = handle_list_processes(&mut c, req);
+        assert_eq!(resp.id, "lp1");
+        let result = resp.result.expect("ok response");
+        let procs = result.get("processes").unwrap().as_array().unwrap();
+        let total = result.get("total").unwrap().as_u64().unwrap() as usize;
+        assert!(!procs.is_empty(), "expected at least one process");
+        assert!(total >= procs.len(), "total must be >= returned count");
+
+        // Truncated flag is set iff we trimmed (only happens above the hard cap).
+        let truncated = result.get("truncated").unwrap().as_bool().unwrap();
+        assert_eq!(truncated, total > procs.len());
+
+        let own_pid = std::process::id();
+        let saw_self = procs
+            .iter()
+            .any(|p| p.get("pid").and_then(|v| v.as_u64()) == Some(own_pid as u64));
+        // On systems with more procs than the hard cap, sort=pid puts our
+        // (higher) PID outside the window — only assert when not truncated.
+        if !truncated {
+            assert!(saw_self, "expected own pid {own_pid} in process list");
+        }
+    }
+
+    #[test]
+    fn list_processes_applies_caller_limit() {
+        let mut c = crate::stats::StatsCollector::new();
+        let req = RpcRequest {
+            id: "lp1b".into(),
+            method: "system/list_processes".into(),
+            params: serde_json::json!({ "limit": 3 }),
+        };
+        let resp = handle_list_processes(&mut c, req);
+        let result = resp.result.unwrap();
+        let returned = result.get("processes").unwrap().as_array().unwrap().len();
+        assert!(returned <= 3, "limit not applied: {returned}");
+    }
+
+    #[test]
+    fn list_processes_sort_by_pid_is_ascending() {
+        let mut c = crate::stats::StatsCollector::new();
+        let req = RpcRequest {
+            id: "lp2".into(),
+            method: "system/list_processes".into(),
+            params: serde_json::json!({ "sort": "pid", "limit": 20 }),
+        };
+        let resp = handle_list_processes(&mut c, req);
+        let result = resp.result.unwrap();
+        let procs = result.get("processes").unwrap().as_array().unwrap();
+        let pids: Vec<u64> = procs
+            .iter()
+            .map(|p| p.get("pid").unwrap().as_u64().unwrap())
+            .collect();
+        let mut sorted = pids.clone();
+        sorted.sort();
+        assert_eq!(pids, sorted, "pid sort must be ascending");
+    }
+
+    #[test]
+    fn list_processes_unknown_sort_falls_back_to_cpu() {
+        // "cpu" is descending; unknown sort keys must not error and must
+        // produce the same ordering as "cpu".
+        let mut c = crate::stats::StatsCollector::new();
+        let req = RpcRequest {
+            id: "lp3".into(),
+            method: "system/list_processes".into(),
+            params: serde_json::json!({ "sort": "garbage", "limit": 10 }),
+        };
+        let resp = handle_list_processes(&mut c, req);
+        assert!(resp.error.is_none());
+        let procs = resp
+            .result
+            .unwrap()
+            .get("processes")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .clone();
+        let cpus: Vec<f64> = procs
+            .iter()
+            .map(|p| p.get("cpu_percent").unwrap().as_f64().unwrap())
+            .collect();
+        for w in cpus.windows(2) {
+            assert!(w[0] >= w[1], "cpu sort must be descending: {:?}", cpus);
+        }
+    }
+
+    #[test]
+    fn list_processes_caps_at_hard_limit() {
+        // Even if caller asks for a huge number, the server clamps to the cap.
+        let mut c = crate::stats::StatsCollector::new();
+        let req = RpcRequest {
+            id: "lp4".into(),
+            method: "system/list_processes".into(),
+            params: serde_json::json!({ "limit": 999_999u64 }),
+        };
+        let resp = handle_list_processes(&mut c, req);
+        let result = resp.result.unwrap();
+        let returned = result.get("processes").unwrap().as_array().unwrap().len();
+        assert!(returned <= crate::stats::LIST_PROCESSES_HARD_CAP);
     }
 
     #[tokio::test]
