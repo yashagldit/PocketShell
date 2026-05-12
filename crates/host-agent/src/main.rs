@@ -266,13 +266,20 @@ async fn pair(config: AppConfig, code: Option<String>, reset: bool) -> Result<()
     let response = match result {
         Ok(r) => r,
         Err(e) if existing_host_id.is_some() => {
-            // Device-add failed — likely the pairing code belongs to a different account
+            // Legacy code-pair device-add was removed; the backend now 400s on
+            // any /codes/validate with host_id set. The other failure mode is
+            // a code that belongs to a different account — message covers both.
             eprintln!("error: {e}");
             eprintln!();
-            eprintln!("this host is already paired with a different account.");
-            eprintln!("to switch accounts, run:");
+            eprintln!("this host is already paired.");
+            eprintln!();
+            eprintln!("to add another mobile device, open the mobile app and use");
+            eprintln!("\"add device\" — it will generate a claim this host approves");
+            eprintln!("with its existing credentials (no pairing code required).");
+            eprintln!();
+            eprintln!("to repair this host onto a different account, run:");
             eprintln!("  pocketshell pair --reset <CODE>");
-            return Err(anyhow!("pairing failed — account mismatch"));
+            return Err(anyhow!("pairing failed — device-add via code is no longer supported; use the mobile app's add-device flow"));
         }
         Err(e) => return Err(e).context("validating pairing code"),
     };

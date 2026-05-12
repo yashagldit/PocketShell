@@ -40,29 +40,78 @@ const DENIED_HOME_FILES: &[&str] = &[
     ".netrc",
 ];
 
-/// Resolved denylist entries against a specific home dir.
+/// System-wide directories that the file channel must NEVER expose,
+/// independently of where `$HOME` points. Protects against a daemon that
+/// somehow ends up running with elevated privileges — `geteuid` should
+/// block that before this list ever fires, but defense-in-depth.
+///
+/// We deliberately do NOT block `/var` wholesale because macOS canonicalises
+/// the user-scoped `$TMPDIR` to `/private/var/folders/...`, which is just
+/// scratch space. Instead we enumerate the specific sensitive subpaths under
+/// `/var` (`/var/lib`, `/var/log`, `/var/db`, …) and let the rest through.
+///
+/// Same for `/etc` vs `/private/etc`: `fs::canonicalize` on macOS rewrites
+/// `/etc/hosts` to `/private/etc/hosts`, so both forms must be listed.
+///
+/// `/tmp`, `/usr` (outside `/usr/local/etc`), `/opt`, and `/var/tmp` /
+/// `/var/folders` are intentionally NOT denied — legitimate scratch /
+/// build / install locations.
+const DENIED_ABSOLUTE_PREFIXES: &[&str] = &[
+    "/etc",
+    "/root",
+    "/boot",
+    "/proc",
+    "/sys",
+    "/dev",
+    "/usr/local/etc",
+    "/var/lib",
+    "/var/log",
+    "/var/db",
+    "/var/spool",
+    "/var/root",
+    "/var/audit",
+    // macOS canonical forms — fs::canonicalize rewrites /etc → /private/etc
+    // and /var/<x> → /private/var/<x>.
+    "/private/etc",
+    "/private/var/lib",
+    "/private/var/log",
+    "/private/var/db",
+    "/private/var/spool",
+    "/private/var/root",
+    "/private/var/audit",
+];
+
+/// Resolved denylist entries against a specific home dir + the global
+/// absolute denylist.
 struct DeniedPaths {
     prefixes: Vec<PathBuf>,
     files: Vec<PathBuf>,
+    absolute_prefixes: Vec<PathBuf>,
 }
 
 fn build_denied_paths(home: &Path) -> DeniedPaths {
     DeniedPaths {
         prefixes: DENIED_HOME_PREFIXES.iter().map(|p| home.join(p)).collect(),
         files: DENIED_HOME_FILES.iter().map(|f| home.join(f)).collect(),
+        absolute_prefixes: DENIED_ABSOLUTE_PREFIXES
+            .iter()
+            .map(PathBuf::from)
+            .collect(),
     }
 }
 
 fn is_path_denied_against(path: &Path, denied: &DeniedPaths) -> bool {
-    denied.prefixes.iter().any(|p| path.starts_with(p)) || denied.files.iter().any(|f| path == f)
+    denied.prefixes.iter().any(|p| path.starts_with(p))
+        || denied.files.iter().any(|f| path == f)
+        || denied.absolute_prefixes.iter().any(|p| path.starts_with(p))
 }
 
 /// Check whether `path` (already absolute, ideally canonicalized) lands
-/// inside one of the denylisted regions of the user's home directory.
-/// Production callers go through this; the resolved denylist is cached
-/// in a `OnceLock` so per-file dispatches don't re-stat $HOME. Tests
-/// that mutate $HOME use `is_path_denied_against` directly to avoid the
-/// cache.
+/// inside one of the denylisted regions of the user's home directory or
+/// the system-wide absolute denylist. Production callers go through this;
+/// the resolved denylist is cached in a `OnceLock` so per-file dispatches
+/// don't re-stat $HOME. Tests that mutate $HOME use `is_path_denied_against`
+/// directly to avoid the cache.
 fn is_path_denied(path: &Path) -> bool {
     static CACHE: OnceLock<Option<DeniedPaths>> = OnceLock::new();
     let denied = CACHE.get_or_init(|| {
@@ -1601,5 +1650,74 @@ mod tests {
             &home.join(".ssh").join("authorized_keys_attack"),
             &d,
         ));
+    }
+
+    #[test]
+    fn denylist_blocks_system_paths() {
+        // Defense-in-depth for the case where the daemon ends up running with
+        // elevated privileges despite the EUID guard: every system credential
+        // path the audit called out must be refused regardless of $HOME.
+        let home = PathBuf::from("/Users/test-user");
+        let d = build_denied_paths(&home);
+
+        // Linux-shaped paths
+        assert!(is_path_denied_against(Path::new("/etc/shadow"), &d));
+        assert!(is_path_denied_against(Path::new("/etc/sudoers"), &d));
+        assert!(is_path_denied_against(Path::new("/etc/ssh/ssh_host_ed25519_key"), &d));
+        assert!(is_path_denied_against(Path::new("/root/.ssh/id_rsa"), &d));
+        assert!(is_path_denied_against(Path::new("/var/lib/postgresql/data/pg_hba.conf"), &d));
+        assert!(is_path_denied_against(Path::new("/var/log/auth.log"), &d));
+        assert!(is_path_denied_against(Path::new("/boot/grub/grub.cfg"), &d));
+        assert!(is_path_denied_against(Path::new("/proc/1/maps"), &d));
+        assert!(is_path_denied_against(Path::new("/sys/class/net/eth0/address"), &d));
+        assert!(is_path_denied_against(Path::new("/dev/sda1"), &d));
+        assert!(is_path_denied_against(Path::new("/usr/local/etc/openvpn/keys"), &d));
+
+        // macOS canonical paths (after fs::canonicalize rewrites /etc → /private/etc).
+        assert!(is_path_denied_against(Path::new("/private/etc/master.passwd"), &d));
+        assert!(is_path_denied_against(Path::new("/private/var/db/sudo"), &d));
+        assert!(is_path_denied_against(Path::new("/private/var/log/system.log"), &d));
+    }
+
+    #[test]
+    fn denylist_allows_legitimate_paths() {
+        // Sanity: the system-path denylist must NOT swallow common workspaces
+        // — `/tmp` scratch, `/usr/local` source trees, `/opt` installs, the
+        // macOS user `$TMPDIR` at `/private/var/folders/<hash>/T/`, POSIX
+        // `/var/tmp`, and most of the user's home outside the home denylist.
+        let home = PathBuf::from("/Users/test-user");
+        let d = build_denied_paths(&home);
+
+        assert!(!is_path_denied_against(Path::new("/tmp/build.log"), &d));
+        assert!(!is_path_denied_against(Path::new("/var/tmp/scratch.txt"), &d));
+        assert!(!is_path_denied_against(Path::new("/var/folders/gz/abc/T/work.txt"), &d));
+        assert!(!is_path_denied_against(
+            Path::new("/private/var/folders/gz/abc/T/work.txt"),
+            &d,
+        ));
+        assert!(!is_path_denied_against(Path::new("/usr/local/src/myproj/README.md"), &d));
+        assert!(!is_path_denied_against(Path::new("/usr/local/bin/myapp"), &d));
+        assert!(!is_path_denied_against(Path::new("/opt/myapp/config.yml"), &d));
+        assert!(!is_path_denied_against(&home.join("projects/repo/src/main.rs"), &d));
+    }
+
+    #[test]
+    fn denylist_blocks_subpath_under_protected_root() {
+        // `.starts_with` matches component-by-component, so an attacker can't
+        // sneak past with a sibling name like `/etcetera/` — but they also
+        // can't construct a deep path under a denied root.
+        let home = PathBuf::from("/Users/test-user");
+        let d = build_denied_paths(&home);
+
+        // Deep paths under denied roots are denied.
+        assert!(is_path_denied_against(Path::new("/etc/network/interfaces.d/01-eth0"), &d));
+        assert!(is_path_denied_against(Path::new("/var/log/nginx/access.log"), &d));
+
+        // Names that merely START with a denied component but are NOT under
+        // it are not denied (`/etcetera` is a different directory than `/etc`).
+        assert!(!is_path_denied_against(Path::new("/etcetera/file.txt"), &d));
+        assert!(!is_path_denied_against(Path::new("/various/file.txt"), &d));
+        // `/var/log` is denied but `/var/loghub` is a different dir.
+        assert!(!is_path_denied_against(Path::new("/var/loghub/file"), &d));
     }
 }

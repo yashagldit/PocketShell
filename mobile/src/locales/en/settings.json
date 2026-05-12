@@ -73,5 +73,12 @@
   "delete_account_reason_privacy": "Privacy concerns",
   "delete_account_reason_bugs": "Too many bugs / not working",
   "delete_account_reason_other": "Other",
-  "delete_account_reason_text_placeholder": "Anything else you'd like to share? (optional)"
+  "delete_account_reason_text_placeholder": "Anything else you'd like to share? (optional)",
+  "delete_account_otp_prompt": "Enter the 6-digit code we just emailed you",
+  "delete_account_otp_placeholder": "123456",
+  "delete_account_otp_send": "Send confirmation code",
+  "delete_account_otp_resend": "Resend code",
+  "delete_account_otp_sent": "Code sent — check your email.",
+  "delete_account_otp_send_failed": "Couldn't send the code. Please try again.",
+  "delete_account_otp_invalid": "That code didn't work. Check your email and try again."
 }

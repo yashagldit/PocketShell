@@ -1463,7 +1463,49 @@ fn handle_file_transfer_msg(
     }
 }
 
+/// Refuse to start the daemon if it's running with root privileges.
+///
+/// Rationale: the daemon's file channel grants any approved mobile peer
+/// read/write access to the host's filesystem, scoped by a home-relative +
+/// system-path denylist (see `files.rs`). Both layers assume the daemon
+/// runs as the human user, so root effectively bypasses the user-scope
+/// model — a single device approval becomes "approved to read /etc/shadow
+/// and write /root/.ssh/authorized_keys".
+///
+/// Escape hatch: setting `POCKETSHELL_ALLOW_ROOT=1` skips the check for
+/// the rare legitimate case (e.g. a kiosk box that has no non-root user).
+/// We log a warning so it shows up in audit reviews.
+#[cfg(unix)]
+fn refuse_if_root() -> Result<()> {
+    if nix::unistd::Uid::effective().is_root() {
+        if std::env::var("POCKETSHELL_ALLOW_ROOT").as_deref() == Ok("1") {
+            warn!(
+                "daemon is running as root because POCKETSHELL_ALLOW_ROOT=1 is set; \
+                 file-channel callers can reach the entire filesystem subject only to \
+                 the static denylist — strongly prefer running as a non-root user"
+            );
+            return Ok(());
+        }
+        return Err(HostError::Backend(
+            "refusing to run as root: the file channel relies on user-scope to bound \
+             filesystem access. Re-run as your normal user (e.g. via `systemctl --user`), \
+             or set POCKETSHELL_ALLOW_ROOT=1 if you have an explicit reason."
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn refuse_if_root() -> Result<()> {
+    // Non-Unix targets don't have a euid concept the same way; the file
+    // channel's risk profile is also different (Windows ACLs etc.). No-op.
+    Ok(())
+}
+
 pub async fn run_foreground(config: AppConfig) -> Result<()> {
+    refuse_if_root()?;
+
     if let Some(min) = &config.min_backend_host_version {
         if !version_gte(&config.app_version, min) {
             return Err(HostError::Version(format!(
