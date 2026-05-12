@@ -13,7 +13,8 @@ use crate::models::StatsSnapshot;
 use crate::models::{
     AttachTarget, HeartbeatRequest, SessionRecord, SessionRequest, SessionState, SignalEnvelope,
 };
-use crate::pty::SessionManager;
+use crate::pty::{SessionAttentionEvent, SessionManager};
+use crate::terminal_marks::AttentionKind;
 use crate::session::accept_session;
 use crate::signaling_crypto::{self, EphemeralKeypair, SessionCipher};
 use crate::stats::StatsCollector;
@@ -2183,6 +2184,38 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                     }
                     if ws_failed {
                         break;
+                    }
+
+                    // OSC 133 / BEL attention events fire after the parser's
+                    // quiet-period debounce (see `DEFAULT_QUIET_PERIOD`).
+                    for ev in sessions.drain_attention(std::time::Instant::now()) {
+                        let SessionAttentionEvent { session_id, kind, command_duration } = ev;
+                        let exit_code = match &kind {
+                            AttentionKind::CommandDone { exit_code } => *exit_code,
+                            AttentionKind::Bell => None,
+                        };
+                        let kind_str = kind.wire_str();
+                        info!(
+                            "terminal attention: session={} kind={} exit={:?} duration={:?}",
+                            session_id, kind_str, exit_code, command_duration
+                        );
+                        let msg = SignalEnvelope {
+                            message_type: "terminal_attention".to_string(),
+                            session_id: Some(session_id),
+                            payload: Some(serde_json::json!({
+                                "kind": kind_str,
+                                "exit_code": exit_code,
+                                "command_duration_ms": command_duration.map(|d| d.as_millis() as u64),
+                            })),
+                            state: None,
+                            accepted: None,
+                            reason: None,
+                            extra: std::collections::HashMap::new(),
+                        };
+                        if let Err(err) = send_signal(&mut ws, &msg).await {
+                            warn!("terminal_attention send failed: {}", err);
+                            break;
+                        }
                     }
                 }
                 _ = session_reap_tick.tick() => {

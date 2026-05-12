@@ -1,11 +1,14 @@
 use crate::error::{HostError, Result};
+use crate::terminal_marks::{
+    AttentionKind, AttentionTracker, PendingAttention, DEFAULT_QUIET_PERIOD,
+};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const MAX_SCROLLBACK_BYTES: usize = 512 * 1024;
 
@@ -39,6 +42,25 @@ pub struct SessionOutputChunk {
     pub bytes: Vec<u8>,
 }
 
+/// A debounce-elapsed attention event surfaced to the daemon, tagged with
+/// the session it came from.
+#[derive(Debug, Clone)]
+pub struct SessionAttentionEvent {
+    pub session_id: String,
+    pub kind: AttentionKind,
+    pub command_duration: Option<Duration>,
+}
+
+impl SessionAttentionEvent {
+    fn from_pending(session_id: String, p: PendingAttention) -> Self {
+        Self {
+            session_id,
+            kind: p.kind,
+            command_duration: p.command_duration,
+        }
+    }
+}
+
 struct PtySession {
     input_tx: mpsc::Sender<Vec<u8>>,
     resize_tx: mpsc::Sender<(u16, u16)>,
@@ -50,6 +72,9 @@ struct PtySession {
     persistent: bool,
     /// Legacy tmux session name when persistence is delegated to tmux.
     tmux_session_name: Option<String>,
+    /// OSC 133 + BEL detector with 10 s debounce. Updated by the read
+    /// thread on every chunk; drained by the daemon each output tick.
+    attention: Arc<Mutex<AttentionTracker>>,
 }
 
 pub struct SessionManager {
@@ -272,6 +297,7 @@ impl SessionManager {
 
         let stop = Arc::new(AtomicBool::new(false));
         let scrollback = Arc::new(Mutex::new(VecDeque::new()));
+        let attention = Arc::new(Mutex::new(AttentionTracker::new(DEFAULT_QUIET_PERIOD)));
         let (input_tx, input_rx) = mpsc::channel::<Vec<u8>>();
         let (resize_tx, _resize_rx) = mpsc::channel::<(u16, u16)>();
         let (output_tx, output_rx) = mpsc::sync_channel::<Vec<u8>>(1024);
@@ -293,27 +319,13 @@ impl SessionManager {
             });
         }
 
-        // Reader thread — reads host PTY output and sends to mobile
-        {
-            let stop = Arc::clone(&stop);
-            let mut reader = pty_read;
-            let scrollback = Arc::clone(&scrollback);
-            thread::spawn(move || {
-                let mut buf = vec![0_u8; 4096];
-                while !stop.load(Ordering::Relaxed) {
-                    match reader.read(&mut buf) {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            if let Ok(mut stored) = scrollback.lock() {
-                                append_scrollback(&mut stored, &buf[..n]);
-                            }
-                            let _ = output_tx.send(buf[..n].to_vec());
-                        }
-                        Err(_) => break,
-                    }
-                }
-            });
-        }
+        spawn_pty_reader_thread(
+            pty_read,
+            Arc::clone(&stop),
+            Arc::clone(&scrollback),
+            Arc::clone(&attention),
+            output_tx,
+        );
 
         // Use a dummy child — the PTY is owned by the rc process, not us
         let dummy_child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>> =
@@ -330,6 +342,7 @@ impl SessionManager {
                 scrollback,
                 persistent: false,
                 tmux_session_name: None,
+                attention,
             },
         );
 
@@ -381,7 +394,7 @@ impl SessionManager {
 
         let child = Arc::new(Mutex::new(child));
         let scrollback = Arc::new(Mutex::new(VecDeque::new()));
-        let mut reader = pair
+        let reader = pair
             .master
             .try_clone_reader()
             .map_err(|e| HostError::Pty(format!("clone reader failed: {e}")))?;
@@ -393,6 +406,7 @@ impl SessionManager {
 
         let master = Arc::new(Mutex::new(pair.master));
         let stop = Arc::new(AtomicBool::new(false));
+        let attention = Arc::new(Mutex::new(AttentionTracker::new(DEFAULT_QUIET_PERIOD)));
 
         let (input_tx, input_rx) = mpsc::channel::<Vec<u8>>();
         let (resize_tx, resize_rx) = mpsc::channel::<(u16, u16)>();
@@ -431,25 +445,13 @@ impl SessionManager {
             });
         }
 
-        {
-            let stop = Arc::clone(&stop);
-            let scrollback = Arc::clone(&scrollback);
-            thread::spawn(move || {
-                let mut buf = vec![0_u8; 4096];
-                while !stop.load(Ordering::Relaxed) {
-                    match reader.read(&mut buf) {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            if let Ok(mut stored) = scrollback.lock() {
-                                append_scrollback(&mut stored, &buf[..n]);
-                            }
-                            let _ = output_tx.send(buf[..n].to_vec());
-                        }
-                        Err(_) => break,
-                    }
-                }
-            });
-        }
+        spawn_pty_reader_thread(
+            reader,
+            Arc::clone(&stop),
+            Arc::clone(&scrollback),
+            Arc::clone(&attention),
+            output_tx,
+        );
 
         self.sessions.insert(
             session_id,
@@ -462,6 +464,7 @@ impl SessionManager {
                 scrollback,
                 persistent,
                 tmux_session_name,
+                attention,
             },
         );
 
@@ -498,6 +501,26 @@ impl SessionManager {
                     session_id: session_id.clone(),
                     bytes,
                 });
+            }
+        }
+        out
+    }
+
+    /// Pull any debounce-elapsed attention events across all sessions.
+    ///
+    /// Returns at most one event per session per call (the next pending one
+    /// in queue), matching how `AttentionDebouncer` holds a single pending
+    /// event at a time. Called from the daemon's output tick.
+    pub fn drain_attention(&self, now: Instant) -> Vec<SessionAttentionEvent> {
+        let mut out = Vec::new();
+        for (session_id, session) in &self.sessions {
+            if let Ok(mut tracker) = session.attention.lock() {
+                if let Some(pending) = tracker.take_ready(now) {
+                    out.push(SessionAttentionEvent::from_pending(
+                        session_id.clone(),
+                        pending,
+                    ));
+                }
             }
         }
         out
@@ -613,6 +636,37 @@ fn append_scrollback(scrollback: &mut VecDeque<u8>, chunk: &[u8]) {
         let overflow = scrollback.len() - MAX_SCROLLBACK_BYTES;
         drop(scrollback.drain(..overflow));
     }
+}
+
+/// Read PTY output in a dedicated thread: append to scrollback, feed the
+/// attention parser, forward to the daemon's output channel. Used by both
+/// native and relay session paths.
+fn spawn_pty_reader_thread<R: Read + Send + 'static>(
+    mut reader: R,
+    stop: Arc<AtomicBool>,
+    scrollback: Arc<Mutex<VecDeque<u8>>>,
+    attention: Arc<Mutex<AttentionTracker>>,
+    output_tx: mpsc::SyncSender<Vec<u8>>,
+) {
+    thread::spawn(move || {
+        let mut buf = vec![0_u8; 4096];
+        while !stop.load(Ordering::Relaxed) {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    let chunk = &buf[..n];
+                    if let Ok(mut stored) = scrollback.lock() {
+                        append_scrollback(&mut stored, chunk);
+                    }
+                    if let Ok(mut tracker) = attention.lock() {
+                        tracker.on_bytes(chunk, Instant::now());
+                    }
+                    let _ = output_tx.send(chunk.to_vec());
+                }
+                Err(_) => break,
+            }
+        }
+    });
 }
 
 #[cfg(test)]
