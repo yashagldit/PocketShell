@@ -2,6 +2,8 @@
   "screen.title": "Alerts",
   "onlineOffline.title": "Online / Offline Notifications",
   "onlineOffline.subtitle": "Get notified when this host goes online or offline",
+  "terminalAttention.title": "Terminal Attention",
+  "terminalAttention.subtitle": "Notify when a long-running command finishes or asks for input",
   "rules.title": "Alert Rules",
   "rules.empty": "No alert rules",
   "rules.emptySub": "Create rules to get notified when metrics exceed thresholds.",
