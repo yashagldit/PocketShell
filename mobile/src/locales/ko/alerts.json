@@ -2,6 +2,8 @@
   "screen.title": "알림",
   "onlineOffline.title": "온라인 / 오프라인 알림",
   "onlineOffline.subtitle": "이 호스트가 온라인 또는 오프라인이 될 때 알림 받기",
+  "terminalAttention.title": "터미널 주의",
+  "terminalAttention.subtitle": "오래 실행되는 명령이 완료되거나 입력을 요청할 때 알립니다",
   "rules.title": "알림 규칙",
   "rules.empty": "알림 규칙 없음",
   "rules.emptySub": "지표가 임계값을 초과할 때 알림을 받으려면 규칙을 만드세요.",

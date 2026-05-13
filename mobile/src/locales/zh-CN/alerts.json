@@ -2,6 +2,8 @@
   "screen.title": "报警",
   "onlineOffline.title": "在线 / 离线通知",
   "onlineOffline.subtitle": "在此主机上线或离线时获得通知",
+  "terminalAttention.title": "终端注意",
+  "terminalAttention.subtitle": "当长时间运行的命令完成或请求输入时通知",
   "rules.title": "报警规则",
   "rules.empty": "无报警规则",
   "rules.emptySub": "创建规则以便在指标超过阈值时获得通知。",

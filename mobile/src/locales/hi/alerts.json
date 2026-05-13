@@ -2,6 +2,8 @@
   "screen.title": "अलर्ट्स",
   "onlineOffline.title": "ऑनलाइन / ऑफ़लाइन नोटिफ़िकेशन",
   "onlineOffline.subtitle": "जब यह होस्ट ऑनलाइन या ऑफ़लाइन हो तो सूचना पाएँ",
+  "terminalAttention.title": "टर्मिनल ध्यान",
+  "terminalAttention.subtitle": "जब कोई लंबे समय तक चलने वाली कमांड समाप्त हो या इनपुट मांगे तो सूचित करें",
   "rules.title": "अलर्ट नियम",
   "rules.empty": "कोई अलर्ट नियम नहीं",
   "rules.emptySub": "जब मेट्रिक्स थ्रेशोल्ड पार करें तो सूचना पाने के लिए नियम बनाएँ।",

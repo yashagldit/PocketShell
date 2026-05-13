@@ -2,6 +2,8 @@
   "screen.title": "Alertas",
   "onlineOffline.title": "Notificações de rede",
   "onlineOffline.subtitle": "Receba avisos quando o host entrar ou sair do ar",
+  "terminalAttention.title": "Atenção do Terminal",
+  "terminalAttention.subtitle": "Notificar quando um comando de execução longa termina ou solicita entrada",
   "rules.title": "Regras de alerta",
   "rules.empty": "Nenhuma regra",
   "rules.emptySub": "Crie regras para ser notificado quando as métricas ultrapassarem um limite.",

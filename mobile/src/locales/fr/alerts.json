@@ -2,6 +2,8 @@
   "screen.title": "Alertes",
   "onlineOffline.title": "Notifications Réseau",
   "onlineOffline.subtitle": "Recevez des alertes quand l'hôte se connecte ou se déconnecte",
+  "terminalAttention.title": "Attention du terminal",
+  "terminalAttention.subtitle": "Notifier quand une commande longue se termine ou demande une entrée",
   "rules.title": "Règles d'alerte",
   "rules.empty": "Aucune règle",
   "rules.emptySub": "Créez des règles pour être notifié quand les métriques dépassent un seuil.",

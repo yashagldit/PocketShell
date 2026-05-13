@@ -2,6 +2,8 @@
   "screen.title": "Alertas",
   "onlineOffline.title": "Avisos de red",
   "onlineOffline.subtitle": "Recibe avisos cuando el equipo se conecte o desconecte",
+  "terminalAttention.title": "Atención del terminal",
+  "terminalAttention.subtitle": "Notificar cuando un comando de larga ejecución termina o solicita entrada",
   "rules.title": "Reglas de alerta",
   "rules.empty": "Sin reglas",
   "rules.emptySub": "Crea reglas para recibir avisos cuando las métricas superen un umbral.",

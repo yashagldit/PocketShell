@@ -2,6 +2,8 @@
   "screen.title": "警報",
   "onlineOffline.title": "在線 / 離線通知",
   "onlineOffline.subtitle": "在此主機上線或離線時獲得通知",
+  "terminalAttention.title": "終端注意",
+  "terminalAttention.subtitle": "當長時間執行的命令完成或要求輸入時通知",
   "rules.title": "警報規則",
   "rules.empty": "無警報規則",
   "rules.emptySub": "建立規則以便在指標超過閾值時獲得通知。",

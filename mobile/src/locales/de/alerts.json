@@ -2,6 +2,8 @@
   "screen.title": "Benachrichtigungen",
   "onlineOffline.title": "Online-/Offline-Benachrichtigungen",
   "onlineOffline.subtitle": "Werde benachrichtigt, wenn dieser Host online oder offline geht",
+  "terminalAttention.title": "Terminal-Aufmerksamkeit",
+  "terminalAttention.subtitle": "Benachrichtigung, wenn ein langlaufender Befehl endet oder eine Eingabe anfordert",
   "rules.title": "Benachrichtigungsregeln",
   "rules.empty": "Keine Regeln vorhanden",
   "rules.emptySub": "Erstelle Regeln, um benachrichtigt zu werden, wenn Metriken Schwellwerte überschreiten.",

@@ -2,6 +2,8 @@
   "screen.title": "アラート",
   "onlineOffline.title": "オンライン／オフライン通知",
   "onlineOffline.subtitle": "このホストがオンラインまたはオフラインになったときに通知します",
+  "terminalAttention.title": "ターミナル注意",
+  "terminalAttention.subtitle": "長時間実行されるコマンドが終了するか入力を求めるときに通知します",
   "rules.title": "アラートルール",
   "rules.empty": "アラートルールはありません",
   "rules.emptySub": "メトリクスがしきい値を超えたときに通知を受け取るルールを作成します。",
