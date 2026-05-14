@@ -297,7 +297,10 @@ impl SessionManager {
 
         let stop = Arc::new(AtomicBool::new(false));
         let scrollback = Arc::new(Mutex::new(VecDeque::new()));
-        let attention = Arc::new(Mutex::new(AttentionTracker::new(DEFAULT_QUIET_PERIOD)));
+        let attention = Arc::new(Mutex::new(AttentionTracker::new(
+            DEFAULT_QUIET_PERIOD,
+            session_id.clone(),
+        )));
         let (input_tx, input_rx) = mpsc::channel::<Vec<u8>>();
         let (resize_tx, _resize_rx) = mpsc::channel::<(u16, u16)>();
         let (output_tx, output_rx) = mpsc::sync_channel::<Vec<u8>>(1024);
@@ -406,7 +409,10 @@ impl SessionManager {
 
         let master = Arc::new(Mutex::new(pair.master));
         let stop = Arc::new(AtomicBool::new(false));
-        let attention = Arc::new(Mutex::new(AttentionTracker::new(DEFAULT_QUIET_PERIOD)));
+        let attention = Arc::new(Mutex::new(AttentionTracker::new(
+            DEFAULT_QUIET_PERIOD,
+            session_id.clone(),
+        )));
 
         let (input_tx, input_rx) = mpsc::channel::<Vec<u8>>();
         let (resize_tx, resize_rx) = mpsc::channel::<(u16, u16)>();

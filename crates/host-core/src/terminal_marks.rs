@@ -28,6 +28,7 @@
 //! are restricted to `0x20..0x3F` plus a final byte in `0x40..0x7E`.
 
 use std::time::{Duration, Instant};
+use tracing::{debug, info};
 
 /// Maximum bytes we'll buffer inside a single OSC sequence before giving up
 /// and treating the stream as malformed. Real OSC 133 payloads are tiny
@@ -253,6 +254,8 @@ pub struct AttentionDebouncer {
     /// `Some` ⇔ a `CommandStart` was seen and not yet matched by a finish;
     /// also serves as the "command in flight" predicate.
     command_started_at: Option<Instant>,
+    /// Short label included in diagnostic logs (typically the session id).
+    session_label: String,
 }
 
 #[derive(Debug, Clone)]
@@ -283,11 +286,12 @@ impl AttentionKind {
 }
 
 impl AttentionDebouncer {
-    pub fn new(quiet_period: Duration) -> Self {
+    pub fn new(quiet_period: Duration, session_label: String) -> Self {
         Self {
             quiet_period,
             pending: None,
             command_started_at: None,
+            session_label,
         }
     }
 
@@ -324,6 +328,13 @@ impl AttentionDebouncer {
                 .map(|s| now.saturating_duration_since(s)),
             _ => None,
         };
+        info!(
+            "attention armed: session={} kind={} fire_in_ms={} duration_ms={:?}",
+            self.session_label,
+            kind.wire_str(),
+            self.quiet_period.as_millis(),
+            command_duration.map(|d| d.as_millis()),
+        );
         self.pending = Some(PendingAttention {
             kind,
             fire_at: now + self.quiet_period,
@@ -344,6 +355,10 @@ impl AttentionDebouncer {
                     // Bell is a one-shot intent; if more output follows
                     // before the quiet window closes, the program clearly
                     // isn't idle. Drop it.
+                    debug!(
+                        "attention bell canceled by follow-up output: session={}",
+                        self.session_label
+                    );
                     self.pending = None;
                 }
                 AttentionKind::CommandDone { .. } => {
@@ -382,6 +397,7 @@ impl AttentionDebouncer {
 pub struct AttentionTracker {
     parser: MarkParser,
     debouncer: AttentionDebouncer,
+    session_label: String,
 }
 
 /// Default quiet period before a detected signal fires a notification.
@@ -391,10 +407,11 @@ pub struct AttentionTracker {
 pub const DEFAULT_QUIET_PERIOD: Duration = Duration::from_secs(10);
 
 impl AttentionTracker {
-    pub fn new(quiet_period: Duration) -> Self {
+    pub fn new(quiet_period: Duration, session_label: String) -> Self {
         Self {
             parser: MarkParser::new(),
-            debouncer: AttentionDebouncer::new(quiet_period),
+            debouncer: AttentionDebouncer::new(quiet_period, session_label.clone()),
+            session_label,
         }
     }
 
@@ -404,6 +421,12 @@ impl AttentionTracker {
     /// "trailing-passthrough" flag are pushed into the debouncer.
     pub fn on_bytes(&mut self, bytes: &[u8], now: Instant) {
         let result = self.parser.feed(bytes);
+        for sig in &result.signals {
+            info!(
+                "attention signal: session={} signal={:?}",
+                self.session_label, sig
+            );
+        }
         for sig in result.signals {
             self.debouncer.on_signal(sig, now);
         }
@@ -425,7 +448,7 @@ mod tracker_tests {
 
     #[test]
     fn tracker_fires_command_done_after_quiet_period() {
-        let mut t = AttentionTracker::new(Duration::from_secs(10));
+        let mut t = AttentionTracker::new(Duration::from_secs(10), "test".to_string());
         let t0 = Instant::now();
         // Simulate: command starts, runs for 2s producing output, finishes
         // with prompt mark + bare prompt.
@@ -446,7 +469,7 @@ mod tracker_tests {
     fn tracker_bell_in_busy_stream_does_not_fire() {
         // Tool prints a bell in the middle of streaming output — should NOT
         // fire because more output keeps flowing.
-        let mut t = AttentionTracker::new(Duration::from_secs(10));
+        let mut t = AttentionTracker::new(Duration::from_secs(10), "test".to_string());
         let t0 = Instant::now();
         t.on_bytes(b"streaming \x07 work \n", t0);
         t.on_bytes(b"still working\n", t0 + Duration::from_secs(1));
@@ -456,7 +479,7 @@ mod tracker_tests {
 
     #[test]
     fn tracker_isolated_bell_then_silence_fires() {
-        let mut t = AttentionTracker::new(Duration::from_secs(10));
+        let mut t = AttentionTracker::new(Duration::from_secs(10), "test".to_string());
         let t0 = Instant::now();
         t.on_bytes(b"please respond\x07", t0);
         // No further output.
@@ -663,7 +686,7 @@ mod tests {
 
     #[test]
     fn debouncer_fires_after_quiet_period() {
-        let mut d = AttentionDebouncer::new(Duration::from_secs(10));
+        let mut d = AttentionDebouncer::new(Duration::from_secs(10), "test".to_string());
         let t0 = Instant::now();
         d.on_signal(AttentionSignal::CommandStart, t0);
         d.on_signal(
@@ -685,7 +708,7 @@ mod tests {
 
     #[test]
     fn debouncer_output_pushes_command_done_fire_forward() {
-        let mut d = AttentionDebouncer::new(Duration::from_secs(10));
+        let mut d = AttentionDebouncer::new(Duration::from_secs(10), "test".to_string());
         let t0 = Instant::now();
         d.on_signal(AttentionSignal::CommandDone { exit_code: Some(0) }, t0);
         // Output 5s later resets the quiet window
@@ -697,7 +720,7 @@ mod tests {
 
     #[test]
     fn debouncer_output_cancels_pending_bell() {
-        let mut d = AttentionDebouncer::new(Duration::from_secs(10));
+        let mut d = AttentionDebouncer::new(Duration::from_secs(10), "test".to_string());
         let t0 = Instant::now();
         d.on_signal(AttentionSignal::Bell, t0);
         d.on_output(t0 + Duration::from_secs(1));
@@ -707,7 +730,7 @@ mod tests {
 
     #[test]
     fn prompt_drawn_without_command_start_is_noise() {
-        let mut d = AttentionDebouncer::new(Duration::from_secs(10));
+        let mut d = AttentionDebouncer::new(Duration::from_secs(10), "test".to_string());
         let t0 = Instant::now();
         d.on_signal(AttentionSignal::PromptDrawn, t0);
         assert!(d.pending().is_none());
@@ -716,7 +739,7 @@ mod tests {
 
     #[test]
     fn prompt_drawn_after_command_start_counts_as_done() {
-        let mut d = AttentionDebouncer::new(Duration::from_secs(10));
+        let mut d = AttentionDebouncer::new(Duration::from_secs(10), "test".to_string());
         let t0 = Instant::now();
         d.on_signal(AttentionSignal::CommandStart, t0);
         d.on_signal(
@@ -732,7 +755,7 @@ mod tests {
     fn new_command_start_cancels_pending() {
         // If a CommandDone is pending and the user starts a new command,
         // they're clearly engaged — drop the pending notification.
-        let mut d = AttentionDebouncer::new(Duration::from_secs(10));
+        let mut d = AttentionDebouncer::new(Duration::from_secs(10), "test".to_string());
         let t0 = Instant::now();
         d.on_signal(AttentionSignal::CommandDone { exit_code: Some(0) }, t0);
         d.on_signal(
