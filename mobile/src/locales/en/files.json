@@ -72,6 +72,7 @@
   "button.save": "Save",
   "button.saving": "Saving",
   "button.save_dialog_title": "Save {{name}}",
+  "button.edit": "Edit",
 
   "status.starting_session": "Starting file session...",
   "status.loading_directory": "Loading directory...",
@@ -143,5 +144,17 @@
   "viewer.truncated": "TRUNCATED",
   "viewer.text_default": "TEXT",
   "viewer.lines_one": "{{count}} line",
-  "viewer.lines_other": "{{count}} lines"
+  "viewer.lines_other": "{{count}} lines",
+  "viewer.modified": "MODIFIED",
+  "viewer.could_not_save_edit": "Could not save changes",
+  "viewer.discard_title": "Discard changes?",
+  "viewer.discard_message": "Your edits haven't been uploaded to the host yet.",
+  "viewer.discard": "Discard",
+  "viewer.keep_editing": "Keep Editing",
+  "viewer.leave_while_saving_title": "Saving changes…",
+  "viewer.leave_while_saving_message": "Leaving now will cancel the upload. Your edits won't be saved on the host.",
+  "alert.transfer_in_progress_title": "Upload in progress",
+  "alert.transfer_in_progress_msg": "Leaving will cancel any active uploads or transfers to this host.",
+  "alert.stay": "Stay",
+  "alert.leave_and_cancel": "Leave"
 }
