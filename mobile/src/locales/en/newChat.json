@@ -23,5 +23,8 @@
   "folder.use": "Use",
   "folder.connecting": "Connecting to host…",
   "folder.connectionFailed": "Couldn't connect to host. Go back and try again.",
-  "folder.loadFailed": "Failed to load directory"
+  "folder.loadFailed": "Failed to load directory",
+  "terminal.source.title": "Open terminal",
+  "terminal.projects.title": "Recent projects",
+  "terminal.folder.title": "Pick a folder"
 }

@@ -482,6 +482,13 @@ impl SessionManager {
             .sessions
             .get(session_id)
             .ok_or_else(|| HostError::Pty(format!("unknown session: {session_id}")))?;
+        // Mark this session as user-engaged so the attention detector knows
+        // subsequent output bursts are tied to a real user action. Without
+        // this, agent chatter (recap banners, idle spinners) wouldn't be
+        // distinguishable from real "your command is done" silence.
+        if let Ok(mut tracker) = session.attention.lock() {
+            tracker.note_user_input();
+        }
         session
             .input_tx
             .send(bytes)

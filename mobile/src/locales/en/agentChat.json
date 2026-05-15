@@ -14,6 +14,7 @@
   "loadOlder.button": "Load earlier messages",
   "resumeHere.button": "Resume here",
   "resumeInTerminal.button": "Resume in terminal",
+  "openInTerminal.button": "Open in terminal",
   "menu.resumeInTerminal": "Resume in terminal",
   "menu.subagents": "Subagents",
   "menu.features": "Codex features",

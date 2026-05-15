@@ -1532,6 +1532,12 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
     let mut webrtc_mgr = WebRtcManager::new(webrtc_event_tx);
     let shell = AppConfig::default_shell();
 
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum ControlPlaneDisconnect {
+        Reconnect,
+        TokenRotated,
+    }
+
     let mut file_transfers: HashMap<String, PendingFileTransfer> = HashMap::new();
     let mut files_channel_messages: HashMap<String, PendingFilesChannelMessage> = HashMap::new();
     let mut files_binary_uploads: HashMap<String, PendingFilesBinaryUpload> = HashMap::new();
@@ -1805,6 +1811,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
             warn!("reconcile: no access token, skipping");
         }
 
+        let mut disconnect_reason = ControlPlaneDisconnect::Reconnect;
         loop {
             tokio::select! {
                 _ = heartbeat_tick.tick() => {
@@ -1853,6 +1860,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                     let token_after = store.access_token().ok().map(str::to_owned);
                     if token_before != token_after {
                         info!("access token rotated; reconnecting WS to bind new credentials");
+                        disconnect_reason = ControlPlaneDisconnect::TokenRotated;
                         break;
                     }
 
@@ -2234,12 +2242,15 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                         let SessionAttentionEvent { session_id, kind, command_duration } = ev;
                         let exit_code = match &kind {
                             AttentionKind::CommandDone { exit_code } => *exit_code,
-                            AttentionKind::Bell => None,
+                            AttentionKind::Bell
+                            | AttentionKind::Notification { .. }
+                            | AttentionKind::Idle => None,
                         };
+                        let body = kind.body().map(|s| s.to_string());
                         let kind_str = kind.wire_str();
                         info!(
-                            "terminal attention: session={} kind={} exit={:?} duration={:?}",
-                            session_id, kind_str, exit_code, command_duration
+                            "terminal attention: session={} kind={} exit={:?} duration={:?} body={:?}",
+                            session_id, kind_str, exit_code, command_duration, body
                         );
                         let msg = SignalEnvelope {
                             message_type: "terminal_attention".to_string(),
@@ -2248,6 +2259,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                 "kind": kind_str,
                                 "exit_code": exit_code,
                                 "command_duration_ms": command_duration.map(|d| d.as_millis() as u64),
+                                "body": body,
                             })),
                             state: None,
                             accepted: None,
@@ -4148,6 +4160,16 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                     return Ok(());
                 }
             }
+        }
+
+        // Token refresh only changes the Authorization header used by the
+        // control-plane WebSocket. Existing WebRTC terminal channels can keep
+        // carrying PTY data, so reconnect the WS without detaching sessions.
+        if disconnect_reason == ControlPlaneDisconnect::TokenRotated {
+            stats_active = false;
+            stats_deadline = None;
+            minute_stats_buffer.clear();
+            continue;
         }
 
         warn!(

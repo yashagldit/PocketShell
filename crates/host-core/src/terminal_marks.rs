@@ -28,7 +28,7 @@
 //! are restricted to `0x20..0x3F` plus a final byte in `0x40..0x7E`.
 
 use std::time::{Duration, Instant};
-use tracing::{debug, info};
+use tracing::info;
 
 /// Maximum bytes we'll buffer inside a single OSC sequence before giving up
 /// and treating the stream as malformed. Real OSC 133 payloads are tiny
@@ -61,6 +61,11 @@ pub enum AttentionSignal {
     CommandDone { exit_code: Option<i32> },
     /// Bare `\x07` in normal output — explicit attention request.
     Bell,
+    /// `ESC ] 9 ; <message> ST` — iTerm2-style desktop notification request.
+    /// Emitted by Claude Code, codex, and other TUI agents when they need the
+    /// user's attention. The body is the message text the program wants to
+    /// surface.
+    Notification { body: String },
 }
 
 /// State machine consuming PTY output bytes and yielding attention signals.
@@ -197,6 +202,8 @@ impl MarkParser {
         if !self.osc_overflow {
             if let Some(sig) = parse_osc_133(&self.osc_buf) {
                 out.push(sig);
+            } else if let Some(sig) = parse_osc_9(&self.osc_buf) {
+                out.push(sig);
             }
         }
         self.osc_buf.clear();
@@ -238,6 +245,20 @@ fn parse_osc_133(body: &[u8]) -> Option<AttentionSignal> {
     }
 }
 
+/// Parse the body of an OSC string and return a `Notification` signal if it
+/// matches OSC 9 (iTerm2 desktop-notification protocol).
+///
+/// Form: `9;<message>` — the message is free-form UTF-8 text the program
+/// wants surfaced as a notification. Claude Code, codex, and other TUI agents
+/// emit this when they need the user's attention.
+fn parse_osc_9(body: &[u8]) -> Option<AttentionSignal> {
+    let s = std::str::from_utf8(body).ok()?;
+    let rest = s.strip_prefix("9;")?;
+    Some(AttentionSignal::Notification {
+        body: rest.to_string(),
+    })
+}
+
 // ─── Debounce tracker ────────────────────────────────────────────────────────
 
 /// Per-session debounce state: when a signal arrives we don't notify
@@ -271,6 +292,14 @@ pub struct PendingAttention {
 pub enum AttentionKind {
     CommandDone { exit_code: Option<i32> },
     Bell,
+    /// OSC 9 / explicit "look at me" notification from a TUI agent. Carries
+    /// the message body the program wants shown.
+    Notification { body: String },
+    /// No explicit completion signal from the program — we just observed
+    /// that the PTY went silent for `quiet_period` after substantial
+    /// activity. This is the catch-all for agents that don't ring a bell
+    /// or send OSC 9 (codex sometimes, vim, less, etc.).
+    Idle,
 }
 
 impl AttentionKind {
@@ -281,6 +310,16 @@ impl AttentionKind {
         match self {
             Self::CommandDone { .. } => "command_done",
             Self::Bell => "bell",
+            Self::Notification { .. } => "notification",
+            Self::Idle => "idle",
+        }
+    }
+
+    /// Optional message body — only `Notification` carries one today.
+    pub fn body(&self) -> Option<&str> {
+        match self {
+            Self::Notification { body } => Some(body.as_str()),
+            _ => None,
         }
     }
 }
@@ -316,9 +355,40 @@ impl AttentionDebouncer {
                 self.arm(AttentionKind::CommandDone { exit_code }, now);
             }
             AttentionSignal::Bell => {
+                // Bare BEL is a deliberate "look at me" from the program
+                // (codex, claude-code, vim error beeps, etc.). Arm with the
+                // standard quiet-period: follow-up output pushes the fire
+                // time forward, so the notification only fires once the TUI
+                // is actually idle (no spinner / no redraws) for the full
+                // window. The previous "cancel on output" semantic was a
+                // bug — TUI agents bell *and* redraw, so it ate every event.
                 self.arm(AttentionKind::Bell, now);
             }
+            AttentionSignal::Notification { body } => {
+                // OSC 9 is the agent declaring "I'm done." Use the same
+                // push-forward debounce as Bell: arm a 10 s window, push
+                // forward on follow-up output. Notification only fires when
+                // the TUI truly stops emitting bytes (spinner stopped,
+                // cursor not blinking) — confirming the agent really is idle.
+                self.arm(AttentionKind::Notification { body }, now);
+            }
         }
+    }
+
+    /// Arm an `Idle` event with the standard quiet period. Called when the
+    /// `AttentionTracker` has accumulated enough activity to believe a
+    /// "session went silent" notification would be meaningful.
+    pub fn arm_idle(&mut self, now: Instant) {
+        info!(
+            "attention armed: session={} kind=idle fire_in_ms={}",
+            self.session_label,
+            self.quiet_period.as_millis(),
+        );
+        self.pending = Some(PendingAttention {
+            kind: AttentionKind::Idle,
+            fire_at: now + self.quiet_period,
+            command_duration: None,
+        });
     }
 
     fn arm(&mut self, kind: AttentionKind, now: Instant) {
@@ -350,22 +420,11 @@ impl AttentionDebouncer {
     /// silence after the prompt before claiming the user should look.
     pub fn on_output(&mut self, now: Instant) {
         if let Some(p) = self.pending.as_mut() {
-            match p.kind {
-                AttentionKind::Bell => {
-                    // Bell is a one-shot intent; if more output follows
-                    // before the quiet window closes, the program clearly
-                    // isn't idle. Drop it.
-                    debug!(
-                        "attention bell canceled by follow-up output: session={}",
-                        self.session_label
-                    );
-                    self.pending = None;
-                }
-                AttentionKind::CommandDone { .. } => {
-                    // Push the fire time out — wait for genuine silence.
-                    p.fire_at = now + self.quiet_period;
-                }
-            }
+            // All armed events share the same "wait for silence" semantic:
+            // any new PTY output means the program is still active, push the
+            // fire time forward by the full quiet period. The event only
+            // fires once the stream goes quiet long enough.
+            p.fire_at = now + self.quiet_period;
         }
     }
 
@@ -398,6 +457,19 @@ pub struct AttentionTracker {
     parser: MarkParser,
     debouncer: AttentionDebouncer,
     session_label: String,
+    /// Cumulative bytes observed since the last arm/fire. Used to gate the
+    /// `Idle` detector: we only arm Idle once the session has seen enough
+    /// activity that "going silent" is meaningful (avoids firing for an
+    /// idle shell that just printed its prompt and nothing else).
+    bytes_since_arm: usize,
+    /// True iff this session has received user input from the mobile since
+    /// the last attention event fired. **Required** for any kind of arming
+    /// (Bell, OSC 9 Notification, OSC 133 CommandDone, Idle). Filters out
+    /// the background chatter of long-running agents — Claude Code's
+    /// periodic recap banner, codex's idle TUI redraws, shell prompt
+    /// repaints from screen resizes, etc. — none of which the user wants
+    /// to be notified about because they didn't ask for anything.
+    had_user_input: bool,
 }
 
 /// Default quiet period before a detected signal fires a notification.
@@ -406,13 +478,28 @@ pub struct AttentionTracker {
 /// enough to ride out brief "spinner" gaps between status updates.
 pub const DEFAULT_QUIET_PERIOD: Duration = Duration::from_secs(10);
 
+/// Minimum bytes the PTY must emit before we'll arm an `Idle` event.
+/// Tuned to be smaller than a typical agent's "I'm thinking" burst (a few
+/// spinner frames + status text easily clears this) but larger than a bare
+/// cursor blink (~30–50 B) so an idle shell doesn't spuriously fire.
+const IDLE_ARM_BYTES: usize = 256;
+
 impl AttentionTracker {
     pub fn new(quiet_period: Duration, session_label: String) -> Self {
         Self {
             parser: MarkParser::new(),
             debouncer: AttentionDebouncer::new(quiet_period, session_label.clone()),
             session_label,
+            bytes_since_arm: 0,
+            had_user_input: false,
         }
+    }
+
+    /// Mark that the user typed/sent input to this session. Called from
+    /// `SessionManager::write_input` for every mobile-originated byte.
+    /// Without this flag the next on_bytes burst won't arm anything.
+    pub fn note_user_input(&mut self) {
+        self.had_user_input = true;
     }
 
     /// Read-thread hook: feed a chunk of PTY output bytes.
@@ -420,6 +507,9 @@ impl AttentionTracker {
     /// Bytes are not retained; only the resulting signals and the
     /// "trailing-passthrough" flag are pushed into the debouncer.
     pub fn on_bytes(&mut self, bytes: &[u8], now: Instant) {
+        if bytes.is_empty() {
+            return;
+        }
         let result = self.parser.feed(bytes);
         for sig in &result.signals {
             info!(
@@ -427,17 +517,48 @@ impl AttentionTracker {
                 self.session_label, sig
             );
         }
+        // Gate every arming path on "user actually engaged this session
+        // since the last fire." Without input, the output bytes are either
+        // a long-running agent's periodic chatter (Claude recap, codex
+        // banners) or shell prompt redraws on resize — none of which the
+        // user asked about, so we don't want to ping them.
+        if !self.had_user_input {
+            return;
+        }
+
         for sig in result.signals {
             self.debouncer.on_signal(sig, now);
         }
-        if result.trailing_passthrough {
-            self.debouncer.on_output(now);
+
+        // Any non-empty chunk counts as activity. Push a pending event's
+        // fire time forward, regardless of whether the bytes were
+        // passthrough or wrapped in OSC sequences (codex's spinner is 100%
+        // OSC bytes, but it IS the program telling us it's still working).
+        self.debouncer.on_output(now);
+
+        // Idle arming. Cumulative bytes since the last arm/fire — once we
+        // cross the activity threshold and nothing more specific is pending
+        // (Bell / OSC 9 / CommandDone all take precedence), arm Idle.
+        self.bytes_since_arm = self.bytes_since_arm.saturating_add(bytes.len());
+        if self.debouncer.pending.is_none() && self.bytes_since_arm >= IDLE_ARM_BYTES {
+            self.debouncer.arm_idle(now);
+            self.bytes_since_arm = 0;
         }
     }
 
     /// Daemon-tick hook: pull a debounce-elapsed event if one is ready.
     pub fn take_ready(&mut self, now: Instant) -> Option<PendingAttention> {
-        self.debouncer.take_ready(now)
+        let ev = self.debouncer.take_ready(now);
+        if ev.is_some() {
+            // After firing, require fresh user input before re-arming
+            // anything. This is what stops a single "user typed something
+            // 10 min ago" from triggering an endless cascade of fires off
+            // an agent's autonomous output. The next mobile keystroke
+            // unlocks the next event.
+            self.bytes_since_arm = 0;
+            self.had_user_input = false;
+        }
+        ev
     }
 }
 
@@ -450,6 +571,7 @@ mod tracker_tests {
     fn tracker_fires_command_done_after_quiet_period() {
         let mut t = AttentionTracker::new(Duration::from_secs(10), "test".to_string());
         let t0 = Instant::now();
+        t.note_user_input();
         // Simulate: command starts, runs for 2s producing output, finishes
         // with prompt mark + bare prompt.
         t.on_bytes(b"\x1b]133;C\x07running...\n", t0);
@@ -466,26 +588,146 @@ mod tracker_tests {
     }
 
     #[test]
-    fn tracker_bell_in_busy_stream_does_not_fire() {
-        // Tool prints a bell in the middle of streaming output — should NOT
-        // fire because more output keeps flowing.
+    fn tracker_bell_waits_for_silence_then_fires() {
+        // Real-world TUI agents (codex, claude-code) emit a BEL and then
+        // keep redrawing the screen. The bell arms a quiet-period window;
+        // each follow-up chunk pushes the fire time forward. Only when the
+        // stream goes silent for the full window does it fire.
         let mut t = AttentionTracker::new(Duration::from_secs(10), "test".to_string());
         let t0 = Instant::now();
+        t.note_user_input();
         t.on_bytes(b"streaming \x07 work \n", t0);
         t.on_bytes(b"still working\n", t0 + Duration::from_secs(1));
-        t.on_bytes(b"and more\n", t0 + Duration::from_secs(2));
+        // 5s after the last output — still inside the window, not ready yet.
+        assert!(t.take_ready(t0 + Duration::from_secs(6)).is_none());
+        // 11s after the last output — silence held, fires.
+        let ev = t.take_ready(t0 + Duration::from_secs(12)).unwrap();
+        assert_eq!(ev.kind, AttentionKind::Bell);
+    }
+
+    #[test]
+    fn tracker_isolated_bell_fires_after_quiet_period() {
+        let mut t = AttentionTracker::new(Duration::from_secs(10), "test".to_string());
+        let t0 = Instant::now();
+        t.note_user_input();
+        t.on_bytes(b"please respond\x07", t0);
+        assert!(t.take_ready(t0 + Duration::from_secs(5)).is_none());
+        let ev = t.take_ready(t0 + Duration::from_secs(11)).unwrap();
+        assert_eq!(ev.kind, AttentionKind::Bell);
+    }
+
+    #[test]
+    fn tracker_idle_fires_after_burst_then_silence() {
+        // Generic case: program emits a burst of output (no BEL, no OSC 9,
+        // no OSC 133) then goes quiet. After the quiet-period elapses,
+        // Idle fires.
+        let mut t = AttentionTracker::new(Duration::from_secs(10), "test".to_string());
+        let t0 = Instant::now();
+        t.note_user_input();
+        // 300 bytes of output — exceeds IDLE_ARM_BYTES (256), so Idle arms.
+        t.on_bytes(&vec![b'x'; 300], t0);
+        // Still inside the 10 s window.
+        assert!(t.take_ready(t0 + Duration::from_secs(5)).is_none());
+        let ev = t.take_ready(t0 + Duration::from_secs(11)).unwrap();
+        assert_eq!(ev.kind, AttentionKind::Idle);
+    }
+
+    #[test]
+    fn tracker_idle_pushed_forward_by_spinner() {
+        // Codex-style: a burst of OSC-only spinner chunks. Each chunk
+        // includes cursor positioning + title-set with rotating braille
+        // glyph — real codex frames are ~50–200 B. Once cumulative activity
+        // crosses IDLE_ARM_BYTES, Idle arms. Subsequent frames push fire_at
+        // forward; silence after the spinner stops eventually fires.
+        //
+        // 6 frames × ~60 B = 360 B (crosses 256 B threshold around frame 5),
+        // spread over 3 s.
+        let mut t = AttentionTracker::new(Duration::from_secs(10), "test".to_string());
+        let t0 = Instant::now();
+        t.note_user_input();
+        let frame: &[u8] = b"\x1b[2D\x1b[5B\r\x1b[8A\x1b[38;5;174m\xe2\x9c\xb3\x1b[39m\r\r\n\x1b[2C\x1b[5A";
+        for i in 0..6 {
+            t.on_bytes(frame, t0 + Duration::from_millis(500 * i));
+        }
+        // Last frame at t0+2500ms, so fire_at gets pushed to t0+12500ms.
+        // 12 s after t0 → not ready yet.
+        assert!(t.take_ready(t0 + Duration::from_secs(12)).is_none());
+        // 13 s after t0 → past fire_at, fires.
+        let ev = t.take_ready(t0 + Duration::from_secs(13)).unwrap();
+        assert_eq!(ev.kind, AttentionKind::Idle);
+    }
+
+    #[test]
+    fn tracker_idle_does_not_fire_below_activity_threshold() {
+        // A bare cursor blink (~30 B) shouldn't arm Idle by itself —
+        // otherwise every freshly-opened terminal would fire one
+        // notification after 10 s of inaction.
+        let mut t = AttentionTracker::new(Duration::from_secs(10), "test".to_string());
+        let t0 = Instant::now();
+        t.note_user_input();
+        t.on_bytes(&vec![b'x'; 30], t0);
         assert!(t.take_ready(t0 + Duration::from_secs(30)).is_none());
     }
 
     #[test]
-    fn tracker_isolated_bell_then_silence_fires() {
+    fn tracker_idle_does_not_fire_without_user_input() {
+        // The whole point of the input gate: an agent's autonomous chatter
+        // (Claude Code recap, codex idle banner, periodic shell repaints)
+        // must never fire. No call to note_user_input() means no arming.
         let mut t = AttentionTracker::new(Duration::from_secs(10), "test".to_string());
         let t0 = Instant::now();
-        t.on_bytes(b"please respond\x07", t0);
-        // No further output.
-        assert!(t.take_ready(t0 + Duration::from_secs(5)).is_none());
-        let ev = t.take_ready(t0 + Duration::from_secs(11)).unwrap();
-        assert_eq!(ev.kind, AttentionKind::Bell);
+        // A 1 KB recap-style chunk that would have armed Idle in the old
+        // logic. With the input gate, nothing arms.
+        t.on_bytes(&vec![b'x'; 1024], t0);
+        assert!(t.take_ready(t0 + Duration::from_secs(30)).is_none());
+    }
+
+    #[test]
+    fn tracker_bell_dropped_without_user_input() {
+        // Same rule for explicit signals: a long-running agent that beeps
+        // periodically while the user is away must not fire pushes.
+        let mut t = AttentionTracker::new(Duration::from_secs(10), "test".to_string());
+        let t0 = Instant::now();
+        t.on_bytes(b"please\x07", t0);
+        assert!(t.take_ready(t0 + Duration::from_secs(30)).is_none());
+    }
+
+    #[test]
+    fn tracker_fires_then_requires_fresh_input_to_re_arm() {
+        // After Idle fires, the input flag resets — a second burst of
+        // output WITHOUT a new note_user_input() must not fire again.
+        let mut t = AttentionTracker::new(Duration::from_secs(10), "test".to_string());
+        let t0 = Instant::now();
+        t.note_user_input();
+        t.on_bytes(&vec![b'x'; 300], t0);
+        assert!(t.take_ready(t0 + Duration::from_secs(11)).is_some());
+        // Now another burst, no fresh input — shouldn't arm anything.
+        t.on_bytes(&vec![b'y'; 300], t0 + Duration::from_secs(12));
+        assert!(t.take_ready(t0 + Duration::from_secs(25)).is_none());
+        // Fresh input unlocks the next arm.
+        t.note_user_input();
+        t.on_bytes(&vec![b'z'; 300], t0 + Duration::from_secs(26));
+        assert!(t.take_ready(t0 + Duration::from_secs(37)).is_some());
+    }
+
+    #[test]
+    fn tracker_osc9_notification_fires_after_silence() {
+        let mut t = AttentionTracker::new(Duration::from_secs(10), "test".to_string());
+        let t0 = Instant::now();
+        t.note_user_input();
+        t.on_bytes(b"\x1b]9;Claude is waiting for your input\x07", t0);
+        // Cursor blink 3s after OSC 9 — pushes fire time forward.
+        t.on_bytes(b"\x1b[K", t0 + Duration::from_secs(3));
+        // 8s after the blink — still inside the new window.
+        assert!(t.take_ready(t0 + Duration::from_secs(11)).is_none());
+        // 13s after the blink — silence held, fires with the body intact.
+        let ev = t.take_ready(t0 + Duration::from_secs(16)).unwrap();
+        match ev.kind {
+            AttentionKind::Notification { body } => {
+                assert_eq!(body, "Claude is waiting for your input");
+            }
+            other => panic!("expected Notification, got {:?}", other),
+        }
     }
 }
 
@@ -719,13 +961,18 @@ mod tests {
     }
 
     #[test]
-    fn debouncer_output_cancels_pending_bell() {
+    fn debouncer_output_pushes_pending_bell_forward() {
+        // Bell is a deliberate "look at me" — follow-up output (e.g. screen
+        // redraws from TUI agents) pushes the fire time out, it does NOT
+        // cancel. After 10 s of true silence the bell fires.
         let mut d = AttentionDebouncer::new(Duration::from_secs(10), "test".to_string());
         let t0 = Instant::now();
         d.on_signal(AttentionSignal::Bell, t0);
         d.on_output(t0 + Duration::from_secs(1));
-        // Bell is dropped — program isn't idle
-        assert!(d.take_ready(t0 + Duration::from_secs(30)).is_none());
+        // Not ready 9 s after the last output — still inside the window.
+        assert!(d.take_ready(t0 + Duration::from_secs(10)).is_none());
+        let ev = d.take_ready(t0 + Duration::from_secs(12)).unwrap();
+        assert_eq!(ev.kind, AttentionKind::Bell);
     }
 
     #[test]
