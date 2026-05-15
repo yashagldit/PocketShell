@@ -7036,8 +7036,7 @@ fn ws_message_permission_for(message_type: &str) -> Option<&'static str> {
         | "agent_input"
         | "agent_close"
         | "session_join"
-        | "session_event"
-        | "alert_preferences_sync" => Some("shell"),
+        | "session_event" => Some("shell"),
         _ => None,
     }
 }
