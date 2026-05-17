@@ -107,11 +107,16 @@ jobs:
         shell: bash
         run: |
           bin="target/$TARGET/release/pocketshell"
-          if ! strings -a "$bin" | grep -qF "$POCKETSHELL_DEFAULT_BACKEND_URL"; then
+          echo "looking for: $POCKETSHELL_DEFAULT_BACKEND_URL"
+          echo "binary size: $(wc -c < "$bin") bytes"
+          if LC_ALL=C grep -aoF "$POCKETSHELL_DEFAULT_BACKEND_URL" "$bin" | head -1; then
+            echo "✓ backend URL baked into $bin"
+          else
             echo "::error::Backend URL not found in compiled binary. option_env! injection failed."
+            echo "--- first 5 http/wss strings in binary (for debug) ---"
+            LC_ALL=C grep -aoE '(https?|wss?)://[A-Za-z0-9._/:-]+' "$bin" | sort -u | head -5 || true
             exit 1
           fi
-          echo "✓ backend URL baked into $bin"
 
       - name: Package
         shell: bash
