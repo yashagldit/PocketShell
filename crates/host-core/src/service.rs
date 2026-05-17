@@ -39,6 +39,7 @@ fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> io::Result<ExitStat
 /// Result of a service install attempt.
 pub enum ServiceStatus {
     Installed,
+    InstalledWithoutBootPersistence,
     AlreadyRunning,
     StartedDaemon,
 }
@@ -285,11 +286,21 @@ WantedBy=default.target
         warn!("systemctl daemon-reload failed: {e}");
     }
 
+    let mut boot_persistent = true;
+
     let enable = Command::new("systemctl")
         .args(["--user", "enable", SYSTEMD_SERVICE])
         .status();
-    if let Err(e) = enable {
-        warn!("systemctl enable failed: {e}");
+    match enable {
+        Ok(status) if status.success() => {}
+        Ok(status) => {
+            boot_persistent = false;
+            warn!("systemctl enable exited with status {status}");
+        }
+        Err(e) => {
+            boot_persistent = false;
+            warn!("systemctl enable failed: {e}");
+        }
     }
 
     let start = Command::new("systemctl")
@@ -301,11 +312,27 @@ WantedBy=default.target
         return Err(HostError::Config("systemctl start failed".into()));
     }
 
-    // Enable lingering so the user service survives logout
-    let _ = Command::new("loginctl").args(["enable-linger"]).status();
+    // Enable lingering so the user service survives logout and starts before
+    // the next interactive login on server installs.
+    match Command::new("loginctl").args(["enable-linger"]).status() {
+        Ok(status) if status.success() => {}
+        Ok(status) => {
+            boot_persistent = false;
+            warn!("loginctl enable-linger exited with status {status}");
+        }
+        Err(e) => {
+            boot_persistent = false;
+            warn!("loginctl enable-linger failed: {e}");
+        }
+    }
 
-    info!("systemd user service enabled and started");
-    Ok(ServiceStatus::Installed)
+    if boot_persistent {
+        info!("systemd user service enabled and started");
+        Ok(ServiceStatus::Installed)
+    } else {
+        info!("systemd user service started, but boot persistence was not confirmed");
+        Ok(ServiceStatus::InstalledWithoutBootPersistence)
+    }
 }
 
 /// Stop, disable, and remove the systemd user service.

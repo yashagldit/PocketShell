@@ -5,6 +5,7 @@
 //! reliably across platforms and file rewrites.
 
 use crate::error::{HostError, Result};
+use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
@@ -19,6 +20,7 @@ pub struct TailState {
     pub last_size: u64,
     pub partial: String,
     read_buf: Vec<u8>,
+    pending_lines: VecDeque<String>,
 }
 
 impl TailState {
@@ -27,6 +29,7 @@ impl TailState {
             last_size: offset,
             partial: String::new(),
             read_buf: Vec::new(),
+            pending_lines: VecDeque::new(),
         }
     }
 }
@@ -38,13 +41,18 @@ pub fn initial_offset(path: &Path) -> u64 {
 
 /// Read any new content since `state.last_size`, split into complete
 /// lines, and update `state`. Returns up to `MAX_LINES_PER_TICK` lines;
-/// remaining growth stays in the file and is picked up next tick.
+/// remaining lines are kept in memory and returned on later ticks.
 ///
 /// Handles three edge cases:
 /// - File shrank (truncate/rotate): reset state and return empty.
 /// - File missing (transient during rename): treat as no growth.
 /// - Trailing partial line: buffered in `state.partial` until a `\n` arrives.
 pub fn read_delta(path: &Path, state: &mut TailState) -> Result<Vec<String>> {
+    if !state.pending_lines.is_empty() {
+        let take = std::cmp::min(MAX_LINES_PER_TICK, state.pending_lines.len());
+        return Ok(state.pending_lines.drain(..take).collect());
+    }
+
     let size = match std::fs::metadata(path) {
         Ok(meta) => meta.len(),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -54,6 +62,7 @@ pub fn read_delta(path: &Path, state: &mut TailState) -> Result<Vec<String>> {
     if size < state.last_size {
         state.last_size = 0;
         state.partial.clear();
+        state.pending_lines.clear();
     }
     if size == state.last_size {
         return Ok(Vec::new());
@@ -94,7 +103,8 @@ pub fn read_delta(path: &Path, state: &mut TailState) -> Result<Vec<String>> {
         lines.pop().unwrap_or_default()
     };
     if lines.len() > MAX_LINES_PER_TICK {
-        lines.truncate(MAX_LINES_PER_TICK);
+        let rest = lines.split_off(MAX_LINES_PER_TICK);
+        state.pending_lines.extend(rest);
     }
     Ok(lines)
 }
@@ -197,6 +207,35 @@ mod tests {
         let got = read_delta(&path, &mut state).unwrap();
         assert_eq!(got, vec!["a", "b", "c", "d"]);
         assert_eq!(state.partial, "");
+    }
+
+    #[test]
+    fn line_cap_preserves_remaining_lines_for_next_tick() {
+        let path = tmp("cap");
+        let mut f = std::fs::File::create(&path).unwrap();
+        for i in 0..(MAX_LINES_PER_TICK + 3) {
+            writeln!(f, "{{\"i\":{i}}}").unwrap();
+        }
+        drop(f);
+
+        let mut state = TailState::default();
+        let first = read_delta(&path, &mut state).unwrap();
+        assert_eq!(first.len(), MAX_LINES_PER_TICK);
+        assert_eq!(first[0], "{\"i\":0}");
+        assert_eq!(
+            first[MAX_LINES_PER_TICK - 1],
+            format!("{{\"i\":{}}}", MAX_LINES_PER_TICK - 1)
+        );
+
+        let second = read_delta(&path, &mut state).unwrap();
+        assert_eq!(
+            second,
+            vec![
+                format!("{{\"i\":{}}}", MAX_LINES_PER_TICK),
+                format!("{{\"i\":{}}}", MAX_LINES_PER_TICK + 1),
+                format!("{{\"i\":{}}}", MAX_LINES_PER_TICK + 2),
+            ]
+        );
     }
 
     #[test]

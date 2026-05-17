@@ -210,7 +210,6 @@ impl MarkParser {
         self.osc_overflow = false;
         self.state = ParseState::Normal;
     }
-
 }
 
 /// Parse the body of an OSC string (the bytes between `ESC ]` and the
@@ -236,9 +235,7 @@ fn parse_osc_133(body: &[u8]) -> Option<AttentionSignal> {
         "B" => None, // command-line start — not interesting
         "C" => Some(AttentionSignal::CommandStart),
         "D" => {
-            let exit_code = parts
-                .next()
-                .and_then(|n| n.trim().parse::<i32>().ok());
+            let exit_code = parts.next().and_then(|n| n.trim().parse::<i32>().ok());
             Some(AttentionSignal::CommandDone { exit_code })
         }
         _ => None,
@@ -279,6 +276,12 @@ pub struct AttentionDebouncer {
     session_label: String,
 }
 
+/// Minimum observed command runtime before an OSC 133 completion becomes a
+/// user-facing notification. This keeps shell integration from pinging for
+/// quick commands like `ls` or `pwd`; explicit BEL/OSC 9 still bypass this
+/// because the program deliberately requested attention.
+pub const MIN_COMMAND_ATTENTION_DURATION: Duration = Duration::from_secs(30);
+
 #[derive(Debug, Clone)]
 pub struct PendingAttention {
     pub kind: AttentionKind,
@@ -290,11 +293,15 @@ pub struct PendingAttention {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AttentionKind {
-    CommandDone { exit_code: Option<i32> },
+    CommandDone {
+        exit_code: Option<i32>,
+    },
     Bell,
     /// OSC 9 / explicit "look at me" notification from a TUI agent. Carries
     /// the message body the program wants shown.
-    Notification { body: String },
+    Notification {
+        body: String,
+    },
     /// No explicit completion signal from the program — we just observed
     /// that the PTY went silent for `quiet_period` after substantial
     /// activity. This is the catch-all for agents that don't ring a bell
@@ -347,12 +354,23 @@ impl AttentionDebouncer {
                 // A bare prompt redraw with no command in flight is noise
                 // (empty enter, shell reprint, etc.) — only count it as a
                 // completion when a `CommandStart` preceded it.
-                if self.command_started_at.is_some() {
+                if self.command_started_at.is_some_and(|started_at| {
+                    now.saturating_duration_since(started_at) >= MIN_COMMAND_ATTENTION_DURATION
+                }) {
                     self.arm(AttentionKind::CommandDone { exit_code: None }, now);
+                } else {
+                    self.command_started_at = None;
                 }
             }
             AttentionSignal::CommandDone { exit_code } => {
-                self.arm(AttentionKind::CommandDone { exit_code }, now);
+                let Some(started_at) = self.command_started_at else {
+                    return;
+                };
+                if now.saturating_duration_since(started_at) >= MIN_COMMAND_ATTENTION_DURATION {
+                    self.arm(AttentionKind::CommandDone { exit_code }, now);
+                } else {
+                    self.command_started_at = None;
+                }
             }
             AttentionSignal::Bell => {
                 // Bare BEL is a deliberate "look at me" from the program
@@ -434,7 +452,11 @@ impl AttentionDebouncer {
             Some(p) => now >= p.fire_at,
             None => false,
         };
-        if ready { self.pending.take() } else { None }
+        if ready {
+            self.pending.take()
+        } else {
+            None
+        }
     }
 
     #[cfg(test)]
@@ -463,13 +485,16 @@ pub struct AttentionTracker {
     /// idle shell that just printed its prompt and nothing else).
     bytes_since_arm: usize,
     /// True iff this session has received user input from the mobile since
-    /// the last attention event fired. **Required** for any kind of arming
-    /// (Bell, OSC 9 Notification, OSC 133 CommandDone, Idle). Filters out
-    /// the background chatter of long-running agents — Claude Code's
-    /// periodic recap banner, codex's idle TUI redraws, shell prompt
-    /// repaints from screen resizes, etc. — none of which the user wants
-    /// to be notified about because they didn't ask for anything.
+    /// the last attention event fired. This only flips on submitted input
+    /// (Enter/newline), not every keypress. **Required** for any kind of
+    /// arming (Bell, OSC 9 Notification, OSC 133 CommandDone, Idle). Filters
+    /// out background chatter and avoids treating interactive redraws from
+    /// arrows, text editing, vim, etc. as completed work.
     had_user_input: bool,
+    /// Time of the submitted input that unlocked the current detection
+    /// window. Used by the Idle fallback so a quick redraw does not become a
+    /// "Command finished" push ten seconds later.
+    user_input_at: Option<Instant>,
 }
 
 /// Default quiet period before a detected signal fires a notification.
@@ -484,6 +509,11 @@ pub const DEFAULT_QUIET_PERIOD: Duration = Duration::from_secs(10);
 /// cursor blink (~30–50 B) so an idle shell doesn't spuriously fire.
 const IDLE_ARM_BYTES: usize = 256;
 
+/// Minimum elapsed time after submitted input before the generic Idle
+/// fallback may arm. Explicit signals remain immediate; this only constrains
+/// the fuzzy "large output then silence" heuristic.
+const MIN_IDLE_ACTIVITY_DURATION: Duration = Duration::from_secs(30);
+
 impl AttentionTracker {
     pub fn new(quiet_period: Duration, session_label: String) -> Self {
         Self {
@@ -492,14 +522,20 @@ impl AttentionTracker {
             session_label,
             bytes_since_arm: 0,
             had_user_input: false,
+            user_input_at: None,
         }
     }
 
     /// Mark that the user typed/sent input to this session. Called from
-    /// `SessionManager::write_input` for every mobile-originated byte.
-    /// Without this flag the next on_bytes burst won't arm anything.
-    pub fn note_user_input(&mut self) {
-        self.had_user_input = true;
+    /// `SessionManager::write_input` for mobile-originated bytes. Only an
+    /// Enter/newline-style submission unlocks attention detection; ordinary
+    /// keypresses in interactive programs should not schedule pushes.
+    pub fn note_user_input(&mut self, bytes: &[u8], now: Instant) {
+        if is_input_submission(bytes) {
+            self.had_user_input = true;
+            self.user_input_at = Some(now);
+            self.bytes_since_arm = 0;
+        }
     }
 
     /// Read-thread hook: feed a chunk of PTY output bytes.
@@ -540,7 +576,13 @@ impl AttentionTracker {
         // cross the activity threshold and nothing more specific is pending
         // (Bell / OSC 9 / CommandDone all take precedence), arm Idle.
         self.bytes_since_arm = self.bytes_since_arm.saturating_add(bytes.len());
-        if self.debouncer.pending.is_none() && self.bytes_since_arm >= IDLE_ARM_BYTES {
+        let idle_activity_elapsed = self.user_input_at.map_or(false, |input_at| {
+            now.saturating_duration_since(input_at) >= MIN_IDLE_ACTIVITY_DURATION
+        });
+        if self.debouncer.pending.is_none()
+            && self.bytes_since_arm >= IDLE_ARM_BYTES
+            && idle_activity_elapsed
+        {
             self.debouncer.arm_idle(now);
             self.bytes_since_arm = 0;
         }
@@ -557,9 +599,14 @@ impl AttentionTracker {
             // unlocks the next event.
             self.bytes_since_arm = 0;
             self.had_user_input = false;
+            self.user_input_at = None;
         }
         ev
     }
+}
+
+fn is_input_submission(bytes: &[u8]) -> bool {
+    bytes.iter().any(|b| matches!(b, b'\r' | b'\n'))
 }
 
 #[cfg(test)]
@@ -571,20 +618,27 @@ mod tracker_tests {
     fn tracker_fires_command_done_after_quiet_period() {
         let mut t = AttentionTracker::new(Duration::from_secs(10), "test".to_string());
         let t0 = Instant::now();
-        t.note_user_input();
-        // Simulate: command starts, runs for 2s producing output, finishes
+        t.note_user_input(b"\r", t0);
+        // Simulate: command starts, runs long enough to be notification-worthy, finishes
         // with prompt mark + bare prompt.
         t.on_bytes(b"\x1b]133;C\x07running...\n", t0);
-        t.on_bytes(b"more output\n", t0 + Duration::from_secs(1));
+        t.on_bytes(b"more output\n", t0 + Duration::from_secs(15));
+        t.on_bytes(b"\x1b]133;D;0\x07$ ", t0 + Duration::from_secs(31));
+        // The trailing "$ " is passthrough -> fire_at = (t0+31s) + 10s
+        assert!(t.take_ready(t0 + Duration::from_secs(40)).is_none());
+        let ev = t.take_ready(t0 + Duration::from_secs(42)).unwrap();
+        assert_eq!(ev.kind, AttentionKind::CommandDone { exit_code: Some(0) });
+        assert_eq!(ev.command_duration, Some(Duration::from_secs(31)));
+    }
+
+    #[test]
+    fn tracker_ignores_short_command_done() {
+        let mut t = AttentionTracker::new(Duration::from_secs(10), "test".to_string());
+        let t0 = Instant::now();
+        t.note_user_input(b"\r", t0);
+        t.on_bytes(b"\x1b]133;C\x07quick\n", t0);
         t.on_bytes(b"\x1b]133;D;0\x07$ ", t0 + Duration::from_secs(2));
-        // The trailing "$ " is passthrough → fire_at = (t0+2s) + 10s
-        assert!(t.take_ready(t0 + Duration::from_secs(11)).is_none());
-        let ev = t.take_ready(t0 + Duration::from_secs(13)).unwrap();
-        assert_eq!(
-            ev.kind,
-            AttentionKind::CommandDone { exit_code: Some(0) }
-        );
-        assert_eq!(ev.command_duration, Some(Duration::from_secs(2)));
+        assert!(t.take_ready(t0 + Duration::from_secs(30)).is_none());
     }
 
     #[test]
@@ -595,7 +649,7 @@ mod tracker_tests {
         // stream goes silent for the full window does it fire.
         let mut t = AttentionTracker::new(Duration::from_secs(10), "test".to_string());
         let t0 = Instant::now();
-        t.note_user_input();
+        t.note_user_input(b"\r", t0);
         t.on_bytes(b"streaming \x07 work \n", t0);
         t.on_bytes(b"still working\n", t0 + Duration::from_secs(1));
         // 5s after the last output — still inside the window, not ready yet.
@@ -609,7 +663,7 @@ mod tracker_tests {
     fn tracker_isolated_bell_fires_after_quiet_period() {
         let mut t = AttentionTracker::new(Duration::from_secs(10), "test".to_string());
         let t0 = Instant::now();
-        t.note_user_input();
+        t.note_user_input(b"\r", t0);
         t.on_bytes(b"please respond\x07", t0);
         assert!(t.take_ready(t0 + Duration::from_secs(5)).is_none());
         let ev = t.take_ready(t0 + Duration::from_secs(11)).unwrap();
@@ -618,18 +672,37 @@ mod tracker_tests {
 
     #[test]
     fn tracker_idle_fires_after_burst_then_silence() {
-        // Generic case: program emits a burst of output (no BEL, no OSC 9,
-        // no OSC 133) then goes quiet. After the quiet-period elapses,
-        // Idle fires.
+        // Generic case: program emits output long enough after submission
+        // (no BEL, no OSC 9, no OSC 133) then goes quiet. After the
+        // quiet-period elapses, Idle fires.
         let mut t = AttentionTracker::new(Duration::from_secs(10), "test".to_string());
         let t0 = Instant::now();
-        t.note_user_input();
+        t.note_user_input(b"\r", t0);
         // 300 bytes of output — exceeds IDLE_ARM_BYTES (256), so Idle arms.
-        t.on_bytes(&vec![b'x'; 300], t0);
+        t.on_bytes(&vec![b'x'; 300], t0 + Duration::from_secs(31));
         // Still inside the 10 s window.
-        assert!(t.take_ready(t0 + Duration::from_secs(5)).is_none());
-        let ev = t.take_ready(t0 + Duration::from_secs(11)).unwrap();
+        assert!(t.take_ready(t0 + Duration::from_secs(40)).is_none());
+        let ev = t.take_ready(t0 + Duration::from_secs(42)).unwrap();
         assert_eq!(ev.kind, AttentionKind::Idle);
+    }
+
+    #[test]
+    fn tracker_idle_does_not_fire_after_quick_burst() {
+        let mut t = AttentionTracker::new(Duration::from_secs(10), "test".to_string());
+        let t0 = Instant::now();
+        t.note_user_input(b"\r", t0);
+        t.on_bytes(&vec![b'x'; 300], t0 + Duration::from_secs(1));
+        assert!(t.take_ready(t0 + Duration::from_secs(60)).is_none());
+    }
+
+    #[test]
+    fn tracker_keypress_does_not_unlock_attention() {
+        let mut t = AttentionTracker::new(Duration::from_secs(10), "test".to_string());
+        let t0 = Instant::now();
+        t.note_user_input(b"x", t0);
+        t.on_bytes(&vec![b'x'; 300], t0 + Duration::from_secs(31));
+        t.on_bytes(b"please respond\x07", t0 + Duration::from_secs(32));
+        assert!(t.take_ready(t0 + Duration::from_secs(60)).is_none());
     }
 
     #[test]
@@ -640,20 +713,18 @@ mod tracker_tests {
         // crosses IDLE_ARM_BYTES, Idle arms. Subsequent frames push fire_at
         // forward; silence after the spinner stops eventually fires.
         //
-        // 6 frames × ~60 B = 360 B (crosses 256 B threshold around frame 5),
-        // spread over 3 s.
+        // 7 frames x ~60 B = 420 B, spread over 36 s.
         let mut t = AttentionTracker::new(Duration::from_secs(10), "test".to_string());
         let t0 = Instant::now();
-        t.note_user_input();
-        let frame: &[u8] = b"\x1b[2D\x1b[5B\r\x1b[8A\x1b[38;5;174m\xe2\x9c\xb3\x1b[39m\r\r\n\x1b[2C\x1b[5A";
-        for i in 0..6 {
-            t.on_bytes(frame, t0 + Duration::from_millis(500 * i));
+        t.note_user_input(b"\r", t0);
+        let frame: &[u8] =
+            b"\x1b[2D\x1b[5B\r\x1b[8A\x1b[38;5;174m\xe2\x9c\xb3\x1b[39m\r\r\n\x1b[2C\x1b[5A";
+        for i in 0..7 {
+            t.on_bytes(frame, t0 + Duration::from_secs(6 * i));
         }
-        // Last frame at t0+2500ms, so fire_at gets pushed to t0+12500ms.
-        // 12 s after t0 → not ready yet.
-        assert!(t.take_ready(t0 + Duration::from_secs(12)).is_none());
-        // 13 s after t0 → past fire_at, fires.
-        let ev = t.take_ready(t0 + Duration::from_secs(13)).unwrap();
+        // Last frame at t0+36s, so fire_at gets pushed to t0+46s.
+        assert!(t.take_ready(t0 + Duration::from_secs(45)).is_none());
+        let ev = t.take_ready(t0 + Duration::from_secs(47)).unwrap();
         assert_eq!(ev.kind, AttentionKind::Idle);
     }
 
@@ -664,9 +735,9 @@ mod tracker_tests {
         // notification after 10 s of inaction.
         let mut t = AttentionTracker::new(Duration::from_secs(10), "test".to_string());
         let t0 = Instant::now();
-        t.note_user_input();
-        t.on_bytes(&vec![b'x'; 30], t0);
-        assert!(t.take_ready(t0 + Duration::from_secs(30)).is_none());
+        t.note_user_input(b"\r", t0);
+        t.on_bytes(&vec![b'x'; 30], t0 + Duration::from_secs(31));
+        assert!(t.take_ready(t0 + Duration::from_secs(60)).is_none());
     }
 
     #[test]
@@ -698,23 +769,23 @@ mod tracker_tests {
         // output WITHOUT a new note_user_input() must not fire again.
         let mut t = AttentionTracker::new(Duration::from_secs(10), "test".to_string());
         let t0 = Instant::now();
-        t.note_user_input();
-        t.on_bytes(&vec![b'x'; 300], t0);
-        assert!(t.take_ready(t0 + Duration::from_secs(11)).is_some());
+        t.note_user_input(b"\r", t0);
+        t.on_bytes(&vec![b'x'; 300], t0 + Duration::from_secs(31));
+        assert!(t.take_ready(t0 + Duration::from_secs(42)).is_some());
         // Now another burst, no fresh input — shouldn't arm anything.
-        t.on_bytes(&vec![b'y'; 300], t0 + Duration::from_secs(12));
-        assert!(t.take_ready(t0 + Duration::from_secs(25)).is_none());
+        t.on_bytes(&vec![b'y'; 300], t0 + Duration::from_secs(43));
+        assert!(t.take_ready(t0 + Duration::from_secs(80)).is_none());
         // Fresh input unlocks the next arm.
-        t.note_user_input();
-        t.on_bytes(&vec![b'z'; 300], t0 + Duration::from_secs(26));
-        assert!(t.take_ready(t0 + Duration::from_secs(37)).is_some());
+        t.note_user_input(b"\r", t0 + Duration::from_secs(81));
+        t.on_bytes(&vec![b'z'; 300], t0 + Duration::from_secs(112));
+        assert!(t.take_ready(t0 + Duration::from_secs(123)).is_some());
     }
 
     #[test]
     fn tracker_osc9_notification_fires_after_silence() {
         let mut t = AttentionTracker::new(Duration::from_secs(10), "test".to_string());
         let t0 = Instant::now();
-        t.note_user_input();
+        t.note_user_input(b"\r", t0);
         t.on_bytes(b"\x1b]9;Claude is waiting for your input\x07", t0);
         // Cursor blink 3s after OSC 9 — pushes fire time forward.
         t.on_bytes(b"\x1b[K", t0 + Duration::from_secs(3));
@@ -832,7 +903,9 @@ mod tests {
         let r = p.feed(b"7\x07");
         assert_eq!(
             r.signals,
-            vec![AttentionSignal::CommandDone { exit_code: Some(17) }]
+            vec![AttentionSignal::CommandDone {
+                exit_code: Some(17)
+            }]
         );
         assert!(!r.trailing_passthrough);
     }
@@ -933,31 +1006,32 @@ mod tests {
         d.on_signal(AttentionSignal::CommandStart, t0);
         d.on_signal(
             AttentionSignal::CommandDone { exit_code: Some(0) },
-            t0 + Duration::from_secs(1),
+            t0 + Duration::from_secs(31),
         );
         // Not yet ready
-        assert!(d.take_ready(t0 + Duration::from_secs(5)).is_none());
-        // Now ready (1s start + 10s quiet)
-        let ev = d.take_ready(t0 + Duration::from_secs(12)).unwrap();
-        assert_eq!(
-            ev.kind,
-            AttentionKind::CommandDone { exit_code: Some(0) }
-        );
-        assert_eq!(ev.command_duration, Some(Duration::from_secs(1)));
+        assert!(d.take_ready(t0 + Duration::from_secs(40)).is_none());
+        // Now ready (31s start + 10s quiet)
+        let ev = d.take_ready(t0 + Duration::from_secs(42)).unwrap();
+        assert_eq!(ev.kind, AttentionKind::CommandDone { exit_code: Some(0) });
+        assert_eq!(ev.command_duration, Some(Duration::from_secs(31)));
         // Drained
-        assert!(d.take_ready(t0 + Duration::from_secs(30)).is_none());
+        assert!(d.take_ready(t0 + Duration::from_secs(60)).is_none());
     }
 
     #[test]
     fn debouncer_output_pushes_command_done_fire_forward() {
         let mut d = AttentionDebouncer::new(Duration::from_secs(10), "test".to_string());
         let t0 = Instant::now();
-        d.on_signal(AttentionSignal::CommandDone { exit_code: Some(0) }, t0);
+        d.on_signal(AttentionSignal::CommandStart, t0);
+        d.on_signal(
+            AttentionSignal::CommandDone { exit_code: Some(0) },
+            t0 + Duration::from_secs(31),
+        );
         // Output 5s later resets the quiet window
-        d.on_output(t0 + Duration::from_secs(5));
-        assert!(d.take_ready(t0 + Duration::from_secs(11)).is_none());
+        d.on_output(t0 + Duration::from_secs(36));
+        assert!(d.take_ready(t0 + Duration::from_secs(45)).is_none());
         // Now wait 10s past the latest output
-        assert!(d.take_ready(t0 + Duration::from_secs(16)).is_some());
+        assert!(d.take_ready(t0 + Duration::from_secs(47)).is_some());
     }
 
     #[test]
@@ -989,13 +1063,10 @@ mod tests {
         let mut d = AttentionDebouncer::new(Duration::from_secs(10), "test".to_string());
         let t0 = Instant::now();
         d.on_signal(AttentionSignal::CommandStart, t0);
-        d.on_signal(
-            AttentionSignal::PromptDrawn,
-            t0 + Duration::from_secs(2),
-        );
-        let ev = d.take_ready(t0 + Duration::from_secs(20)).unwrap();
+        d.on_signal(AttentionSignal::PromptDrawn, t0 + Duration::from_secs(31));
+        let ev = d.take_ready(t0 + Duration::from_secs(42)).unwrap();
         assert_eq!(ev.kind, AttentionKind::CommandDone { exit_code: None });
-        assert_eq!(ev.command_duration, Some(Duration::from_secs(2)));
+        assert_eq!(ev.command_duration, Some(Duration::from_secs(31)));
     }
 
     #[test]
@@ -1004,11 +1075,12 @@ mod tests {
         // they're clearly engaged — drop the pending notification.
         let mut d = AttentionDebouncer::new(Duration::from_secs(10), "test".to_string());
         let t0 = Instant::now();
-        d.on_signal(AttentionSignal::CommandDone { exit_code: Some(0) }, t0);
+        d.on_signal(AttentionSignal::CommandStart, t0);
         d.on_signal(
-            AttentionSignal::CommandStart,
-            t0 + Duration::from_secs(1),
+            AttentionSignal::CommandDone { exit_code: Some(0) },
+            t0 + Duration::from_secs(31),
         );
+        d.on_signal(AttentionSignal::CommandStart, t0 + Duration::from_secs(32));
         assert!(d.take_ready(t0 + Duration::from_secs(30)).is_none());
     }
 }

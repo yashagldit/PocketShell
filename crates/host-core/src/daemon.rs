@@ -41,7 +41,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::oneshot;
 use tokio::time::{interval, sleep, Duration, Instant};
 use tokio_tungstenite::tungstenite::protocol::Message;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
 use webrtc::data_channel::RTCDataChannel;
 
@@ -2581,7 +2581,9 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                             } else if !authenticated_channels.contains(&session_id) {
                                 warn!("dropping unauthenticated input on session {} from device {}", session_id, mobile_device_id);
                             } else {
-                                if data.len() > 5 && data[0] == 0x00 && &data[1..5] == b"PSFT" {
+                                if data.len() >= 5 && data[0] == 0x00 && &data[1..5] == b"PSKA" {
+                                    trace!("terminal keepalive received for session {}", session_id);
+                                } else if data.len() > 5 && data[0] == 0x00 && &data[1..5] == b"PSFT" {
                                     if let Ok(json_str) = std::str::from_utf8(&data[5..]) {
                                         if let Some(update) =
                                             handle_file_transfer_msg(&mut file_transfers, &session_id, json_str, &mut sessions)
@@ -3388,6 +3390,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                                 tokio::time::MissedTickBehavior::Delay,
                                             );
                                             let mut last_growth = Instant::now();
+                                            let idle_stop_enabled = idle_ms > 0;
                                             loop {
                                                 ticker.tick().await;
                                                 let lines = match crate::files_watch::read_delta(
@@ -3423,7 +3426,8 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                                         );
                                                         break;
                                                     }
-                                                } else if last_growth.elapsed()
+                                                } else if idle_stop_enabled
+                                                    && last_growth.elapsed()
                                                     >= Duration::from_millis(idle_ms)
                                                 {
                                                     let stop = serde_json::json!({
@@ -3594,34 +3598,8 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                             continue;
                                         }
                                         info!("reboot request received from mobile");
-                                        // Try sudo -n reboot first (non-interactive); fall back to plain reboot
-                                        let sudo_ok = match std::process::Command::new("sudo")
-                                            .args(["-n", "reboot"])
-                                            .output()
-                                        {
-                                            Ok(output) if output.status.success() => true,
-                                            Ok(output) => {
-                                                let stderr = String::from_utf8_lossy(&output.stderr);
-                                                warn!("sudo reboot failed ({}), trying plain reboot: {}", output.status, stderr.trim());
-                                                false
-                                            }
-                                            Err(e) => {
-                                                warn!("sudo not available ({}), trying plain reboot", e);
-                                                false
-                                            }
-                                        };
-                                        if !sudo_ok {
-                                            match std::process::Command::new("reboot").output() {
-                                                Ok(output) => {
-                                                    if !output.status.success() {
-                                                        let stderr = String::from_utf8_lossy(&output.stderr);
-                                                        warn!("reboot command failed: {}", stderr.trim());
-                                                    }
-                                                }
-                                                Err(e) => {
-                                                    warn!("reboot command failed: {}", e);
-                                                }
-                                            }
+                                        if let Err((code, msg)) = crate::rpc::try_reboot() {
+                                            warn!("reboot failed ({}): {}", code, msg);
                                         }
                                     }
                                 }
@@ -5665,7 +5643,12 @@ async fn handle_signal(
                         };
 
                     // Check for file transfer sentinel via signaling relay
-                    if bytes.len() > 5 && bytes[0] == 0x00 && &bytes[1..5] == b"PSFT" {
+                    if bytes.len() >= 5 && bytes[0] == 0x00 && &bytes[1..5] == b"PSKA" {
+                        trace!(
+                            "terminal keepalive received via signaling for session {}",
+                            session_id
+                        );
+                    } else if bytes.len() > 5 && bytes[0] == 0x00 && &bytes[1..5] == b"PSFT" {
                         if let Ok(json_str) = std::str::from_utf8(&bytes[5..]) {
                             handle_file_transfer_msg(
                                 file_transfers,

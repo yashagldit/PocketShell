@@ -487,7 +487,7 @@ impl SessionManager {
         // this, agent chatter (recap banners, idle spinners) wouldn't be
         // distinguishable from real "your command is done" silence.
         if let Ok(mut tracker) = session.attention.lock() {
-            tracker.note_user_input();
+            tracker.note_user_input(&bytes, Instant::now());
         }
         session
             .input_tx

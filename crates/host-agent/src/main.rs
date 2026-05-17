@@ -199,6 +199,10 @@ fn init_logging() {
 }
 
 async fn pair(config: AppConfig, code: Option<String>, reset: bool) -> Result<()> {
+    if !confirm_root_install() {
+        eprintln!("aborted.");
+        return Ok(());
+    }
     let mut store = StateStore::load().context("loading local state")?;
 
     // --reset: wipe existing identity so the host can pair with a different account
@@ -387,6 +391,11 @@ async fn pair(config: AppConfig, code: Option<String>, reset: bool) -> Result<()
                 println!("daemon installed as a system service and started");
                 println!("it will auto-start on boot and restart on crash");
             }
+            Ok(host_core::service::ServiceStatus::InstalledWithoutBootPersistence) => {
+                println!(" done");
+                println!("daemon installed as a systemd user service and started");
+                print_boot_persistence_warning();
+            }
             Ok(host_core::service::ServiceStatus::AlreadyRunning) => {
                 println!(" already running");
             }
@@ -414,6 +423,10 @@ async fn pair(config: AppConfig, code: Option<String>, reset: bool) -> Result<()
 ///   paired → device-add
 ///   not paired → new-host
 async fn pair_qr(config: AppConfig, reset: bool) -> Result<()> {
+    if !confirm_root_install() {
+        eprintln!("aborted.");
+        return Ok(());
+    }
     let mut store = StateStore::load().context("loading local state")?;
 
     if reset {
@@ -611,6 +624,11 @@ async fn pair_qr_new_host(config: AppConfig, mut store: StateStore) -> Result<()
             Ok(host_core::service::ServiceStatus::Installed) => {
                 println!(" done");
                 println!("daemon installed as a system service and started");
+            }
+            Ok(host_core::service::ServiceStatus::InstalledWithoutBootPersistence) => {
+                println!(" done");
+                println!("daemon installed as a systemd user service and started");
+                print_boot_persistence_warning();
             }
             Ok(host_core::service::ServiceStatus::AlreadyRunning) => {
                 println!(" already running");
@@ -1044,6 +1062,11 @@ fn daemon_start() -> Result<()> {
         Ok(host_core::service::ServiceStatus::Installed) => {
             let _ = write_audit_event(AuditEvent::new("daemon_start_command"));
             println!("daemon started via system service (auto-starts on boot)");
+        }
+        Ok(host_core::service::ServiceStatus::InstalledWithoutBootPersistence) => {
+            let _ = write_audit_event(AuditEvent::new("daemon_start_command"));
+            println!("daemon started via systemd user service");
+            print_boot_persistence_warning();
         }
         Ok(host_core::service::ServiceStatus::AlreadyRunning) => {
             println!("daemon is already running via system service");
@@ -1879,6 +1902,41 @@ fn prompt(label: &str) -> String {
     }
 
     String::new()
+}
+
+fn print_boot_persistence_warning() {
+    let user = whoami::fallible::username().unwrap_or_else(|_| "<this-user>".to_string());
+    println!(
+        "warning: boot/logout auto-start was not confirmed; run: sudo loginctl enable-linger {user}"
+    );
+}
+
+/// If invoked as root (sudo), explain the consequences and ask the user
+/// whether to continue. Returns true to proceed, false if the user declined.
+/// Pairing as root writes all state to /root/.pocketshell and the daemon will
+/// later run as root too — which breaks the mobile file browser (the default
+/// home directory /root is on the protected-paths denylist) and means every
+/// terminal session opened from the app runs as root.
+fn confirm_root_install() -> bool {
+    use nix::unistd::Uid;
+    if !Uid::effective().is_root() {
+        return true;
+    }
+    eprintln!();
+    eprintln!("WARNING: pocketshell is being run as root (UID 0).");
+    eprintln!();
+    eprintln!("PocketShell is designed to run as your regular user account.");
+    eprintln!("If you continue as root:");
+    eprintln!("  - state will be written under /root/.pocketshell, not your user's home");
+    eprintln!("  - the mobile file browser will fail to open the default directory");
+    eprintln!("    (/root is on the protected-paths denylist)");
+    eprintln!("  - every terminal session opened from the mobile app will run as root");
+    eprintln!("  - the daemon service will install for the root user only");
+    eprintln!();
+    eprintln!("Recommended: press N, then re-run without sudo as your normal user.");
+    eprintln!();
+    let answer = prompt("Continue as root anyway? [y/N]: ");
+    matches!(answer.to_lowercase().as_str(), "y" | "yes")
 }
 
 fn generate_keypair() -> (String, String) {

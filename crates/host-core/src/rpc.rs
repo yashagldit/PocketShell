@@ -258,43 +258,90 @@ fn method_kill_process(params: &Value) -> std::result::Result<Value, RpcError> {
     Ok(serde_json::json!({ "killed": true }))
 }
 
-fn method_reboot(_params: &Value) -> std::result::Result<Value, RpcError> {
-    tracing::info!("rpc system/reboot scheduled");
-    // Try sudo -n reboot first (non-interactive); fall back to plain reboot.
-    let sudo_try = std::process::Command::new("sudo")
-        .args(["-n", "reboot"])
-        .output();
-    let sudo_ok = matches!(&sudo_try, Ok(out) if out.status.success());
-    if sudo_ok {
-        return Ok(serde_json::json!({ "scheduled": true }));
-    }
-    if let Ok(out) = &sudo_try {
-        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        tracing::warn!("sudo reboot failed ({}): {}", out.status, stderr);
-    }
-
-    let plain = std::process::Command::new("reboot")
-        .output()
-        .map_err(|e| RpcError::internal(format!("reboot failed to spawn: {e}")))?;
-    if !plain.status.success() {
-        let stderr = String::from_utf8_lossy(&plain.stderr).trim().to_string();
-        let code = if stderr.to_lowercase().contains("not permitted")
-            || stderr.to_lowercase().contains("permission")
+/// Try to reboot the host using the most permissive mechanism available.
+///
+/// On Linux we try `systemctl reboot` first — it goes through logind/polkit,
+/// which on most distros allows active local users (and often any user with
+/// an inhibitor-less session) to reboot without a sudoers entry. This lets
+/// the non-root daemon trigger reboots out of the box on a typical desktop /
+/// home server. If polkit denies it (headless boxes, hardened polkit rules)
+/// we fall back to `sudo -n reboot` for users who have a NOPASSWD entry,
+/// and finally to plain `reboot` which only works when the daemon itself
+/// runs as root.
+///
+/// macOS has no equivalent, so we skip straight to the sudo/reboot path.
+///
+/// Returns Ok on success, or Err with a stable code ("permission_denied" |
+/// "internal") and the last command's stderr.
+pub fn try_reboot() -> std::result::Result<(), (&'static str, String)> {
+    fn classify(stderr: &str) -> &'static str {
+        let lower = stderr.to_lowercase();
+        if lower.contains("not permitted")
+            || lower.contains("permission")
+            || lower.contains("denied")
+            || lower.contains("authentication")
         {
             "permission_denied"
         } else {
             "internal"
-        };
-        return Err(RpcError::new(
-            code,
-            if stderr.is_empty() {
-                format!("reboot exited with status {}", plain.status)
+        }
+    }
+
+    let mut last_err: Option<(&'static str, String)> = None;
+
+    if cfg!(target_os = "linux") {
+        match std::process::Command::new("systemctl")
+            .arg("reboot")
+            .output()
+        {
+            Ok(out) if out.status.success() => return Ok(()),
+            Ok(out) => {
+                let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                tracing::warn!("systemctl reboot failed ({}): {}", out.status, stderr);
+                last_err = Some((classify(&stderr), stderr));
+            }
+            Err(e) => {
+                tracing::warn!("systemctl not available: {}", e);
+            }
+        }
+    }
+
+    match std::process::Command::new("sudo")
+        .args(["-n", "reboot"])
+        .output()
+    {
+        Ok(out) if out.status.success() => return Ok(()),
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            tracing::warn!("sudo -n reboot failed ({}): {}", out.status, stderr);
+            last_err = Some((classify(&stderr), stderr));
+        }
+        Err(e) => {
+            tracing::warn!("sudo not available: {}", e);
+        }
+    }
+
+    match std::process::Command::new("reboot").output() {
+        Ok(out) if out.status.success() => Ok(()),
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            let msg = if stderr.is_empty() {
+                format!("reboot exited with status {}", out.status)
             } else {
                 stderr
-            },
-        ));
+            };
+            Err((classify(&msg), msg))
+        }
+        Err(e) => Err(last_err.unwrap_or(("internal", format!("reboot failed to spawn: {e}")))),
     }
-    Ok(serde_json::json!({ "scheduled": true }))
+}
+
+fn method_reboot(_params: &Value) -> std::result::Result<Value, RpcError> {
+    tracing::info!("rpc system/reboot scheduled");
+    match try_reboot() {
+        Ok(()) => Ok(serde_json::json!({ "scheduled": true })),
+        Err((code, msg)) => Err(RpcError::new(code, msg)),
+    }
 }
 
 #[cfg(test)]
