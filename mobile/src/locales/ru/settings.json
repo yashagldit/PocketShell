@@ -86,5 +86,9 @@
   "delete_account_otp_resend": "Отправить код повторно",
   "delete_account_otp_sent": "Код отправлен — проверьте электронную почту.",
   "delete_account_otp_send_failed": "Не удалось отправить код. Попробуйте ещё раз.",
-  "delete_account_otp_invalid": "Этот код не сработал. Проверьте электронную почту и повторите попытку."
+  "delete_account_otp_invalid": "Этот код не сработал. Проверьте электронную почту и повторите попытку.",
+  "pro_card.active_renews": "Активна · продление {{date}}",
+  "pro_card.active_subscription": "Активная подписка",
+  "pro_card.active_pill": "Активна",
+  "pro_card.manage_subscription": "Управление подпиской"
 }

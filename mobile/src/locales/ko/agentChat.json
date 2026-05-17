@@ -75,5 +75,21 @@
   "switcher.retry": "다시 시도",
   "switcher.noProject": "프로젝트 없음",
   "switcher.upgrade_one": "{{count}}개 채팅 더 — PocketShell Pro로 업그레이드하여 보기",
-  "switcher.upgrade_other": "{{count}}개 채팅 더 — PocketShell Pro로 업그레이드하여 보기"
+  "switcher.upgrade_other": "{{count}}개 채팅 더 — PocketShell Pro로 업그레이드하여 보기",
+  "changes.title": "변경",
+  "changes.no_changes_yet": "아직 변경 사항이 없습니다",
+  "changes.file_count_one": "{{count}}개 파일",
+  "changes.file_count_other": "{{count}}개 파일",
+  "changes.empty": "에이전트가 파일을 편집하면 여기에 표시됩니다.",
+  "changes.edits_count_one": "{{count}}회 편집",
+  "changes.edits_count_other": "{{count}}회 편집",
+  "changes.open_file_a11y": "{{name}} 열기",
+  "diff.title": "Diff",
+  "diff.eyebrow": "에이전트 변경",
+  "diff.empty": "이 도구 호출에 대한 diff가 없습니다.",
+  "diff.done": "완료",
+  "diff.truncation_note": "앱에서는 제한된 diff 미리보기를 표시합니다.",
+  "diff.hunk_truncated": "... 추가 줄 숨김",
+  "diff.file_count_one": "{{count}}개 파일",
+  "diff.file_count_other": "{{count}}개 파일"
 }

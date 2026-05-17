@@ -47,5 +47,6 @@
   "scan_qr.instructions": "Exécutez {{command}} sur votre hôte, puis pointez votre caméra vers le code QR.",
   "scan_qr.pairing_success": "Jumelé avec {{host}}",
   "scan_qr.add_device_success": "Appareil ajouté à {{host}}",
-  "scan_qr.pair_failed": "Échec du jumelage de l'hôte"
+  "scan_qr.pair_failed": "Échec du jumelage de l'hôte",
+  "ownership_disclosure": "N'appairez que des hôtes qui vous appartiennent ou auxquels vous êtes autorisé à accéder."
 }

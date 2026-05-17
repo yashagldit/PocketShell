@@ -75,5 +75,21 @@
   "switcher.retry": "重試",
   "switcher.noProject": "無專案",
   "switcher.upgrade_one": "{{count}}個聊天 — 升級到PocketShell Pro查看",
-  "switcher.upgrade_other": "{{count}}個聊天 — 升級到PocketShell Pro查看"
+  "switcher.upgrade_other": "{{count}}個聊天 — 升級到PocketShell Pro查看",
+  "changes.title": "變更",
+  "changes.no_changes_yet": "尚無變更",
+  "changes.file_count_one": "{{count}} 個檔案",
+  "changes.file_count_other": "{{count}} 個檔案",
+  "changes.empty": "當代理編輯檔案時會顯示於此。",
+  "changes.edits_count_one": "{{count}} 次編輯",
+  "changes.edits_count_other": "{{count}} 次編輯",
+  "changes.open_file_a11y": "開啟 {{name}}",
+  "diff.title": "差異",
+  "diff.eyebrow": "代理變更",
+  "diff.empty": "此工具呼叫沒有可用的差異。",
+  "diff.done": "完成",
+  "diff.truncation_note": "App 內僅顯示有限的差異預覽。",
+  "diff.hunk_truncated": "... 其他行已隱藏",
+  "diff.file_count_one": "{{count}} 個檔案",
+  "diff.file_count_other": "{{count}} 個檔案"
 }

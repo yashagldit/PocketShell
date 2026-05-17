@@ -214,5 +214,8 @@
   "metric_detail.fs.avg": "平均",
   "metric_detail.fs.peak": "峰值",
   "metric_detail.fs.min": "最低",
-  "metric_detail.fs.all": "全部"
+  "metric_detail.fs.all": "全部",
+  "advancedDisk.read": "读取",
+  "advancedDisk.write": "写入",
+  "advancedDisk.storage": "存储"
 }

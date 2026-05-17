@@ -86,5 +86,9 @@
   "delete_account_otp_resend": "Reenviar código",
   "delete_account_otp_sent": "Código enviado — verifique seu email.",
   "delete_account_otp_send_failed": "Não foi possível enviar o código. Tente novamente.",
-  "delete_account_otp_invalid": "Esse código não funcionou. Verifique seu email e tente novamente."
+  "delete_account_otp_invalid": "Esse código não funcionou. Verifique seu email e tente novamente.",
+  "pro_card.active_renews": "Ativa · renova em {{date}}",
+  "pro_card.active_subscription": "Assinatura ativa",
+  "pro_card.active_pill": "Ativa",
+  "pro_card.manage_subscription": "Gerenciar assinatura"
 }

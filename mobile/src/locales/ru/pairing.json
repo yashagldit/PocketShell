@@ -47,5 +47,6 @@
   "scan_qr.instructions": "Запустите {{command}} на вашем хосте, затем наведите камеру на QR-код.",
   "scan_qr.pairing_success": "Связано с {{host}}",
   "scan_qr.add_device_success": "Устройство добавлено к {{host}}",
-  "scan_qr.pair_failed": "Ошибка сопряжения хоста"
+  "scan_qr.pair_failed": "Ошибка сопряжения хоста",
+  "ownership_disclosure": "Подключайте только те хосты, которыми вы владеете или к которым у вас есть права доступа."
 }

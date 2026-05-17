@@ -75,5 +75,21 @@
   "switcher.retry": "Повторить",
   "switcher.noProject": "Нет проекта",
   "switcher.upgrade_one": "{{count}} чат ещё — обновитесь на PocketShell Pro для просмотра",
-  "switcher.upgrade_other": "{{count}} чатов ещё — обновитесь на PocketShell Pro для просмотра"
+  "switcher.upgrade_other": "{{count}} чатов ещё — обновитесь на PocketShell Pro для просмотра",
+  "changes.title": "Изменения",
+  "changes.no_changes_yet": "Пока нет изменений",
+  "changes.file_count_one": "{{count}} файл",
+  "changes.file_count_other": "{{count}} файлов",
+  "changes.empty": "Когда агент будет редактировать файлы, они появятся здесь.",
+  "changes.edits_count_one": "{{count}} правка",
+  "changes.edits_count_other": "{{count}} правок",
+  "changes.open_file_a11y": "Открыть {{name}}",
+  "diff.title": "Diff",
+  "diff.eyebrow": "Изменение агента",
+  "diff.empty": "Для этого вызова инструмента нет diff.",
+  "diff.done": "Готово",
+  "diff.truncation_note": "В приложении показан сокращённый diff.",
+  "diff.hunk_truncated": "... ещё строки скрыты",
+  "diff.file_count_one": "{{count}} файл",
+  "diff.file_count_other": "{{count}} файлов"
 }

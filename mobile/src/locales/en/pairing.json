@@ -47,5 +47,6 @@
   "scan_qr.instructions": "Run {{command}} on your host, then point your camera at the QR code.",
   "scan_qr.pairing_success": "Paired with {{host}}",
   "scan_qr.add_device_success": "Added device to {{host}}",
-  "scan_qr.pair_failed": "Failed to pair host"
+  "scan_qr.pair_failed": "Failed to pair host",
+  "ownership_disclosure": "Only pair hosts you own or are authorized to access."
 }

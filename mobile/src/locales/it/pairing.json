@@ -47,5 +47,6 @@
   "scan_qr.instructions": "Esegui {{command}} sul tuo host, quindi inquadra il codice QR con la fotocamera.",
   "scan_qr.pairing_success": "Associato con {{host}}",
   "scan_qr.add_device_success": "Dispositivo aggiunto a {{host}}",
-  "scan_qr.pair_failed": "Associazione host fallita"
+  "scan_qr.pair_failed": "Associazione host fallita",
+  "ownership_disclosure": "Associa solo host che possiedi o a cui sei autorizzato ad accedere."
 }

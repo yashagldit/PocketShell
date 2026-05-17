@@ -214,5 +214,8 @@
   "metric_detail.fs.avg": "Ср",
   "metric_detail.fs.peak": "Пик",
   "metric_detail.fs.min": "Мин",
-  "metric_detail.fs.all": "Все"
+  "metric_detail.fs.all": "Все",
+  "advancedDisk.read": "Чтение",
+  "advancedDisk.write": "Запись",
+  "advancedDisk.storage": "Хранилище"
 }

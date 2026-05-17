@@ -132,5 +132,21 @@
   "viewer.truncated": "TRONCATO",
   "viewer.text_default": "TESTO",
   "viewer.lines_one": "{{count}} riga",
-  "viewer.lines_other": "{{count}} righe"
+  "viewer.lines_other": "{{count}} righe",
+  "button.edit": "Modifica",
+  "viewer.modified": "MODIFICATO",
+  "viewer.could_not_save_edit": "Impossibile salvare le modifiche",
+  "viewer.discard_title": "Annullare le modifiche?",
+  "viewer.discard_message": "Le modifiche non sono ancora state caricate sull'host.",
+  "viewer.discard": "Annulla",
+  "viewer.keep_editing": "Continua a modificare",
+  "viewer.leave_while_saving_title": "Salvataggio in corso…",
+  "viewer.leave_while_saving_message": "Uscire ora annullerà il caricamento. Le modifiche non saranno salvate sull'host.",
+  "alert.transfer_in_progress_title": "Caricamento in corso",
+  "alert.transfer_in_progress_msg": "Uscire annullerà tutti i caricamenti o trasferimenti attivi verso questo host.",
+  "alert.stay": "Resta",
+  "alert.leave_and_cancel": "Esci",
+  "rename_modal.title": "Rinomina",
+  "rename_modal.cancel": "Annulla",
+  "rename_modal.confirm": "Rinomina"
 }

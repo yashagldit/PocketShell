@@ -28,7 +28,6 @@
   "binary_cannot_display": "このファイルはテキストとして表示できません",
   "download_file": "ファイルをダウンロード",
   "failed_to_load": "ファイルの読み込みに失敗しました",
-
   "action.open": "開く",
   "action.open_folder": "フォルダを開く",
   "action.copy": "コピー",
@@ -36,11 +35,9 @@
   "action.copy_path": "パスをコピー",
   "action.rename": "名前を変更",
   "action.delete": "削除",
-
   "meta.directory": "ディレクトリ",
   "meta.folder": "フォルダ",
   "meta.symlink": "シンボリックリンク",
-
   "group_title.folders": "フォルダ",
   "group_title.images": "画像",
   "group_title.code": "コード",
@@ -59,12 +56,10 @@
   "group_title.this_year": "今年",
   "group_title.older": "それ以前",
   "group_title.unknown": "不明",
-
   "placeholder.filter": "ファイルを絞り込み（例: *.pdf, config*）...",
   "placeholder.folder_name": "フォルダ名...",
   "placeholder.file_name": "ファイル名...",
   "placeholder.file_content": "ファイルの内容（任意）...",
-
   "button.create": "作成",
   "button.retry": "再試行",
   "button.deep": "詳細検索",
@@ -72,23 +67,18 @@
   "button.save": "保存",
   "button.saving": "保存中",
   "button.save_dialog_title": "{{name}} を保存",
-
   "status.starting_session": "ファイルセッションを開始しています...",
   "status.loading_directory": "ディレクトリを読み込んでいます...",
   "status.establishing_transfer": "転送チャネルを確立しています",
   "status.establishing_transfer_ellipsis": "転送を確立しています...",
   "status.waiting_to_start": "開始を待機中",
   "status.transfer_from": "{{host}} から転送",
-
   "empty.title": "空のディレクトリ",
   "empty.no_match": "検索条件に一致するファイルはありません",
   "empty.no_files": "このディレクトリにはファイルがありません",
-
   "paste.move": "移動",
-
   "upload_files_one": "ファイルをアップロード",
   "upload_files_other": "ファイルをアップロード",
-
   "alert.delete_title": "削除しますか？",
   "alert.delete_message": "{{name}} を削除しますか？",
   "alert.error": "エラー",
@@ -132,7 +122,6 @@
   "alert.permission_denied": "権限が拒否されました",
   "alert.photo_permission_msg": "画像を選択するには写真ライブラリの権限が必要です。",
   "alert.failed_to_list": "ディレクトリの一覧取得に失敗しました",
-
   "viewer.file_fallback": "ファイル",
   "viewer.loading_file": "{{name}} を読み込み中",
   "viewer.share_failed": "共有に失敗しました",
@@ -143,5 +132,21 @@
   "viewer.truncated": "切り詰め",
   "viewer.text_default": "TEXT",
   "viewer.lines_one": "{{count}}行",
-  "viewer.lines_other": "{{count}}行"
+  "viewer.lines_other": "{{count}}行",
+  "button.edit": "編集",
+  "viewer.modified": "変更済み",
+  "viewer.could_not_save_edit": "変更を保存できませんでした",
+  "viewer.discard_title": "変更を破棄しますか？",
+  "viewer.discard_message": "編集内容はまだホストにアップロードされていません。",
+  "viewer.discard": "破棄",
+  "viewer.keep_editing": "編集を続ける",
+  "viewer.leave_while_saving_title": "変更を保存中…",
+  "viewer.leave_while_saving_message": "今離れるとアップロードがキャンセルされ、変更はホストに保存されません。",
+  "alert.transfer_in_progress_title": "アップロード中",
+  "alert.transfer_in_progress_msg": "退出すると、このホストへのアクティブなアップロードや転送はすべてキャンセルされます。",
+  "alert.stay": "とどまる",
+  "alert.leave_and_cancel": "退出",
+  "rename_modal.title": "名前を変更",
+  "rename_modal.cancel": "キャンセル",
+  "rename_modal.confirm": "名前を変更"
 }

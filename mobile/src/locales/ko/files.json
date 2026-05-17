@@ -132,5 +132,21 @@
   "viewer.truncated": "잘림",
   "viewer.text_default": "텍스트",
   "viewer.lines_one": "{{count}}줄",
-  "viewer.lines_other": "{{count}}줄"
+  "viewer.lines_other": "{{count}}줄",
+  "button.edit": "편집",
+  "viewer.modified": "수정됨",
+  "viewer.could_not_save_edit": "변경 사항을 저장할 수 없습니다",
+  "viewer.discard_title": "변경 사항을 취소할까요?",
+  "viewer.discard_message": "편집한 내용이 아직 호스트에 업로드되지 않았습니다.",
+  "viewer.discard": "취소",
+  "viewer.keep_editing": "계속 편집",
+  "viewer.leave_while_saving_title": "변경 사항을 저장하는 중…",
+  "viewer.leave_while_saving_message": "지금 나가면 업로드가 취소되고 변경 사항이 호스트에 저장되지 않습니다.",
+  "alert.transfer_in_progress_title": "업로드 중",
+  "alert.transfer_in_progress_msg": "나가면 이 호스트로 진행 중인 모든 업로드 또는 전송이 취소됩니다.",
+  "alert.stay": "머무르기",
+  "alert.leave_and_cancel": "나가기",
+  "rename_modal.title": "이름 변경",
+  "rename_modal.cancel": "취소",
+  "rename_modal.confirm": "이름 변경"
 }

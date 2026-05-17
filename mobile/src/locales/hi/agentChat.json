@@ -75,5 +75,21 @@
   "switcher.retry": "दोबारा कोशिश करें",
   "switcher.noProject": "कोई प्रोजेक्ट नहीं",
   "switcher.upgrade_one": "{{count}} अतिरिक्त चैट — देखने के लिए PocketShell Pro में अपग्रेड करें",
-  "switcher.upgrade_other": "{{count}} अतिरिक्त चैट — देखने के लिए PocketShell Pro में अपग्रेड करें"
+  "switcher.upgrade_other": "{{count}} अतिरिक्त चैट — देखने के लिए PocketShell Pro में अपग्रेड करें",
+  "changes.title": "परिवर्तन",
+  "changes.no_changes_yet": "अभी कोई परिवर्तन नहीं",
+  "changes.file_count_one": "{{count}} फ़ाइल",
+  "changes.file_count_other": "{{count}} फ़ाइलें",
+  "changes.empty": "जब एजेंट फ़ाइलें संपादित करेगा, वे यहाँ दिखेंगी।",
+  "changes.edits_count_one": "{{count}} संपादन",
+  "changes.edits_count_other": "{{count}} संपादन",
+  "changes.open_file_a11y": "{{name}} खोलें",
+  "diff.title": "डिफ़",
+  "diff.eyebrow": "एजेंट परिवर्तन",
+  "diff.empty": "इस टूल कॉल के लिए कोई डिफ़ उपलब्ध नहीं है।",
+  "diff.done": "पूर्ण",
+  "diff.truncation_note": "ऐप में सीमित डिफ़ पूर्वावलोकन दिखाया जा रहा है।",
+  "diff.hunk_truncated": "... और पंक्तियाँ छिपी हैं",
+  "diff.file_count_one": "{{count}} फ़ाइल",
+  "diff.file_count_other": "{{count}} फ़ाइलें"
 }

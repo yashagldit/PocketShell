@@ -75,5 +75,21 @@
   "switcher.retry": "Reintentar",
   "switcher.noProject": "Sin proyecto",
   "switcher.upgrade_one": "{{count}} chat más — actualiza a PocketShell Pro para ver",
-  "switcher.upgrade_other": "{{count}} chats más — actualiza a PocketShell Pro para ver"
+  "switcher.upgrade_other": "{{count}} chats más — actualiza a PocketShell Pro para ver",
+  "changes.title": "Cambios",
+  "changes.no_changes_yet": "Sin cambios aún",
+  "changes.file_count_one": "{{count}} archivo",
+  "changes.file_count_other": "{{count}} archivos",
+  "changes.empty": "Cuando el agente edite archivos, aparecerán aquí.",
+  "changes.edits_count_one": "{{count}} edición",
+  "changes.edits_count_other": "{{count}} ediciones",
+  "changes.open_file_a11y": "Abrir {{name}}",
+  "diff.title": "Diff",
+  "diff.eyebrow": "Cambio del agente",
+  "diff.empty": "No hay diff disponible para esta llamada.",
+  "diff.done": "Listo",
+  "diff.truncation_note": "Mostrando una vista previa limitada del diff.",
+  "diff.hunk_truncated": "... más líneas ocultas",
+  "diff.file_count_one": "{{count}} archivo",
+  "diff.file_count_other": "{{count}} archivos"
 }

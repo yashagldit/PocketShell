@@ -132,5 +132,21 @@
   "viewer.truncated": "已截斷",
   "viewer.text_default": "文本",
   "viewer.lines_one": "{{count}} 行",
-  "viewer.lines_other": "{{count}} 行"
+  "viewer.lines_other": "{{count}} 行",
+  "button.edit": "編輯",
+  "viewer.modified": "已修改",
+  "viewer.could_not_save_edit": "無法儲存變更",
+  "viewer.discard_title": "放棄變更？",
+  "viewer.discard_message": "您的編輯尚未上傳到主機。",
+  "viewer.discard": "放棄",
+  "viewer.keep_editing": "繼續編輯",
+  "viewer.leave_while_saving_title": "正在儲存變更…",
+  "viewer.leave_while_saving_message": "現在離開將取消上傳，您的變更不會儲存到主機。",
+  "alert.transfer_in_progress_title": "上傳中",
+  "alert.transfer_in_progress_msg": "離開將取消向此主機進行的所有活動上傳或傳輸。",
+  "alert.stay": "留在此處",
+  "alert.leave_and_cancel": "離開",
+  "rename_modal.title": "重新命名",
+  "rename_modal.cancel": "取消",
+  "rename_modal.confirm": "重新命名"
 }

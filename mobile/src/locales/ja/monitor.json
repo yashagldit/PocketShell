@@ -214,5 +214,8 @@
   "metric_detail.fs.avg": "平均",
   "metric_detail.fs.peak": "ピーク",
   "metric_detail.fs.min": "最小",
-  "metric_detail.fs.all": "すべて"
+  "metric_detail.fs.all": "すべて",
+  "advancedDisk.read": "読み込み",
+  "advancedDisk.write": "書き込み",
+  "advancedDisk.storage": "ストレージ"
 }

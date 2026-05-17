@@ -86,5 +86,9 @@
   "delete_account_otp_resend": "重新发送代码",
   "delete_account_otp_sent": "代码已发送 — 请检查你的邮箱。",
   "delete_account_otp_send_failed": "无法发送代码。请重试。",
-  "delete_account_otp_invalid": "该代码无效。请检查你的邮箱并重试。"
+  "delete_account_otp_invalid": "该代码无效。请检查你的邮箱并重试。",
+  "pro_card.active_renews": "有效 · {{date}} 续订",
+  "pro_card.active_subscription": "有效订阅",
+  "pro_card.active_pill": "有效",
+  "pro_card.manage_subscription": "管理订阅"
 }

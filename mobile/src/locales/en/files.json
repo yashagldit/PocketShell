@@ -28,7 +28,6 @@
   "binary_cannot_display": "This file cannot be displayed as text",
   "download_file": "Download File",
   "failed_to_load": "Failed to load file",
-
   "action.open": "Open",
   "action.open_folder": "Open Folder",
   "action.copy": "Copy",
@@ -36,11 +35,9 @@
   "action.copy_path": "Copy Path",
   "action.rename": "Rename",
   "action.delete": "Delete",
-
   "meta.directory": "Directory",
   "meta.folder": "Folder",
   "meta.symlink": "symlink",
-
   "group_title.folders": "Folders",
   "group_title.images": "Images",
   "group_title.code": "Code",
@@ -59,12 +56,10 @@
   "group_title.this_year": "This year",
   "group_title.older": "Older",
   "group_title.unknown": "Unknown",
-
   "placeholder.filter": "Filter files (e.g. *.pdf, config*)...",
   "placeholder.folder_name": "Folder name...",
   "placeholder.file_name": "File name...",
   "placeholder.file_content": "File content (optional)...",
-
   "button.create": "Create",
   "button.retry": "Retry",
   "button.deep": "Deep",
@@ -73,23 +68,18 @@
   "button.saving": "Saving",
   "button.save_dialog_title": "Save {{name}}",
   "button.edit": "Edit",
-
   "status.starting_session": "Starting file session...",
   "status.loading_directory": "Loading directory...",
   "status.establishing_transfer": "Establishing transfer channel",
   "status.establishing_transfer_ellipsis": "Establishing transfer...",
   "status.waiting_to_start": "Waiting to start",
   "status.transfer_from": "Transfer from {{host}}",
-
   "empty.title": "Empty directory",
   "empty.no_match": "No files match your search",
   "empty.no_files": "This directory has no files",
-
   "paste.move": "Move",
-
   "upload_files_one": "Upload File",
   "upload_files_other": "Upload Files",
-
   "alert.delete_title": "Delete?",
   "alert.delete_message": "Delete {{name}}?",
   "alert.error": "Error",
@@ -133,7 +123,6 @@
   "alert.permission_denied": "Permission Denied",
   "alert.photo_permission_msg": "Photo library permission is required to select images.",
   "alert.failed_to_list": "Failed to list directory",
-
   "viewer.file_fallback": "File",
   "viewer.loading_file": "Loading {{name}}",
   "viewer.share_failed": "Share Failed",
@@ -156,5 +145,8 @@
   "alert.transfer_in_progress_title": "Upload in progress",
   "alert.transfer_in_progress_msg": "Leaving will cancel any active uploads or transfers to this host.",
   "alert.stay": "Stay",
-  "alert.leave_and_cancel": "Leave"
+  "alert.leave_and_cancel": "Leave",
+  "rename_modal.title": "Rename",
+  "rename_modal.cancel": "Cancel",
+  "rename_modal.confirm": "Rename"
 }

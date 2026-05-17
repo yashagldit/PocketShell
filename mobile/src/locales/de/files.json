@@ -28,7 +28,6 @@
   "binary_cannot_display": "Diese Datei kann nicht als Text angezeigt werden",
   "download_file": "Datei herunterladen",
   "failed_to_load": "Datei konnte nicht geladen werden",
-
   "action.open": "Öffnen",
   "action.open_folder": "Ordner öffnen",
   "action.copy": "Kopieren",
@@ -36,11 +35,9 @@
   "action.copy_path": "Pfad kopieren",
   "action.rename": "Umbenennen",
   "action.delete": "Löschen",
-
   "meta.directory": "Verzeichnis",
   "meta.folder": "Ordner",
   "meta.symlink": "Symlink",
-
   "group_title.folders": "Ordner",
   "group_title.images": "Bilder",
   "group_title.code": "Code",
@@ -59,12 +56,10 @@
   "group_title.this_year": "Dieses Jahr",
   "group_title.older": "Älter",
   "group_title.unknown": "Unbekannt",
-
   "placeholder.filter": "Dateien filtern (z. B. *.pdf, config*)...",
   "placeholder.folder_name": "Ordnername...",
   "placeholder.file_name": "Dateiname...",
   "placeholder.file_content": "Dateiinhalt (optional)...",
-
   "button.create": "Erstellen",
   "button.retry": "Erneut versuchen",
   "button.deep": "Tief",
@@ -72,23 +67,18 @@
   "button.save": "Speichern",
   "button.saving": "Speichere",
   "button.save_dialog_title": "{{name}} speichern",
-
   "status.starting_session": "Dateisitzung wird gestartet...",
   "status.loading_directory": "Verzeichnis wird geladen...",
   "status.establishing_transfer": "Übertragungskanal wird aufgebaut",
   "status.establishing_transfer_ellipsis": "Übertragung wird aufgebaut...",
   "status.waiting_to_start": "Warte auf Start",
   "status.transfer_from": "Übertragung von {{host}}",
-
   "empty.title": "Leeres Verzeichnis",
   "empty.no_match": "Keine Dateien entsprechen deiner Suche",
   "empty.no_files": "Dieses Verzeichnis enthält keine Dateien",
-
   "paste.move": "Verschieben",
-
   "upload_files_one": "Datei hochladen",
   "upload_files_other": "Dateien hochladen",
-
   "alert.delete_title": "Löschen?",
   "alert.delete_message": "{{name}} löschen?",
   "alert.error": "Fehler",
@@ -132,7 +122,6 @@
   "alert.permission_denied": "Berechtigung verweigert",
   "alert.photo_permission_msg": "Zum Auswählen von Bildern ist die Berechtigung für die Fotomediathek erforderlich.",
   "alert.failed_to_list": "Verzeichnis konnte nicht aufgelistet werden",
-
   "viewer.file_fallback": "Datei",
   "viewer.loading_file": "{{name}} wird geladen",
   "viewer.share_failed": "Teilen fehlgeschlagen",
@@ -143,5 +132,21 @@
   "viewer.truncated": "GEKÜRZT",
   "viewer.text_default": "TEXT",
   "viewer.lines_one": "{{count}} Zeile",
-  "viewer.lines_other": "{{count}} Zeilen"
+  "viewer.lines_other": "{{count}} Zeilen",
+  "button.edit": "Bearbeiten",
+  "viewer.modified": "GEÄNDERT",
+  "viewer.could_not_save_edit": "Änderungen konnten nicht gespeichert werden",
+  "viewer.discard_title": "Änderungen verwerfen?",
+  "viewer.discard_message": "Ihre Änderungen wurden noch nicht auf den Host hochgeladen.",
+  "viewer.discard": "Verwerfen",
+  "viewer.keep_editing": "Weiter bearbeiten",
+  "viewer.leave_while_saving_title": "Wird gespeichert …",
+  "viewer.leave_while_saving_message": "Beim Verlassen wird der Upload abgebrochen. Ihre Änderungen werden nicht auf dem Host gespeichert.",
+  "alert.transfer_in_progress_title": "Upload läuft",
+  "alert.transfer_in_progress_msg": "Beim Verlassen werden alle aktiven Uploads oder Übertragungen zu diesem Host abgebrochen.",
+  "alert.stay": "Bleiben",
+  "alert.leave_and_cancel": "Verlassen",
+  "rename_modal.title": "Umbenennen",
+  "rename_modal.cancel": "Abbrechen",
+  "rename_modal.confirm": "Umbenennen"
 }

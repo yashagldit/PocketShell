@@ -86,5 +86,9 @@
   "delete_account_otp_resend": "코드 재전송",
   "delete_account_otp_sent": "코드가 전송되었습니다 — 이메일을 확인하세요.",
   "delete_account_otp_send_failed": "코드를 전송할 수 없습니다. 다시 시도하세요.",
-  "delete_account_otp_invalid": "해당 코드가 작동하지 않습니다. 이메일을 확인하고 다시 시도하세요."
+  "delete_account_otp_invalid": "해당 코드가 작동하지 않습니다. 이메일을 확인하고 다시 시도하세요.",
+  "pro_card.active_renews": "활성 · {{date}}에 갱신",
+  "pro_card.active_subscription": "활성 구독",
+  "pro_card.active_pill": "활성",
+  "pro_card.manage_subscription": "구독 관리"
 }

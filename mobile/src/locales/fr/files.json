@@ -132,5 +132,21 @@
   "viewer.truncated": "TRONQUÉ",
   "viewer.text_default": "TEXTE",
   "viewer.lines_one": "{{count}} ligne",
-  "viewer.lines_other": "{{count}} lignes"
+  "viewer.lines_other": "{{count}} lignes",
+  "button.edit": "Modifier",
+  "viewer.modified": "MODIFIÉ",
+  "viewer.could_not_save_edit": "Impossible d'enregistrer les modifications",
+  "viewer.discard_title": "Annuler les modifications ?",
+  "viewer.discard_message": "Vos modifications n'ont pas encore été envoyées vers l'hôte.",
+  "viewer.discard": "Annuler",
+  "viewer.keep_editing": "Continuer à modifier",
+  "viewer.leave_while_saving_title": "Enregistrement en cours…",
+  "viewer.leave_while_saving_message": "Quitter maintenant annulera l'envoi. Vos modifications ne seront pas sauvegardées sur l'hôte.",
+  "alert.transfer_in_progress_title": "Envoi en cours",
+  "alert.transfer_in_progress_msg": "Quitter annulera tous les envois ou transferts actifs vers cet hôte.",
+  "alert.stay": "Rester",
+  "alert.leave_and_cancel": "Quitter",
+  "rename_modal.title": "Renommer",
+  "rename_modal.cancel": "Annuler",
+  "rename_modal.confirm": "Renommer"
 }

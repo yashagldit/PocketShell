@@ -132,5 +132,21 @@
   "viewer.truncated": "RECORTADO",
   "viewer.text_default": "TEXTO",
   "viewer.lines_one": "{{count}} línea",
-  "viewer.lines_other": "{{count}} líneas"
+  "viewer.lines_other": "{{count}} líneas",
+  "button.edit": "Editar",
+  "viewer.modified": "MODIFICADO",
+  "viewer.could_not_save_edit": "No se pudieron guardar los cambios",
+  "viewer.discard_title": "¿Descartar cambios?",
+  "viewer.discard_message": "Tus ediciones aún no se han subido al host.",
+  "viewer.discard": "Descartar",
+  "viewer.keep_editing": "Seguir editando",
+  "viewer.leave_while_saving_title": "Guardando cambios…",
+  "viewer.leave_while_saving_message": "Si sales ahora, se cancelará la subida. Tus ediciones no se guardarán en el host.",
+  "alert.transfer_in_progress_title": "Subida en curso",
+  "alert.transfer_in_progress_msg": "Si sales, se cancelarán todas las subidas o transferencias activas a este host.",
+  "alert.stay": "Quedarse",
+  "alert.leave_and_cancel": "Salir",
+  "rename_modal.title": "Renombrar",
+  "rename_modal.cancel": "Cancelar",
+  "rename_modal.confirm": "Renombrar"
 }

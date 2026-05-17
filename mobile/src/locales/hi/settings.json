@@ -86,5 +86,9 @@
   "delete_account_otp_resend": "कोड फिर से भेजें",
   "delete_account_otp_sent": "कोड भेज दिया गया — अपने ईमेल की जांच करें।",
   "delete_account_otp_send_failed": "कोड भेजा नहीं जा सका। कृपया फिर से कोशिश करें।",
-  "delete_account_otp_invalid": "वह कोड काम नहीं आया। अपने ईमेल को जांचें और फिर से कोशिश करें।"
+  "delete_account_otp_invalid": "वह कोड काम नहीं आया। अपने ईमेल को जांचें और फिर से कोशिश करें।",
+  "pro_card.active_renews": "सक्रिय · {{date}} को नवीनीकरण",
+  "pro_card.active_subscription": "सक्रिय सदस्यता",
+  "pro_card.active_pill": "सक्रिय",
+  "pro_card.manage_subscription": "सदस्यता प्रबंधित करें"
 }

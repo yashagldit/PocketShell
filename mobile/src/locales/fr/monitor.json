@@ -214,5 +214,8 @@
   "metric_detail.fs.avg": "Moy",
   "metric_detail.fs.peak": "Pic",
   "metric_detail.fs.min": "Min",
-  "metric_detail.fs.all": "Tout"
+  "metric_detail.fs.all": "Tout",
+  "advancedDisk.read": "Lecture",
+  "advancedDisk.write": "Écriture",
+  "advancedDisk.storage": "Stockage"
 }

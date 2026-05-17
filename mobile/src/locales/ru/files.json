@@ -132,5 +132,21 @@
   "viewer.truncated": "ОБРЕЗАНО",
   "viewer.text_default": "ТЕКСТ",
   "viewer.lines_one": "{{count}} строка",
-  "viewer.lines_other": "{{count}} строк"
+  "viewer.lines_other": "{{count}} строк",
+  "button.edit": "Изменить",
+  "viewer.modified": "ИЗМЕНЕНО",
+  "viewer.could_not_save_edit": "Не удалось сохранить изменения",
+  "viewer.discard_title": "Отменить изменения?",
+  "viewer.discard_message": "Ваши изменения ещё не загружены на хост.",
+  "viewer.discard": "Отменить",
+  "viewer.keep_editing": "Продолжить редактирование",
+  "viewer.leave_while_saving_title": "Сохранение изменений…",
+  "viewer.leave_while_saving_message": "Если выйти сейчас, загрузка отменится и изменения не сохранятся на хосте.",
+  "alert.transfer_in_progress_title": "Идёт загрузка",
+  "alert.transfer_in_progress_msg": "При выходе все активные загрузки и передачи на этот хост будут отменены.",
+  "alert.stay": "Остаться",
+  "alert.leave_and_cancel": "Выйти",
+  "rename_modal.title": "Переименовать",
+  "rename_modal.cancel": "Отмена",
+  "rename_modal.confirm": "Переименовать"
 }

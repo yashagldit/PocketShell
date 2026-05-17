@@ -86,5 +86,9 @@
   "delete_account_otp_resend": "Resend code",
   "delete_account_otp_sent": "Code sent — check your email.",
   "delete_account_otp_send_failed": "Couldn't send the code. Please try again.",
-  "delete_account_otp_invalid": "That code didn't work. Check your email and try again."
+  "delete_account_otp_invalid": "That code didn't work. Check your email and try again.",
+  "pro_card.active_renews": "Active · renews {{date}}",
+  "pro_card.active_subscription": "Active subscription",
+  "pro_card.active_pill": "Active",
+  "pro_card.manage_subscription": "Manage subscription"
 }

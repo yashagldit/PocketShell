@@ -132,5 +132,21 @@
   "viewer.truncated": "已截断",
   "viewer.text_default": "文本",
   "viewer.lines_one": "{{count}} 行",
-  "viewer.lines_other": "{{count}} 行"
+  "viewer.lines_other": "{{count}} 行",
+  "button.edit": "编辑",
+  "viewer.modified": "已修改",
+  "viewer.could_not_save_edit": "无法保存更改",
+  "viewer.discard_title": "放弃更改？",
+  "viewer.discard_message": "您的编辑尚未上传到主机。",
+  "viewer.discard": "放弃",
+  "viewer.keep_editing": "继续编辑",
+  "viewer.leave_while_saving_title": "正在保存更改…",
+  "viewer.leave_while_saving_message": "现在离开将取消上传，您的更改不会保存到主机。",
+  "alert.transfer_in_progress_title": "上传中",
+  "alert.transfer_in_progress_msg": "离开将取消向此主机的所有活动上传或传输。",
+  "alert.stay": "留在此处",
+  "alert.leave_and_cancel": "离开",
+  "rename_modal.title": "重命名",
+  "rename_modal.cancel": "取消",
+  "rename_modal.confirm": "重命名"
 }

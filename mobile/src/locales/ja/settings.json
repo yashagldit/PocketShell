@@ -86,5 +86,9 @@
   "delete_account_otp_resend": "コードを再送信",
   "delete_account_otp_sent": "コード送信完了 — メールをご確認ください。",
   "delete_account_otp_send_failed": "コードを送信できませんでした。もう一度お試しください。",
-  "delete_account_otp_invalid": "そのコードは機能しませんでした。メールを確認して、もう一度お試しください。"
+  "delete_account_otp_invalid": "そのコードは機能しませんでした。メールを確認して、もう一度お試しください。",
+  "pro_card.active_renews": "有効 · {{date}}に更新",
+  "pro_card.active_subscription": "有効なサブスクリプション",
+  "pro_card.active_pill": "有効",
+  "pro_card.manage_subscription": "サブスクリプションを管理"
 }

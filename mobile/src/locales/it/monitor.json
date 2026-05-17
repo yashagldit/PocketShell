@@ -214,5 +214,8 @@
   "metric_detail.fs.avg": "Media",
   "metric_detail.fs.peak": "Picco",
   "metric_detail.fs.min": "Min",
-  "metric_detail.fs.all": "Tutti"
+  "metric_detail.fs.all": "Tutti",
+  "advancedDisk.read": "Lettura",
+  "advancedDisk.write": "Scrittura",
+  "advancedDisk.storage": "Spazio"
 }

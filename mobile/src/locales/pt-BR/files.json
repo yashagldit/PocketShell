@@ -132,5 +132,21 @@
   "viewer.truncated": "TRUNCADO",
   "viewer.text_default": "TEXTO",
   "viewer.lines_one": "{{count}} linha",
-  "viewer.lines_other": "{{count}} linhas"
+  "viewer.lines_other": "{{count}} linhas",
+  "button.edit": "Editar",
+  "viewer.modified": "MODIFICADO",
+  "viewer.could_not_save_edit": "Não foi possível salvar as alterações",
+  "viewer.discard_title": "Descartar alterações?",
+  "viewer.discard_message": "Suas edições ainda não foram enviadas ao host.",
+  "viewer.discard": "Descartar",
+  "viewer.keep_editing": "Continuar editando",
+  "viewer.leave_while_saving_title": "Salvando alterações…",
+  "viewer.leave_while_saving_message": "Sair agora cancelará o envio. Suas edições não serão salvas no host.",
+  "alert.transfer_in_progress_title": "Envio em andamento",
+  "alert.transfer_in_progress_msg": "Sair cancelará qualquer envio ou transferência ativa para este host.",
+  "alert.stay": "Ficar",
+  "alert.leave_and_cancel": "Sair",
+  "rename_modal.title": "Renomear",
+  "rename_modal.cancel": "Cancelar",
+  "rename_modal.confirm": "Renomear"
 }

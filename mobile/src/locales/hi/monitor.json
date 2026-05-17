@@ -214,5 +214,8 @@
   "metric_detail.fs.avg": "औसत",
   "metric_detail.fs.peak": "पीक",
   "metric_detail.fs.min": "न्यूनतम",
-  "metric_detail.fs.all": "सभी"
+  "metric_detail.fs.all": "सभी",
+  "advancedDisk.read": "पठन",
+  "advancedDisk.write": "लेखन",
+  "advancedDisk.storage": "भंडारण"
 }

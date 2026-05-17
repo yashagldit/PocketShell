@@ -214,5 +214,8 @@
   "metric_detail.fs.avg": "평균",
   "metric_detail.fs.peak": "최대",
   "metric_detail.fs.min": "최소",
-  "metric_detail.fs.all": "전체"
+  "metric_detail.fs.all": "전체",
+  "advancedDisk.read": "읽기",
+  "advancedDisk.write": "쓰기",
+  "advancedDisk.storage": "저장 공간"
 }

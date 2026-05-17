@@ -75,5 +75,21 @@
   "switcher.retry": "再試行",
   "switcher.noProject": "プロジェクトなし",
   "switcher.upgrade_one": "{{count}}個のチャット — PocketShell Proにアップグレードして表示",
-  "switcher.upgrade_other": "{{count}}個のチャット — PocketShell Proにアップグレードして表示"
+  "switcher.upgrade_other": "{{count}}個のチャット — PocketShell Proにアップグレードして表示",
+  "changes.title": "変更",
+  "changes.no_changes_yet": "変更はまだありません",
+  "changes.file_count_one": "{{count}}ファイル",
+  "changes.file_count_other": "{{count}}ファイル",
+  "changes.empty": "エージェントがファイルを編集するとここに表示されます。",
+  "changes.edits_count_one": "{{count}}件の編集",
+  "changes.edits_count_other": "{{count}}件の編集",
+  "changes.open_file_a11y": "{{name}}を開く",
+  "diff.title": "差分",
+  "diff.eyebrow": "エージェントの変更",
+  "diff.empty": "このツール呼び出しに差分はありません。",
+  "diff.done": "完了",
+  "diff.truncation_note": "アプリ内では一部の差分のみ表示しています。",
+  "diff.hunk_truncated": "... 他の行は非表示",
+  "diff.file_count_one": "{{count}}ファイル",
+  "diff.file_count_other": "{{count}}ファイル"
 }

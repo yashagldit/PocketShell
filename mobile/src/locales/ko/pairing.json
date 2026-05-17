@@ -47,5 +47,6 @@
   "scan_qr.instructions": "호스트에서 {{command}}를 실행한 후 카메라로 QR 코드를 비추세요.",
   "scan_qr.pairing_success": "{{host}}와 페어링됨",
   "scan_qr.add_device_success": "{{host}}에 장치 추가됨",
-  "scan_qr.pair_failed": "호스트 페어링 실패"
+  "scan_qr.pair_failed": "호스트 페어링 실패",
+  "ownership_disclosure": "본인이 소유하거나 접근 권한이 있는 호스트만 페어링하세요."
 }

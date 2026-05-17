@@ -214,5 +214,8 @@
   "metric_detail.fs.avg": "Ø",
   "metric_detail.fs.peak": "Spitze",
   "metric_detail.fs.min": "Min",
-  "metric_detail.fs.all": "Alle"
+  "metric_detail.fs.all": "Alle",
+  "advancedDisk.read": "Lesen",
+  "advancedDisk.write": "Schreiben",
+  "advancedDisk.storage": "Speicher"
 }

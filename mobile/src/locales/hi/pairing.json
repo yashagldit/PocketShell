@@ -47,5 +47,6 @@
   "scan_qr.instructions": "अपने होस्ट पर {{command}} चलाएँ, फिर कैमरा को QR कोड पर लक्ष्य करें।",
   "scan_qr.pairing_success": "{{host}} से जुड़ गया",
   "scan_qr.add_device_success": "{{host}} में डिवाइस जोड़ा गया",
-  "scan_qr.pair_failed": "होस्ट जोड़ने में विफल"
+  "scan_qr.pair_failed": "होस्ट जोड़ने में विफल",
+  "ownership_disclosure": "केवल वे होस्ट जोड़ें जिनके आप मालिक हैं या जिन तक पहुँचने के लिए आप अधिकृत हैं।"
 }

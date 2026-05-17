@@ -47,5 +47,6 @@
   "scan_qr.instructions": "Führe {{command}} auf deinem Host aus und richte dann die Kamera auf den QR-Code.",
   "scan_qr.pairing_success": "Mit {{host}} gekoppelt",
   "scan_qr.add_device_success": "Gerät zu {{host}} hinzugefügt",
-  "scan_qr.pair_failed": "Kopplung fehlgeschlagen"
+  "scan_qr.pair_failed": "Kopplung fehlgeschlagen",
+  "ownership_disclosure": "Verbinde nur Hosts, die du besitzt oder zu deren Zugriff du berechtigt bist."
 }
