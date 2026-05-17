@@ -107,7 +107,7 @@ jobs:
         shell: bash
         run: |
           bin="target/$TARGET/release/pocketshell"
-          if ! strings "$bin" | grep -qF "$POCKETSHELL_DEFAULT_BACKEND_URL"; then
+          if ! strings -a "$bin" | grep -qF "$POCKETSHELL_DEFAULT_BACKEND_URL"; then
             echo "::error::Backend URL not found in compiled binary. option_env! injection failed."
             exit 1
           fi
