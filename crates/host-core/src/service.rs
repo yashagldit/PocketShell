@@ -39,7 +39,9 @@ fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> io::Result<ExitStat
 /// Result of a service install attempt.
 pub enum ServiceStatus {
     Installed,
+    InstalledSystem,
     InstalledWithoutBootPersistence,
+    InstalledButStartedDaemon,
     AlreadyRunning,
     StartedDaemon,
 }
@@ -222,12 +224,36 @@ fn systemd_unit_path() -> PathBuf {
     systemd_unit_dir().join(format!("{SYSTEMD_SERVICE}.service"))
 }
 
+fn harden_systemd_unit_permissions(path: &PathBuf) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(path)?.permissions();
+        perms.set_mode(0o644);
+        fs::set_permissions(path, perms)?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+    Ok(())
+}
+
 fn is_systemd_running() -> bool {
     Command::new("systemctl")
         .args(["--user", "is-active", "--quiet", SYSTEMD_SERVICE])
-        .status()
-        .map(|s| s.success())
+        .output()
+        .map(|o| o.status.success())
         .unwrap_or(false)
+        || systemd_system_service_name()
+            .map(|unit| {
+                Command::new("systemctl")
+                    .args(["is-active", "--quiet", &unit])
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false)
 }
 
 fn has_systemctl() -> bool {
@@ -236,6 +262,167 @@ fn has_systemctl() -> bool {
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
+}
+
+fn command_status_output(program: &str, args: &[&str]) -> io::Result<(ExitStatus, String)> {
+    let output = Command::new(program).args(args).output()?;
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    Ok((output.status, stderr))
+}
+
+fn current_user_name() -> Result<String> {
+    #[cfg(unix)]
+    {
+        let uid = nix::unistd::Uid::effective();
+        let user = nix::unistd::User::from_uid(uid)
+            .map_err(|e| HostError::Config(format!("resolve current user: {e}")))?
+            .ok_or_else(|| HostError::Config(format!("no passwd entry for uid {}", uid.as_raw())))?;
+        Ok(user.name)
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(std::env::var("USER").unwrap_or_else(|_| "unknown".to_string()))
+    }
+}
+
+fn systemd_unit_name_component(user: &str) -> Result<String> {
+    if user == "root" {
+        return Err(HostError::Config(
+            "refusing to install root-managed service for root user".into(),
+        ));
+    }
+    let mut out = String::new();
+    for ch in user.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+            out.push(ch);
+        } else {
+            out.push('-');
+        }
+    }
+    if out.is_empty() {
+        return Err(HostError::Config("current username is empty".into()));
+    }
+    Ok(out)
+}
+
+fn systemd_system_service_name() -> Option<String> {
+    let user = current_user_name().ok()?;
+    let component = systemd_unit_name_component(&user).ok()?;
+    Some(format!("pocketshell-host-agent-{component}.service"))
+}
+
+fn enable_systemd_unit_manually() -> Result<()> {
+    let unit_path = systemd_unit_path();
+    let wants_dir = systemd_unit_dir().join("default.target.wants");
+    fs::create_dir_all(&wants_dir)
+        .map_err(|e| HostError::Config(format!("create systemd wants dir: {e}")))?;
+
+    let link_path = wants_dir.join(format!("{SYSTEMD_SERVICE}.service"));
+    if link_path.exists() || link_path.is_symlink() {
+        fs::remove_file(&link_path)
+            .map_err(|e| HostError::Config(format!("remove stale systemd symlink: {e}")))?;
+    }
+
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&unit_path, &link_path)
+            .map_err(|e| HostError::Config(format!("enable systemd unit symlink: {e}")))?;
+    }
+    #[cfg(not(unix))]
+    {
+        fs::copy(&unit_path, &link_path)
+            .map_err(|e| HostError::Config(format!("enable systemd unit copy: {e}")))?;
+    }
+
+    info!("enabled systemd unit at {}", link_path.display());
+    Ok(())
+}
+
+fn install_systemd_system_service(exe_path: &str) -> Result<ServiceStatus> {
+    let user = current_user_name()?;
+    let component = systemd_unit_name_component(&user)?;
+    let unit_name = format!("pocketshell-host-agent-{component}.service");
+    let unit_path = format!("/etc/systemd/system/{unit_name}");
+    let home = dirs::home_dir()
+        .ok_or_else(|| HostError::Config("cannot resolve home directory".into()))?;
+    let home_path = home.to_string_lossy();
+
+    let unit = format!(
+        r#"[Unit]
+Description=PocketShell Host Agent ({user})
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={user}
+Environment=HOME={home_path}
+Environment=RUST_LOG=info
+ExecStart={exe_path} daemon run
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+"#
+    );
+
+    let tmp = std::env::temp_dir().join(format!(
+        "pocketshell-host-agent-{component}-{}.service",
+        std::process::id()
+    ));
+    fs::write(&tmp, unit.as_bytes())
+        .map_err(|e| HostError::Config(format!("write temp systemd unit: {e}")))?;
+    let _tmp_guard = TempFileGuard(tmp.clone());
+
+    let tmp_s = tmp.to_string_lossy().to_string();
+    run_privileged(
+        "install system service",
+        &["install", "-m", "0644", &tmp_s, &unit_path],
+    )?;
+    run_privileged("reload systemd", &["systemctl", "daemon-reload"])?;
+    run_privileged(
+        "enable and start system service",
+        &["systemctl", "enable", "--now", &unit_name],
+    )?;
+
+    info!("system service {} installed for user {}", unit_name, user);
+    Ok(ServiceStatus::InstalledSystem)
+}
+
+fn run_privileged(context: &str, args: &[&str]) -> Result<()> {
+    let mut cmd = if nix::unistd::Uid::effective().is_root() {
+        let mut c = Command::new(args[0]);
+        c.args(&args[1..]);
+        c
+    } else {
+        let mut c = Command::new("sudo");
+        c.args(args);
+        c
+    };
+    let output = cmd
+        .output()
+        .map_err(|e| HostError::Config(format!("{context}: {e}")))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    Err(HostError::Config(format!(
+        "{context} failed with status {}{}",
+        output.status,
+        if stderr.is_empty() {
+            String::new()
+        } else {
+            format!(": {stderr}")
+        }
+    )))
+}
+
+struct TempFileGuard(PathBuf);
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
 }
 
 fn install_systemd() -> Result<ServiceStatus> {
@@ -275,50 +462,76 @@ WantedBy=default.target
 
     let unit_path = systemd_unit_path();
     fs::write(&unit_path, &unit).map_err(|e| HostError::Config(format!("write unit file: {e}")))?;
+    harden_systemd_unit_permissions(&unit_path)
+        .map_err(|e| HostError::Config(format!("set unit permissions: {e}")))?;
 
     info!("wrote systemd unit to {}", unit_path.display());
 
     // Reload, enable, and start
-    let reload = Command::new("systemctl")
-        .args(["--user", "daemon-reload"])
-        .status();
-    if let Err(e) = reload {
-        warn!("systemctl daemon-reload failed: {e}");
+    match command_status_output("systemctl", &["--user", "daemon-reload"]) {
+        Ok((status, stderr)) if status.success() => {
+            if !stderr.is_empty() {
+                warn!("systemctl daemon-reload stderr: {stderr}");
+            }
+        }
+        Ok((status, stderr)) => {
+            warn!("systemctl daemon-reload exited with status {status}: {stderr}");
+        }
+        Err(e) => {
+            warn!("systemctl daemon-reload failed: {e}");
+        }
     }
 
     let mut boot_persistent = true;
 
-    let enable = Command::new("systemctl")
-        .args(["--user", "enable", SYSTEMD_SERVICE])
-        .status();
-    match enable {
-        Ok(status) if status.success() => {}
-        Ok(status) => {
+    match command_status_output("systemctl", &["--user", "enable", SYSTEMD_SERVICE]) {
+        Ok((status, stderr)) if status.success() => {
+            if !stderr.is_empty() {
+                warn!("systemctl enable stderr: {stderr}");
+            }
+        }
+        Ok((status, stderr)) => {
             boot_persistent = false;
-            warn!("systemctl enable exited with status {status}");
+            warn!("systemctl enable exited with status {status}: {stderr}");
+            enable_systemd_unit_manually()?;
         }
         Err(e) => {
             boot_persistent = false;
             warn!("systemctl enable failed: {e}");
+            enable_systemd_unit_manually()?;
         }
     }
 
-    let start = Command::new("systemctl")
-        .args(["--user", "start", SYSTEMD_SERVICE])
-        .status()
-        .map_err(|e| HostError::Config(format!("systemctl start: {e}")))?;
-
-    if !start.success() {
-        return Err(HostError::Config("systemctl start failed".into()));
+    let mut service_started = true;
+    match command_status_output("systemctl", &["--user", "start", SYSTEMD_SERVICE]) {
+        Ok((status, stderr)) if status.success() => {
+            if !stderr.is_empty() {
+                warn!("systemctl start stderr: {stderr}");
+            }
+        }
+        Ok((status, stderr)) => {
+            service_started = false;
+            boot_persistent = false;
+            warn!("systemctl start exited with status {status}: {stderr}");
+        }
+        Err(e) => {
+            service_started = false;
+            boot_persistent = false;
+            warn!("systemctl start failed: {e}");
+        }
     }
 
     // Enable lingering so the user service survives logout and starts before
     // the next interactive login on server installs.
-    match Command::new("loginctl").args(["enable-linger"]).status() {
-        Ok(status) if status.success() => {}
-        Ok(status) => {
+    match command_status_output("loginctl", &["enable-linger"]) {
+        Ok((status, stderr)) if status.success() => {
+            if !stderr.is_empty() {
+                warn!("loginctl enable-linger stderr: {stderr}");
+            }
+        }
+        Ok((status, stderr)) => {
             boot_persistent = false;
-            warn!("loginctl enable-linger exited with status {status}");
+            warn!("loginctl enable-linger exited with status {status}: {stderr}");
         }
         Err(e) => {
             boot_persistent = false;
@@ -326,7 +539,20 @@ WantedBy=default.target
         }
     }
 
-    if boot_persistent {
+    if !service_started {
+        match install_systemd_system_service(&exe_path) {
+            Ok(status) => Ok(status),
+            Err(e) => {
+                warn!(
+                    "root-managed systemd service install failed: {} — falling back to daemon start",
+                    e
+                );
+                start_daemon_process()?;
+                info!("systemd unit installed, but daemon was started as a background process");
+                Ok(ServiceStatus::InstalledButStartedDaemon)
+            }
+        }
+    } else if boot_persistent {
         info!("systemd user service enabled and started");
         Ok(ServiceStatus::Installed)
     } else {

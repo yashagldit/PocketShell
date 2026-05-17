@@ -391,9 +391,20 @@ async fn pair(config: AppConfig, code: Option<String>, reset: bool) -> Result<()
                 println!("daemon installed as a system service and started");
                 println!("it will auto-start on boot and restart on crash");
             }
+            Ok(host_core::service::ServiceStatus::InstalledSystem) => {
+                println!(" done");
+                println!("daemon installed as a boot service and started");
+                println!("it runs as this user, not root, and will auto-start on boot");
+            }
             Ok(host_core::service::ServiceStatus::InstalledWithoutBootPersistence) => {
                 println!(" done");
                 println!("daemon installed as a systemd user service and started");
+                print_boot_persistence_warning();
+            }
+            Ok(host_core::service::ServiceStatus::InstalledButStartedDaemon) => {
+                println!(" done");
+                println!("daemon service installed and enabled");
+                println!("daemon started in background because the systemd user bus is unavailable");
                 print_boot_persistence_warning();
             }
             Ok(host_core::service::ServiceStatus::AlreadyRunning) => {
@@ -625,9 +636,20 @@ async fn pair_qr_new_host(config: AppConfig, mut store: StateStore) -> Result<()
                 println!(" done");
                 println!("daemon installed as a system service and started");
             }
+            Ok(host_core::service::ServiceStatus::InstalledSystem) => {
+                println!(" done");
+                println!("daemon installed as a boot service and started");
+                println!("it runs as this user, not root, and will auto-start on boot");
+            }
             Ok(host_core::service::ServiceStatus::InstalledWithoutBootPersistence) => {
                 println!(" done");
                 println!("daemon installed as a systemd user service and started");
+                print_boot_persistence_warning();
+            }
+            Ok(host_core::service::ServiceStatus::InstalledButStartedDaemon) => {
+                println!(" done");
+                println!("daemon service installed and enabled");
+                println!("daemon started in background because the systemd user bus is unavailable");
                 print_boot_persistence_warning();
             }
             Ok(host_core::service::ServiceStatus::AlreadyRunning) => {
@@ -1063,9 +1085,20 @@ fn daemon_start() -> Result<()> {
             let _ = write_audit_event(AuditEvent::new("daemon_start_command"));
             println!("daemon started via system service (auto-starts on boot)");
         }
+        Ok(host_core::service::ServiceStatus::InstalledSystem) => {
+            let _ = write_audit_event(AuditEvent::new("daemon_start_command"));
+            println!("daemon installed as a boot service and started");
+            println!("it runs as this user, not root, and will auto-start on boot");
+        }
         Ok(host_core::service::ServiceStatus::InstalledWithoutBootPersistence) => {
             let _ = write_audit_event(AuditEvent::new("daemon_start_command"));
             println!("daemon started via systemd user service");
+            print_boot_persistence_warning();
+        }
+        Ok(host_core::service::ServiceStatus::InstalledButStartedDaemon) => {
+            let _ = write_audit_event(AuditEvent::new("daemon_start_command"));
+            println!("daemon service installed and enabled");
+            println!("daemon started in background because the systemd user bus is unavailable");
             print_boot_persistence_warning();
         }
         Ok(host_core::service::ServiceStatus::AlreadyRunning) => {

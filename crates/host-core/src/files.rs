@@ -140,6 +140,81 @@ fn deny_if_protected(path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn default_file_home() -> PathBuf {
+    if let Some(path) = std::env::var_os("POCKETSHELL_FILE_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.exists())
+    {
+        return path;
+    }
+
+    #[cfg(unix)]
+    {
+        if nix::unistd::Uid::effective().is_root() {
+            if let Some(path) = std::env::var_os("SUDO_USER")
+                .and_then(|u| u.into_string().ok())
+                .filter(|u| !u.is_empty() && u != "root")
+                .and_then(|u| user_home(&u))
+                .filter(|p| p.exists())
+            {
+                return path;
+            }
+
+            if let Some(path) = first_human_home().filter(|p| p.exists()) {
+                return path;
+            }
+        }
+    }
+
+    dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"))
+}
+
+#[cfg(unix)]
+fn user_home(user: &str) -> Option<PathBuf> {
+    nix::unistd::User::from_name(user)
+        .ok()
+        .flatten()
+        .map(|u| u.dir)
+}
+
+#[cfg(unix)]
+fn first_human_home() -> Option<PathBuf> {
+    let bases = if cfg!(target_os = "macos") {
+        ["/Users", "/home"]
+    } else {
+        ["/home", "/Users"]
+    };
+
+    for base in bases {
+        let Some(read_dir) = fs::read_dir(base).ok() else {
+            continue;
+        };
+        let mut candidates = read_dir
+            .filter_map(|entry| entry.ok())
+            .filter_map(|entry| {
+                let path = entry.path();
+                if !path.is_dir() {
+                    return None;
+                }
+                let name = path.file_name()?.to_string_lossy();
+                if name == "root"
+                    || name == "Shared"
+                    || name.starts_with('.')
+                    || name == "lost+found"
+                {
+                    return None;
+                }
+                Some(path)
+            })
+            .collect::<Vec<_>>();
+        candidates.sort();
+        if let Some(path) = candidates.into_iter().next() {
+            return Some(path);
+        }
+    }
+    None
+}
+
 #[derive(Serialize)]
 struct FileEntry {
     name: String,
@@ -266,15 +341,11 @@ pub async fn handle_files_action(
 
 fn resolve_path(raw: &str) -> Result<PathBuf> {
     if raw.is_empty() {
-        return Ok(dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+        return Ok(default_file_home());
     }
 
     let expanded = if raw.starts_with('~') {
-        if let Some(home) = dirs::home_dir() {
-            home.join(raw.strip_prefix("~/").unwrap_or(&raw[1..]))
-        } else {
-            PathBuf::from(raw)
-        }
+        default_file_home().join(raw.strip_prefix("~/").unwrap_or(&raw[1..]))
     } else {
         PathBuf::from(raw)
     };
