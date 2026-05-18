@@ -93,10 +93,7 @@ fn build_denied_paths(home: &Path) -> DeniedPaths {
     DeniedPaths {
         prefixes: DENIED_HOME_PREFIXES.iter().map(|p| home.join(p)).collect(),
         files: DENIED_HOME_FILES.iter().map(|f| home.join(f)).collect(),
-        absolute_prefixes: DENIED_ABSOLUTE_PREFIXES
-            .iter()
-            .map(PathBuf::from)
-            .collect(),
+        absolute_prefixes: DENIED_ABSOLUTE_PREFIXES.iter().map(PathBuf::from).collect(),
     }
 }
 
@@ -856,10 +853,7 @@ fn write_file(path_str: &str, data_b64: &str, append: bool) -> Result<serde_json
     // base64 expands raw bytes by 4/3; the +4 covers padding rounding. A 1 GB
     // base64 string from a malicious client would otherwise OOM the daemon
     // before the decoded-length check below could fire.
-    let max_b64_len = (MAX_FILE_SIZE as usize)
-        .saturating_mul(4)
-        / 3
-        + 4;
+    let max_b64_len = (MAX_FILE_SIZE as usize).saturating_mul(4) / 3 + 4;
     if data_b64.len() > max_b64_len {
         let _ = crate::audit::write_audit_event(crate::audit::AuditEvent {
             event_type: "file_write_rejected_oversize".to_string(),
@@ -1599,12 +1593,10 @@ mod tests {
         assert_eq!(res["total"], 1);
         let entries = res["entries"].as_array().unwrap();
         assert_eq!(entries[0]["name"], "main.rs");
-        assert!(
-            entries[0]["path"]
-                .as_str()
-                .unwrap()
-                .ends_with("src/main.rs")
-        );
+        assert!(entries[0]["path"]
+            .as_str()
+            .unwrap()
+            .ends_with("src/main.rs"));
     }
 
     #[test]
@@ -1640,8 +1632,7 @@ mod tests {
         fs::write(dir.path().join("foo_dir/foo_file.txt"), b"").unwrap();
         fs::write(dir.path().join("foo_top.txt"), b"").unwrap();
 
-        let res =
-            search_files(&dir.path().to_string_lossy(), "foo", 10, 5, true).unwrap();
+        let res = search_files(&dir.path().to_string_lossy(), "foo", 10, 5, true).unwrap();
         let entries = res["entries"].as_array().unwrap();
         let names: Vec<&str> = entries
             .iter()
@@ -1734,20 +1725,41 @@ mod tests {
         // Linux-shaped paths
         assert!(is_path_denied_against(Path::new("/etc/shadow"), &d));
         assert!(is_path_denied_against(Path::new("/etc/sudoers"), &d));
-        assert!(is_path_denied_against(Path::new("/etc/ssh/ssh_host_ed25519_key"), &d));
+        assert!(is_path_denied_against(
+            Path::new("/etc/ssh/ssh_host_ed25519_key"),
+            &d
+        ));
         assert!(is_path_denied_against(Path::new("/root/.ssh/id_rsa"), &d));
-        assert!(is_path_denied_against(Path::new("/var/lib/postgresql/data/pg_hba.conf"), &d));
+        assert!(is_path_denied_against(
+            Path::new("/var/lib/postgresql/data/pg_hba.conf"),
+            &d
+        ));
         assert!(is_path_denied_against(Path::new("/var/log/auth.log"), &d));
         assert!(is_path_denied_against(Path::new("/boot/grub/grub.cfg"), &d));
         assert!(is_path_denied_against(Path::new("/proc/1/maps"), &d));
-        assert!(is_path_denied_against(Path::new("/sys/class/net/eth0/address"), &d));
+        assert!(is_path_denied_against(
+            Path::new("/sys/class/net/eth0/address"),
+            &d
+        ));
         assert!(is_path_denied_against(Path::new("/dev/sda1"), &d));
-        assert!(is_path_denied_against(Path::new("/usr/local/etc/openvpn/keys"), &d));
+        assert!(is_path_denied_against(
+            Path::new("/usr/local/etc/openvpn/keys"),
+            &d
+        ));
 
         // macOS canonical paths (after fs::canonicalize rewrites /etc → /private/etc).
-        assert!(is_path_denied_against(Path::new("/private/etc/master.passwd"), &d));
-        assert!(is_path_denied_against(Path::new("/private/var/db/sudo"), &d));
-        assert!(is_path_denied_against(Path::new("/private/var/log/system.log"), &d));
+        assert!(is_path_denied_against(
+            Path::new("/private/etc/master.passwd"),
+            &d
+        ));
+        assert!(is_path_denied_against(
+            Path::new("/private/var/db/sudo"),
+            &d
+        ));
+        assert!(is_path_denied_against(
+            Path::new("/private/var/log/system.log"),
+            &d
+        ));
     }
 
     #[test]
@@ -1760,16 +1772,34 @@ mod tests {
         let d = build_denied_paths(&home);
 
         assert!(!is_path_denied_against(Path::new("/tmp/build.log"), &d));
-        assert!(!is_path_denied_against(Path::new("/var/tmp/scratch.txt"), &d));
-        assert!(!is_path_denied_against(Path::new("/var/folders/gz/abc/T/work.txt"), &d));
+        assert!(!is_path_denied_against(
+            Path::new("/var/tmp/scratch.txt"),
+            &d
+        ));
+        assert!(!is_path_denied_against(
+            Path::new("/var/folders/gz/abc/T/work.txt"),
+            &d
+        ));
         assert!(!is_path_denied_against(
             Path::new("/private/var/folders/gz/abc/T/work.txt"),
             &d,
         ));
-        assert!(!is_path_denied_against(Path::new("/usr/local/src/myproj/README.md"), &d));
-        assert!(!is_path_denied_against(Path::new("/usr/local/bin/myapp"), &d));
-        assert!(!is_path_denied_against(Path::new("/opt/myapp/config.yml"), &d));
-        assert!(!is_path_denied_against(&home.join("projects/repo/src/main.rs"), &d));
+        assert!(!is_path_denied_against(
+            Path::new("/usr/local/src/myproj/README.md"),
+            &d
+        ));
+        assert!(!is_path_denied_against(
+            Path::new("/usr/local/bin/myapp"),
+            &d
+        ));
+        assert!(!is_path_denied_against(
+            Path::new("/opt/myapp/config.yml"),
+            &d
+        ));
+        assert!(!is_path_denied_against(
+            &home.join("projects/repo/src/main.rs"),
+            &d
+        ));
     }
 
     #[test]
@@ -1781,8 +1811,14 @@ mod tests {
         let d = build_denied_paths(&home);
 
         // Deep paths under denied roots are denied.
-        assert!(is_path_denied_against(Path::new("/etc/network/interfaces.d/01-eth0"), &d));
-        assert!(is_path_denied_against(Path::new("/var/log/nginx/access.log"), &d));
+        assert!(is_path_denied_against(
+            Path::new("/etc/network/interfaces.d/01-eth0"),
+            &d
+        ));
+        assert!(is_path_denied_against(
+            Path::new("/var/log/nginx/access.log"),
+            &d
+        ));
 
         // Names that merely START with a denied component but are NOT under
         // it are not denied (`/etcetera` is a different directory than `/etc`).

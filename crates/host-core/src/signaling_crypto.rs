@@ -501,14 +501,12 @@ mod tests {
         vk.verify(canon.as_bytes(), &sig).unwrap();
 
         // Binding to the user's pairing event: a different code must not verify.
-        let bad =
-            canonical_pair_attest_payload("WRONG", &host_pub_b64, &signed.nonce, signed.ts);
+        let bad = canonical_pair_attest_payload("WRONG", &host_pub_b64, &signed.nonce, signed.ts);
         assert!(vk.verify(bad.as_bytes(), &sig).is_err());
 
         // The attacker scenario this attestation defends against: a substituted
         // pubkey under the same code must not verify.
-        let bad_pub =
-            canonical_pair_attest_payload("ABC123", "evil-pub", &signed.nonce, signed.ts);
+        let bad_pub = canonical_pair_attest_payload("ABC123", "evil-pub", &signed.nonce, signed.ts);
         assert!(vk.verify(bad_pub.as_bytes(), &sig).is_err());
     }
 

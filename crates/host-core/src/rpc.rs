@@ -592,7 +592,11 @@ mod tests {
         let total = result.get("total").unwrap().as_u64().unwrap() as usize;
         let more = result.get("more").unwrap().as_bool().unwrap();
         assert!(!procs.is_empty(), "expected at least one process");
-        assert!(procs.len() <= 10, "page size not respected: {}", procs.len());
+        assert!(
+            procs.len() <= 10,
+            "page size not respected: {}",
+            procs.len()
+        );
         assert!(total >= procs.len(), "total must be >= returned count");
         assert_eq!(more, total > procs.len());
     }
@@ -653,7 +657,10 @@ mod tests {
             },
         );
         let result = resp.result.unwrap();
-        assert_eq!(result.get("processes").unwrap().as_array().unwrap().len(), 0);
+        assert_eq!(
+            result.get("processes").unwrap().as_array().unwrap().len(),
+            0
+        );
         assert_eq!(result.get("more").unwrap().as_bool().unwrap(), false);
     }
 

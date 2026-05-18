@@ -1299,7 +1299,10 @@ mod tests {
         // verifier has to change in lockstep — bumping this test is a
         // signal that we need a coordinated server deploy.
         let bytes = build_reauth_payload("h-123", "2026-05-04T03:40:00+00:00");
-        assert_eq!(bytes, b"pocketshell-reauth-v1\nh-123\n2026-05-04T03:40:00+00:00");
+        assert_eq!(
+            bytes,
+            b"pocketshell-reauth-v1\nh-123\n2026-05-04T03:40:00+00:00"
+        );
     }
 
     #[tokio::test]
@@ -1347,7 +1350,10 @@ mod tests {
             .await;
 
         let c = BackendClient::new(server.uri());
-        let err = c.host_reauth("h-1", "2026-05-04T03:40:00+00:00", "sig").await.unwrap_err();
+        let err = c
+            .host_reauth("h-1", "2026-05-04T03:40:00+00:00", "sig")
+            .await
+            .unwrap_err();
         assert!(matches!(err, HostError::AuthRevoked), "got {err:?}");
     }
 
@@ -1361,7 +1367,10 @@ mod tests {
             .await;
 
         let c = BackendClient::new(server.uri());
-        let err = c.host_reauth("h-1", "2026-05-04T03:40:00+00:00", "sig").await.unwrap_err();
+        let err = c
+            .host_reauth("h-1", "2026-05-04T03:40:00+00:00", "sig")
+            .await
+            .unwrap_err();
         match err {
             HostError::Backend(m) => assert!(m.contains("kapow")),
             other => panic!("expected Backend, got {other:?}"),

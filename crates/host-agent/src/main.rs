@@ -9,8 +9,8 @@ use host_core::discovery::SessionDiscovery;
 use host_core::models::{
     AuthState, HostIdentity, HostInitiatedPollOutcome, PairingValidateRequest,
 };
-use host_core::signaling_crypto::sign_pair_attestation;
 use host_core::secure::parse_jwt_exp;
+use host_core::signaling_crypto::sign_pair_attestation;
 use host_core::stats::StatsCollector;
 use host_core::store::StateStore;
 use nix::sys::signal::{kill, Signal};
@@ -348,27 +348,17 @@ async fn pair(config: AppConfig, code: Option<String>, reset: bool) -> Result<()
         }
     }
 
-    // Add ONLY the device from this pairing to the local trust store.
-    // This is the sole path for adding trusted devices — the daemon's periodic
-    // sync only handles revocations, never adds new devices.
     let host_id = response.host.id.clone();
     let token = response.access_token.clone();
-    if let (Some(ref device_key), Some(ref mid)) =
-        (&response.device_public_key, &response.mobile_device_id)
-    {
-        if let Ok(devices) = backend.list_trusted_devices(&token, &host_id).await {
-            // Find the exact device record that was just paired
-            if let Some(mut paired_device) = devices.into_iter().find(|d| {
-                d.mobile_device_id == *mid && d.approved_at.is_some() && d.revoked_at.is_none()
-            }) {
-                paired_device.device_public_key = Some(device_key.clone());
-                store.add_trusted_device(paired_device);
-                store
-                    .save_full()
-                    .context("persisting paired device with pinned key")?;
-            }
-        }
-    }
+    persist_paired_device(
+        &mut store,
+        &backend,
+        &token,
+        &host_id,
+        response.mobile_device_id.as_deref(),
+        response.device_public_key.as_deref(),
+    )
+    .await?;
 
     // Device-add: a daemon is already running with stale in-memory trust.
     // Restart it so it picks up the device we just added.
@@ -394,7 +384,7 @@ async fn pair(config: AppConfig, code: Option<String>, reset: bool) -> Result<()
             Ok(host_core::service::ServiceStatus::InstalledSystem) => {
                 println!(" done");
                 println!("daemon installed as a boot service and started");
-                println!("it runs as this user, not root, and will auto-start on boot");
+                println!("it will auto-start on boot and restart on crash");
             }
             Ok(host_core::service::ServiceStatus::InstalledWithoutBootPersistence) => {
                 println!(" done");
@@ -426,6 +416,54 @@ async fn pair(config: AppConfig, code: Option<String>, reset: bool) -> Result<()
     }
 
     Ok(())
+}
+
+/// Add only the mobile device from this pairing to the local trust store.
+/// The daemon's periodic backend sync never adds devices; it only revokes or
+/// updates already-pinned records. If this step fails, pairing must fail
+/// visibly instead of leaving a host that is registered but unusable.
+async fn persist_paired_device(
+    store: &mut StateStore,
+    backend: &BackendClient,
+    token: &str,
+    host_id: &str,
+    mobile_device_id: Option<&str>,
+    device_public_key: Option<&str>,
+) -> Result<String> {
+    let mobile_device_id = mobile_device_id.ok_or_else(|| {
+        anyhow!(
+            "pairing response did not include a mobile_device_id; regenerate the code in the mobile app and retry"
+        )
+    })?;
+    let device_public_key = device_public_key.ok_or_else(|| {
+        anyhow!(
+            "pairing response did not include the mobile device public key; regenerate the code in the mobile app and retry"
+        )
+    })?;
+
+    let devices = backend
+        .list_trusted_devices(token, host_id)
+        .await
+        .context("fetching trusted devices after pairing")?;
+    let mut paired_device = devices
+        .into_iter()
+        .find(|d| {
+            d.mobile_device_id == mobile_device_id
+                && d.approved_at.is_some()
+                && d.revoked_at.is_none()
+        })
+        .ok_or_else(|| {
+            anyhow!(
+                "backend did not approve mobile device {mobile_device_id} for this host; regenerate the code in the mobile app and retry"
+            )
+        })?;
+
+    paired_device.device_public_key = Some(device_public_key.to_string());
+    store.add_trusted_device(paired_device);
+    store
+        .save_full()
+        .context("persisting paired device with pinned key")?;
+    Ok(mobile_device_id.to_string())
 }
 
 /// Dispatcher for the QR-based pairing flow. Picks new-host vs device-add based
@@ -593,24 +631,16 @@ async fn pair_qr_new_host(config: AppConfig, mut store: StateStore) -> Result<()
         ..AuditEvent::new("login_success")
     });
 
-    // Add the trusted device (mirror existing pair flow)
     let host_id = host.id.clone();
-    if let (Some(device_key), Some(mid)) = (
-        response.device_public_key.as_ref(),
-        response.mobile_device_id.as_ref(),
-    ) {
-        if let Ok(devices) = backend.list_trusted_devices(&access_token, &host_id).await {
-            if let Some(mut paired_device) = devices.into_iter().find(|d| {
-                d.mobile_device_id == *mid && d.approved_at.is_some() && d.revoked_at.is_none()
-            }) {
-                paired_device.device_public_key = Some(device_key.clone());
-                store.add_trusted_device(paired_device);
-                store
-                    .save_full()
-                    .context("persisting paired device with pinned key")?;
-            }
-        }
-    }
+    persist_paired_device(
+        &mut store,
+        &backend,
+        &access_token,
+        &host_id,
+        response.mobile_device_id.as_deref(),
+        response.device_public_key.as_deref(),
+    )
+    .await?;
 
     println!("pairing successful — host registered as {}", host.hostname);
     println!("host_id: {}", host.id);
@@ -639,7 +669,7 @@ async fn pair_qr_new_host(config: AppConfig, mut store: StateStore) -> Result<()
             Ok(host_core::service::ServiceStatus::InstalledSystem) => {
                 println!(" done");
                 println!("daemon installed as a boot service and started");
-                println!("it runs as this user, not root, and will auto-start on boot");
+                println!("it will auto-start on boot and restart on crash");
             }
             Ok(host_core::service::ServiceStatus::InstalledWithoutBootPersistence) => {
                 println!(" done");
@@ -797,30 +827,15 @@ async fn pair_qr_device_add(config: AppConfig, mut store: StateStore) -> Result<
         }
     }
 
-    let mobile_device_id = response
-        .mobile_device_id
-        .ok_or_else(|| anyhow!("claimed response missing mobile_device_id"))?;
-    let device_public_key = response.device_public_key.clone();
-
-    // Sync trusted-device list from backend and persist the newly added device.
-    if let Ok(devices) = backend
-        .list_trusted_devices(&access_token, &host.host_id)
-        .await
-    {
-        if let Some(mut paired_device) = devices.into_iter().find(|d| {
-            d.mobile_device_id == mobile_device_id
-                && d.approved_at.is_some()
-                && d.revoked_at.is_none()
-        }) {
-            if let Some(ref key) = device_public_key {
-                paired_device.device_public_key = Some(key.clone());
-            }
-            store.add_trusted_device(paired_device);
-            store
-                .save_full()
-                .context("persisting paired device with pinned key")?;
-        }
-    }
+    let mobile_device_id = persist_paired_device(
+        &mut store,
+        &backend,
+        &access_token,
+        &host.host_id,
+        response.mobile_device_id.as_deref(),
+        response.device_public_key.as_deref(),
+    )
+    .await?;
 
     let _ = write_audit_event(AuditEvent {
         event_type: "device_approved".to_string(),
@@ -1088,7 +1103,7 @@ fn daemon_start() -> Result<()> {
         Ok(host_core::service::ServiceStatus::InstalledSystem) => {
             let _ = write_audit_event(AuditEvent::new("daemon_start_command"));
             println!("daemon installed as a boot service and started");
-            println!("it runs as this user, not root, and will auto-start on boot");
+            println!("it will auto-start on boot and restart on crash");
         }
         Ok(host_core::service::ServiceStatus::InstalledWithoutBootPersistence) => {
             let _ = write_audit_event(AuditEvent::new("daemon_start_command"));
@@ -1944,32 +1959,20 @@ fn print_boot_persistence_warning() {
     );
 }
 
-/// If invoked as root (sudo), explain the consequences and ask the user
-/// whether to continue. Returns true to proceed, false if the user declined.
-/// Pairing as root writes all state to /root/.pocketshell and the daemon will
-/// later run as root too — which breaks the mobile file browser (the default
-/// home directory /root is on the protected-paths denylist) and means every
-/// terminal session opened from the app runs as root.
+/// If invoked as root (sudo), ask the user whether to continue. Returns true
+/// to proceed, false if the user declined.
 fn confirm_root_install() -> bool {
     use nix::unistd::Uid;
     if !Uid::effective().is_root() {
         return true;
     }
-    eprintln!();
-    eprintln!("WARNING: pocketshell is being run as root (UID 0).");
-    eprintln!();
-    eprintln!("PocketShell is designed to run as your regular user account.");
-    eprintln!("If you continue as root:");
-    eprintln!("  - state will be written under /root/.pocketshell, not your user's home");
-    eprintln!("  - the mobile file browser will fail to open the default directory");
-    eprintln!("    (/root is on the protected-paths denylist)");
-    eprintln!("  - every terminal session opened from the mobile app will run as root");
-    eprintln!("  - the daemon service will install for the root user only");
-    eprintln!();
-    eprintln!("Recommended: press N, then re-run without sudo as your normal user.");
-    eprintln!();
-    let answer = prompt("Continue as root anyway? [y/N]: ");
-    matches!(answer.to_lowercase().as_str(), "y" | "yes")
+    eprintln!("warning: you are running PocketShell as root.");
+    let answer = prompt("Do you want to continue? [y/N]: ");
+    let proceed = matches!(answer.to_lowercase().as_str(), "y" | "yes");
+    if proceed {
+        std::env::set_var("POCKETSHELL_ALLOW_ROOT", "1");
+    }
+    proceed
 }
 
 fn generate_keypair() -> (String, String) {

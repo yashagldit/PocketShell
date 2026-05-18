@@ -212,7 +212,7 @@ pub fn uninstall_launchd() -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Linux systemd (user service — no root required)
+// Linux systemd (user service where available, root-managed system service on servers)
 // ---------------------------------------------------------------------------
 
 fn systemd_unit_dir() -> PathBuf {
@@ -276,7 +276,9 @@ fn current_user_name() -> Result<String> {
         let uid = nix::unistd::Uid::effective();
         let user = nix::unistd::User::from_uid(uid)
             .map_err(|e| HostError::Config(format!("resolve current user: {e}")))?
-            .ok_or_else(|| HostError::Config(format!("no passwd entry for uid {}", uid.as_raw())))?;
+            .ok_or_else(|| {
+                HostError::Config(format!("no passwd entry for uid {}", uid.as_raw()))
+            })?;
         Ok(user.name)
     }
     #[cfg(not(unix))]
@@ -286,11 +288,6 @@ fn current_user_name() -> Result<String> {
 }
 
 fn systemd_unit_name_component(user: &str) -> Result<String> {
-    if user == "root" {
-        return Err(HostError::Config(
-            "refusing to install root-managed service for root user".into(),
-        ));
-    }
     let mut out = String::new();
     for ch in user.chars() {
         if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
@@ -305,10 +302,34 @@ fn systemd_unit_name_component(user: &str) -> Result<String> {
     Ok(out)
 }
 
+fn systemd_system_service_name_for_user(user: &str) -> Result<String> {
+    if user == "root" {
+        return Ok(format!("{SYSTEMD_SERVICE}.service"));
+    }
+    let component = systemd_unit_name_component(user)?;
+    Ok(format!("pocketshell-host-agent-{component}.service"))
+}
+
 fn systemd_system_service_name() -> Option<String> {
     let user = current_user_name().ok()?;
-    let component = systemd_unit_name_component(&user).ok()?;
-    Some(format!("pocketshell-host-agent-{component}.service"))
+    systemd_system_service_name_for_user(&user).ok()
+}
+
+fn systemd_system_unit_path(unit_name: &str) -> PathBuf {
+    PathBuf::from("/etc/systemd/system").join(unit_name)
+}
+
+fn systemd_system_service_available() -> Option<String> {
+    let unit = systemd_system_service_name()?;
+    if systemd_system_unit_path(&unit).exists() {
+        return Some(unit);
+    }
+    Command::new("systemctl")
+        .args(["is-active", "--quiet", &unit])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|_| unit)
 }
 
 fn enable_systemd_unit_manually() -> Result<()> {
@@ -338,16 +359,14 @@ fn enable_systemd_unit_manually() -> Result<()> {
     Ok(())
 }
 
-fn install_systemd_system_service(exe_path: &str) -> Result<ServiceStatus> {
-    let user = current_user_name()?;
-    let component = systemd_unit_name_component(&user)?;
-    let unit_name = format!("pocketshell-host-agent-{component}.service");
-    let unit_path = format!("/etc/systemd/system/{unit_name}");
-    let home = dirs::home_dir()
-        .ok_or_else(|| HostError::Config("cannot resolve home directory".into()))?;
-    let home_path = home.to_string_lossy();
+fn systemd_system_unit_contents(user: &str, home_path: &str, exe_path: &str) -> String {
+    let root_env = if user == "root" {
+        "Environment=POCKETSHELL_ALLOW_ROOT=1\n"
+    } else {
+        ""
+    };
 
-    let unit = format!(
+    format!(
         r#"[Unit]
 Description=PocketShell Host Agent ({user})
 After=network-online.target
@@ -358,6 +377,7 @@ Type=simple
 User={user}
 Environment=HOME={home_path}
 Environment=RUST_LOG=info
+{root_env}WorkingDirectory={home_path}
 ExecStart={exe_path} daemon run
 Restart=always
 RestartSec=5
@@ -365,8 +385,20 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 "#
-    );
+    )
+}
 
+fn install_systemd_system_service(exe_path: &str) -> Result<ServiceStatus> {
+    let user = current_user_name()?;
+    let unit_name = systemd_system_service_name_for_user(&user)?;
+    let unit_path = systemd_system_unit_path(&unit_name);
+    let home = dirs::home_dir()
+        .ok_or_else(|| HostError::Config("cannot resolve home directory".into()))?;
+    let home_path = home.to_string_lossy();
+
+    let unit = systemd_system_unit_contents(&user, &home_path, exe_path);
+
+    let component = systemd_unit_name_component(&user)?;
     let tmp = std::env::temp_dir().join(format!(
         "pocketshell-host-agent-{component}-{}.service",
         std::process::id()
@@ -376,9 +408,10 @@ WantedBy=multi-user.target
     let _tmp_guard = TempFileGuard(tmp.clone());
 
     let tmp_s = tmp.to_string_lossy().to_string();
+    let unit_path_s = unit_path.to_string_lossy().to_string();
     run_privileged(
         "install system service",
-        &["install", "-m", "0644", &tmp_s, &unit_path],
+        &["install", "-m", "0644", &tmp_s, &unit_path_s],
     )?;
     run_privileged("reload systemd", &["systemctl", "daemon-reload"])?;
     run_privileged(
@@ -437,6 +470,11 @@ fn install_systemd() -> Result<ServiceStatus> {
     let exe = std::env::current_exe()
         .map_err(|e| HostError::Config(format!("cannot resolve binary path: {e}")))?;
     let exe_path = exe.to_string_lossy();
+
+    #[cfg(unix)]
+    if nix::unistd::Uid::effective().is_root() {
+        return install_systemd_system_service(&exe_path);
+    }
 
     let unit = format!(
         r#"[Unit]
@@ -564,14 +602,32 @@ WantedBy=default.target
 /// Stop, disable, and remove the systemd user service.
 pub fn uninstall_systemd() -> Result<()> {
     if has_systemctl() {
-        let _ = run_with_timeout(
-            Command::new("systemctl").args(["--user", "stop", SYSTEMD_SERVICE]),
-            SERVICE_CMD_TIMEOUT,
-        );
-        let _ = run_with_timeout(
-            Command::new("systemctl").args(["--user", "disable", SYSTEMD_SERVICE]),
-            SERVICE_CMD_TIMEOUT,
-        );
+        if let Some(unit) = systemd_system_service_available() {
+            let _ = run_privileged("stop system service", &["systemctl", "stop", &unit]);
+            let _ = run_privileged("disable system service", &["systemctl", "disable", &unit]);
+            let unit_path = systemd_system_unit_path(&unit);
+            if unit_path.exists() {
+                let unit_path_s = unit_path.to_string_lossy().to_string();
+                run_privileged("remove system service", &["rm", "-f", &unit_path_s])?;
+                run_privileged("reload systemd", &["systemctl", "daemon-reload"])?;
+                info!("removed systemd system service {}", unit);
+            }
+        }
+
+        match command_status_output("systemctl", &["--user", "stop", SYSTEMD_SERVICE]) {
+            Ok((status, stderr)) if !status.success() && !stderr.is_empty() => {
+                warn!("systemctl stop exited with status {status}: {stderr}");
+            }
+            Err(e) => warn!("systemctl stop failed: {e}"),
+            _ => {}
+        }
+        match command_status_output("systemctl", &["--user", "disable", SYSTEMD_SERVICE]) {
+            Ok((status, stderr)) if !status.success() && !stderr.is_empty() => {
+                warn!("systemctl disable exited with status {status}: {stderr}");
+            }
+            Err(e) => warn!("systemctl disable failed: {e}"),
+            _ => {}
+        }
     }
     let unit_path = systemd_unit_path();
     if unit_path.exists() {
@@ -664,15 +720,31 @@ pub fn restart() -> Result<RestartStatus> {
             return Ok(RestartStatus::RestartedService);
         }
     } else if cfg!(target_os = "linux") && has_systemctl() {
+        if let Some(unit) = systemd_system_service_available() {
+            run_privileged("restart system service", &["systemctl", "restart", &unit])?;
+            info!("systemd system service {} restarted", unit);
+            return Ok(RestartStatus::RestartedService);
+        }
+
         let unit_path = systemd_unit_path();
         if unit_path.exists() {
-            let status = Command::new("systemctl")
-                .args(["--user", "restart", SYSTEMD_SERVICE])
-                .status()
-                .map_err(|e| HostError::Config(format!("systemctl restart: {e}")))?;
-
-            if !status.success() {
-                return Err(HostError::Config("systemctl restart failed".into()));
+            match command_status_output("systemctl", &["--user", "restart", SYSTEMD_SERVICE]) {
+                Ok((status, stderr)) if status.success() => {
+                    if !stderr.is_empty() {
+                        warn!("systemctl restart stderr: {stderr}");
+                    }
+                }
+                Ok((status, stderr)) => {
+                    return Err(HostError::Config(format!(
+                        "systemctl restart failed with status {status}{}",
+                        if stderr.is_empty() {
+                            String::new()
+                        } else {
+                            format!(": {stderr}")
+                        }
+                    )));
+                }
+                Err(e) => return Err(HostError::Config(format!("systemctl restart: {e}"))),
             }
 
             info!("systemd user service restarted");
@@ -710,10 +782,19 @@ pub fn stop() -> Result<StopStatus> {
             );
         }
     } else if cfg!(target_os = "linux") && has_systemctl() {
-        let _ = run_with_timeout(
-            Command::new("systemctl").args(["--user", "stop", SYSTEMD_SERVICE]),
-            SERVICE_CMD_TIMEOUT,
-        );
+        if let Some(unit) = systemd_system_service_available() {
+            let _ = run_privileged("stop system service", &["systemctl", "stop", &unit]);
+            info!("systemd system service {} stopped", unit);
+            return Ok(StopStatus::Stopped);
+        }
+
+        match command_status_output("systemctl", &["--user", "stop", SYSTEMD_SERVICE]) {
+            Ok((status, stderr)) if !status.success() && !stderr.is_empty() => {
+                warn!("systemctl stop exited with status {status}: {stderr}");
+            }
+            Err(e) => warn!("systemctl stop failed: {e}"),
+            _ => {}
+        }
     }
     info!("service stopped");
     Ok(StopStatus::Stopped)
@@ -807,6 +888,39 @@ WantedBy=default.target
         assert!(unit.contains("RestartSec=5"));
         assert!(unit.contains("Environment=RUST_LOG=info"));
         assert!(unit.contains("WantedBy=default.target"));
+    }
+
+    #[test]
+    fn systemd_system_service_name_uses_canonical_root_unit() {
+        assert_eq!(
+            systemd_system_service_name_for_user("root").unwrap(),
+            "pocketshell-host-agent.service"
+        );
+        assert_eq!(
+            systemd_system_service_name_for_user("alice").unwrap(),
+            "pocketshell-host-agent-alice.service"
+        );
+    }
+
+    #[test]
+    fn root_systemd_system_unit_allows_root_daemon() {
+        let unit = systemd_system_unit_contents("root", "/root", "/usr/local/bin/pocketshell");
+        assert!(unit.contains("User=root"));
+        assert!(unit.contains("Environment=HOME=/root"));
+        assert!(unit.contains("Environment=POCKETSHELL_ALLOW_ROOT=1"));
+        assert!(unit.contains("WorkingDirectory=/root"));
+        assert!(unit.contains("ExecStart=/usr/local/bin/pocketshell daemon run"));
+        assert!(unit.contains("WantedBy=multi-user.target"));
+    }
+
+    #[test]
+    fn non_root_systemd_system_unit_does_not_allow_root_daemon() {
+        let unit =
+            systemd_system_unit_contents("alice", "/home/alice", "/usr/local/bin/pocketshell");
+        assert!(unit.contains("User=alice"));
+        assert!(unit.contains("Environment=HOME=/home/alice"));
+        assert!(!unit.contains("POCKETSHELL_ALLOW_ROOT"));
+        assert!(unit.contains("WorkingDirectory=/home/alice"));
     }
 
     /// Pure replica of the launchd plist built inline in `install_launchd`.

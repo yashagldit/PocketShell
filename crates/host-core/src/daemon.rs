@@ -14,11 +14,11 @@ use crate::models::{
     AttachTarget, HeartbeatRequest, SessionRecord, SessionRequest, SessionState, SignalEnvelope,
 };
 use crate::pty::{SessionAttentionEvent, SessionManager};
-use crate::terminal_marks::AttentionKind;
 use crate::session::accept_session;
 use crate::signaling_crypto::{self, EphemeralKeypair, SessionCipher};
 use crate::stats::StatsCollector;
 use crate::store::StateStore;
+use crate::terminal_marks::AttentionKind;
 use crate::transport::{connect_host_ws, recv_signal, send_signal, WsRead};
 use crate::webrtc_manager::{WebRtcEvent, WebRtcManager};
 use crate::webrtc_peer::WebRtcPeer;

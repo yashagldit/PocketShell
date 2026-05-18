@@ -8,13 +8,13 @@ use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::APIBuilder;
 use webrtc::data_channel::data_channel_init::RTCDataChannelInit;
 use webrtc::data_channel::RTCDataChannel;
+use webrtc::ice::candidate::CandidateType;
 use webrtc::ice_transport::ice_candidate::{RTCIceCandidate, RTCIceCandidateInit};
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
-use webrtc::ice::candidate::CandidateType;
 use webrtc::stats::StatsReportType;
 
 /// A data channel event received from the remote peer.
@@ -394,10 +394,7 @@ mod tests {
         .await;
         assert_eq!(
             out,
-            vec![
-                "turn:1.2.3.4:3478?transport=udp",
-                "stun:5.6.7.8:3478",
-            ]
+            vec!["turn:1.2.3.4:3478?transport=udp", "stun:5.6.7.8:3478",]
         );
     }
 
@@ -412,7 +409,10 @@ mod tests {
         let out = resolve_uris_prefer_ipv4(vec!["stun:localhost:3478".into()]).await;
         assert_eq!(out.len(), 1, "expected one URI back, got {out:?}");
         let rewritten = &out[0];
-        assert!(rewritten.starts_with("stun:"), "scheme preserved: {rewritten}");
+        assert!(
+            rewritten.starts_with("stun:"),
+            "scheme preserved: {rewritten}"
+        );
         assert!(rewritten.ends_with(":3478"), "port preserved: {rewritten}");
         assert!(
             !rewritten.contains("localhost"),
@@ -444,9 +444,7 @@ mod tests {
         ])
         .await;
         assert_eq!(out.len(), 3);
-        let extract_host = |s: &str| {
-            s.split(':').nth(1).map(|h| h.to_string())
-        };
+        let extract_host = |s: &str| s.split(':').nth(1).map(|h| h.to_string());
         let hosts: Vec<_> = out.iter().filter_map(|s| extract_host(s)).collect();
         let first = &hosts[0];
         assert!(
@@ -479,7 +477,10 @@ mod tests {
             .await
             .expect("create offer should succeed");
         assert!(!sdp.is_empty());
-        assert!(sdp.contains("m=application"), "SDP should include data channel m-line");
+        assert!(
+            sdp.contains("m=application"),
+            "SDP should include data channel m-line"
+        );
         assert_eq!(dc.label(), "terminal");
     }
 

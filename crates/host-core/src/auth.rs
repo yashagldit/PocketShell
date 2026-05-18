@@ -19,8 +19,8 @@ use crate::config::AppConfig;
 use crate::error::{HostError, Result};
 use crate::models::AuthState;
 use crate::secure::{parse_jwt_exp, require_refresh_token, token_is_expiring};
-use crate::store::StateStore;
 use crate::signaling_crypto::parse_ed25519_signing_key;
+use crate::store::StateStore;
 use base64::Engine;
 use chrono::{SecondsFormat, Utc};
 use ed25519_dalek::{Signer, SigningKey};
@@ -91,18 +91,11 @@ pub fn refresh_token_jwt_expired(auth: &AuthState) -> bool {
 /// have life left for normal calls. The caller can use
 /// [`refresh_token_jwt_expired`] to distinguish a transient race from a
 /// genuinely-dead token (where re-pairing is required).
-pub async fn safe_refresh_if_needed(
-    backend: &BackendClient,
-    store: &mut StateStore,
-) -> Result<()> {
+pub async fn safe_refresh_if_needed(backend: &BackendClient, store: &mut StateStore) -> Result<()> {
     store.require_logged_in()?;
 
     {
-        let auth = store
-            .state
-            .auth
-            .as_ref()
-            .ok_or(HostError::NotLoggedIn)?;
+        let auth = store.state.auth.as_ref().ok_or(HostError::NotLoggedIn)?;
         if !token_is_expiring(auth.access_expires_at, 60) {
             return Ok(());
         }
@@ -115,11 +108,7 @@ pub async fn safe_refresh_if_needed(
     // Re-read state inside the lock; another process that held the lock
     // before us may have already rotated the token.
     let reloaded = StateStore::load()?;
-    let reloaded_auth = reloaded
-        .state
-        .auth
-        .clone()
-        .ok_or(HostError::NotLoggedIn)?;
+    let reloaded_auth = reloaded.state.auth.clone().ok_or(HostError::NotLoggedIn)?;
     if !token_is_expiring(reloaded_auth.access_expires_at, 60) {
         *store = reloaded;
         return Ok(());
@@ -181,11 +170,7 @@ async fn reauth_with_signing_key(
     store: &mut StateStore,
     reloaded: StateStore,
 ) -> Result<()> {
-    let host_state = reloaded
-        .state
-        .host
-        .as_ref()
-        .ok_or(HostError::NotLoggedIn)?;
+    let host_state = reloaded.state.host.as_ref().ok_or(HostError::NotLoggedIn)?;
     let host_id = host_state.host_id.clone();
     let private_key_b64 = host_state.private_key.clone();
     if private_key_b64.is_empty() {

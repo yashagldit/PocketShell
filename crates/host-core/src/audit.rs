@@ -232,7 +232,11 @@ mod tests {
             .permissions()
             .mode()
             & 0o777;
-        assert_eq!(dir_mode, 0o700, "state dir must be 0o700, got {:o}", dir_mode);
+        assert_eq!(
+            dir_mode, 0o700,
+            "state dir must be 0o700, got {:o}",
+            dir_mode
+        );
     }
 
     #[test]
