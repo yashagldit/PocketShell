@@ -1518,6 +1518,20 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
     let mut store = StateStore::load()?;
     store.require_logged_in()?;
 
+    // A fresh daemon process can never have an active peer connection, so any
+    // session record left in state.json from a previous run is dead by
+    // definition. They'd otherwise show up in the mobile "Persistent Sessions"
+    // list forever (issue: ghost ATTACHED cards). Wipe them on startup.
+    let stale = store.state.sessions.len();
+    if stale > 0 {
+        store.state.sessions.clear();
+        if let Err(e) = store.save() {
+            warn!("failed to persist session cleanup on startup: {e}");
+        } else {
+            info!("cleared {stale} stale session(s) from previous run");
+        }
+    }
+
     let host_id = store.host_id()?;
     let backend = BackendClient::new(config.backend_base_url.clone());
     let turn_cache = TurnCredsCache::new();
@@ -5586,6 +5600,82 @@ async fn handle_signal(
             }
             agent_router.detach(&agent_id).await;
         }
+        "host_control" => {
+            // Direct backend-pushed host-management action. The backend
+            // has already verified host ownership, trusted-device status,
+            // and the `sessions` permission before dispatching this
+            // message — see `app/api/routes/host_control.py`. Mirror the
+            // trusted-device check locally as defense in depth.
+            let mobile_device_id = msg
+                .extra
+                .get("mobile_device_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            if mobile_device_id.is_empty() || !store.is_trusted(&mobile_device_id) {
+                warn!(
+                    "host_control rejected: mobile_device_id missing or not trusted ({})",
+                    mobile_device_id
+                );
+                return Ok(());
+            }
+            let action = msg
+                .extra
+                .get("action")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            match action {
+                "host_close_all_sessions" => {
+                    info!(
+                        "host_close_all_sessions requested by mobile={} (host_control)",
+                        mobile_device_id
+                    );
+                    close_all_active_sessions(
+                        store,
+                        backend,
+                        peer_session_routes,
+                        session_ciphers,
+                        sessions,
+                        webrtc_mgr,
+                        agent_ws_pumps,
+                        agent_router,
+                    )
+                    .await;
+                }
+                "host_restart_agent" => {
+                    info!(
+                        "host_restart_agent requested by mobile={} (host_control)",
+                        mobile_device_id
+                    );
+                    close_all_active_sessions(
+                        store,
+                        backend,
+                        peer_session_routes,
+                        session_ciphers,
+                        sessions,
+                        webrtc_mgr,
+                        agent_ws_pumps,
+                        agent_router,
+                    )
+                    .await;
+                    tokio::spawn(async move {
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                        match crate::service::restart() {
+                            Ok(crate::service::RestartStatus::RestartedService) => {}
+                            Ok(crate::service::RestartStatus::StartedDaemon) => {
+                                std::process::exit(0);
+                            }
+                            Err(err) => {
+                                warn!("host_restart_agent failed: {}", err);
+                            }
+                        }
+                    });
+                }
+                other => {
+                    warn!("host_control rejected: unknown action {:?}", other);
+                }
+            }
+        }
         "signal" => {
             let Some(session_id) = msg.session_id else {
                 return Ok(());
@@ -5702,93 +5792,37 @@ async fn handle_signal(
                     match action {
                         "host_close_all_sessions" => {
                             info!(
-                                "host_close_all_sessions requested by mobile={}",
+                                "host_close_all_sessions requested by mobile={} (legacy signal channel)",
                                 mobile_device_id
                             );
-
-                            let daemon_host_id = match store.host_id() {
-                                Ok(id) => id,
-                                Err(_) => String::new(),
-                            };
-                            let active_backend_sessions =
-                                match store.access_token().map(|s| s.to_string()) {
-                                    Ok(token) => backend
-                                        .list_active_sessions_full(&token, &daemon_host_id)
-                                        .await
-                                        .unwrap_or_default(),
-                                    Err(_) => Vec::new(),
-                                };
-
-                            peer_session_routes.clear();
-                            session_ciphers.clear();
-                            sessions.close_all();
-                            webrtc_mgr.close_all().await;
-
-                            for (_, handle) in agent_ws_pumps.drain() {
-                                handle.abort();
-                            }
-                            agent_router.close_all().await;
-
-                            if let Ok(token) = store.access_token().map(|s| s.to_string()) {
-                                for session in active_backend_sessions {
-                                    let _ = backend
-                                        .transition_session(
-                                            &token,
-                                            &session.id,
-                                            SessionState::Ended,
-                                            None,
-                                        )
-                                        .await;
-                                    store.touch_session_state(&session.id, SessionState::Ended);
-                                }
-                            }
-
-                            let _ = store.save();
+                            close_all_active_sessions(
+                                store,
+                                backend,
+                                peer_session_routes,
+                                session_ciphers,
+                                sessions,
+                                webrtc_mgr,
+                                agent_ws_pumps,
+                                agent_router,
+                            )
+                            .await;
                         }
                         "host_restart_agent" => {
                             info!(
-                                "host_restart_agent requested by mobile={}",
+                                "host_restart_agent requested by mobile={} (legacy signal channel)",
                                 mobile_device_id
                             );
-
-                            let daemon_host_id = match store.host_id() {
-                                Ok(id) => id,
-                                Err(_) => String::new(),
-                            };
-                            let active_backend_sessions =
-                                match store.access_token().map(|s| s.to_string()) {
-                                    Ok(token) => backend
-                                        .list_active_sessions_full(&token, &daemon_host_id)
-                                        .await
-                                        .unwrap_or_default(),
-                                    Err(_) => Vec::new(),
-                                };
-
-                            peer_session_routes.clear();
-                            session_ciphers.clear();
-                            sessions.close_all();
-                            webrtc_mgr.close_all().await;
-
-                            for (_, handle) in agent_ws_pumps.drain() {
-                                handle.abort();
-                            }
-                            agent_router.close_all().await;
-
-                            if let Ok(token) = store.access_token().map(|s| s.to_string()) {
-                                for session in active_backend_sessions {
-                                    let _ = backend
-                                        .transition_session(
-                                            &token,
-                                            &session.id,
-                                            SessionState::Ended,
-                                            None,
-                                        )
-                                        .await;
-                                    store.touch_session_state(&session.id, SessionState::Ended);
-                                }
-                            }
-
-                            let _ = store.save();
+                            close_all_active_sessions(
+                                store,
+                                backend,
+                                peer_session_routes,
+                                session_ciphers,
+                                sessions,
+                                webrtc_mgr,
+                                agent_ws_pumps,
+                                agent_router,
+                            )
+                            .await;
 
                             tokio::spawn(async move {
                                 tokio::time::sleep(Duration::from_millis(250)).await;
@@ -7021,6 +7055,51 @@ fn build_auth_message(json: &serde_json::Value) -> Vec<u8> {
     msg.extend_from_slice(AUTH_SENTINEL);
     msg.extend_from_slice(&json_bytes);
     msg
+}
+
+/// Tear down every active session on this host: kill PTYs, drop WebRTC
+/// peers, stop agent pumps, and mark the corresponding backend rows
+/// `ended`. Shared by the legacy `signal → channel=control` path and
+/// the newer `host_control` REST-driven path.
+async fn close_all_active_sessions(
+    store: &mut StateStore,
+    backend: &BackendClient,
+    peer_session_routes: &mut HashMap<String, String>,
+    session_ciphers: &mut HashMap<String, SessionCipher>,
+    sessions: &mut SessionManager,
+    webrtc_mgr: &mut WebRtcManager,
+    agent_ws_pumps: &mut HashMap<String, tokio::task::JoinHandle<()>>,
+    agent_router: &Arc<AgentRouter>,
+) {
+    let daemon_host_id = store.host_id().unwrap_or_default();
+    let active_backend_sessions = match store.access_token().map(|s| s.to_string()) {
+        Ok(token) => backend
+            .list_active_sessions_full(&token, &daemon_host_id)
+            .await
+            .unwrap_or_default(),
+        Err(_) => Vec::new(),
+    };
+
+    peer_session_routes.clear();
+    session_ciphers.clear();
+    sessions.close_all();
+    webrtc_mgr.close_all().await;
+
+    for (_, handle) in agent_ws_pumps.drain() {
+        handle.abort();
+    }
+    agent_router.close_all().await;
+
+    if let Ok(token) = store.access_token().map(|s| s.to_string()) {
+        for session in active_backend_sessions {
+            let _ = backend
+                .transition_session(&token, &session.id, SessionState::Ended, None)
+                .await;
+            store.touch_session_state(&session.id, SessionState::Ended);
+        }
+    }
+
+    let _ = store.save();
 }
 
 fn ws_message_permission_for(message_type: &str) -> Option<&'static str> {

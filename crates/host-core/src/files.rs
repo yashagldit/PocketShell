@@ -258,7 +258,11 @@ pub async fn handle_files_action(
                 .get("limit")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(MAX_LIST_DIR_PAGE_SIZE as u64) as usize;
-            list_dir(&path_str, offset, limit)
+            let include_hidden = payload
+                .get("include_hidden")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            list_dir(&path_str, offset, limit, include_hidden)
         }
         "read_file" => {
             let offset = payload.get("offset").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -326,7 +330,18 @@ pub async fn handle_files_action(
                 .get("files_only")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            search_files(&path_str, query, max_results, max_depth, files_only)
+            let include_hidden = payload
+                .get("include_hidden")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            search_files(
+                &path_str,
+                query,
+                max_results,
+                max_depth,
+                files_only,
+                include_hidden,
+            )
         }
         _ => Err(HostError::Backend(format!(
             "unknown files action: {action}"
@@ -448,7 +463,12 @@ fn modified_iso(metadata: &fs::Metadata) -> Option<String> {
     })
 }
 
-fn list_dir(path_str: &str, offset: usize, limit: usize) -> Result<serde_json::Value> {
+fn list_dir(
+    path_str: &str,
+    offset: usize,
+    limit: usize,
+    include_hidden: bool,
+) -> Result<serde_json::Value> {
     let dir = resolve_path(path_str)?;
     let canonical = safe_canonicalize(&dir)?;
 
@@ -470,6 +490,9 @@ fn list_dir(path_str: &str, offset: usize, limit: usize) -> Result<serde_json::V
             }
         };
         let name = entry.file_name().to_string_lossy().to_string();
+        if !include_hidden && name.starts_with('.') {
+            continue;
+        }
         let entry_path = entry.path();
         let metadata = match entry.metadata() {
             Ok(m) => m,
@@ -1019,6 +1042,7 @@ fn search_files(
     max_results: usize,
     max_depth: usize,
     files_only: bool,
+    include_hidden: bool,
 ) -> Result<serde_json::Value> {
     let dir = resolve_path(path_str)?;
     let canonical = safe_canonicalize(&dir)?;
@@ -1041,6 +1065,7 @@ fn search_files(
         depth: usize,
         max_depth: usize,
         files_only: bool,
+        include_hidden: bool,
     ) {
         if depth > max_depth || results.len() >= max_results {
             return;
@@ -1058,6 +1083,9 @@ fn search_files(
                 Err(_) => continue,
             };
             let name = entry.file_name().to_string_lossy().to_string();
+            if !include_hidden && name.starts_with('.') {
+                continue;
+            }
 
             // Skip common heavy directories
             if depth == 0
@@ -1128,6 +1156,7 @@ fn search_files(
                     depth + 1,
                     max_depth,
                     files_only,
+                    include_hidden,
                 );
             }
         }
@@ -1145,6 +1174,7 @@ fn search_files(
             0,
             0,
             files_only,
+            include_hidden,
         );
         results.sort_by(|a, b| b.modified_at.cmp(&a.modified_at));
     } else {
@@ -1157,6 +1187,7 @@ fn search_files(
             0,
             max_depth,
             files_only,
+            include_hidden,
         );
     }
 
@@ -1398,7 +1429,7 @@ mod tests {
         fs::write(dir.path().join("bfile"), b"").unwrap();
         fs::write(dir.path().join("cfile"), b"").unwrap();
 
-        let res = list_dir(&dir.path().to_string_lossy(), 0, 2).unwrap();
+        let res = list_dir(&dir.path().to_string_lossy(), 0, 2, true).unwrap();
         assert_eq!(res["total"], 4);
         let entries = res["entries"].as_array().unwrap();
         assert_eq!(entries.len(), 2);
@@ -1409,19 +1440,61 @@ mod tests {
         assert_eq!(res["has_more"], true);
         assert_eq!(res["next_offset"], 2);
 
-        let res2 = list_dir(&dir.path().to_string_lossy(), 2, 100).unwrap();
+        let res2 = list_dir(&dir.path().to_string_lossy(), 2, 100, true).unwrap();
         let entries2 = res2["entries"].as_array().unwrap();
         assert_eq!(entries2.len(), 2);
         assert_eq!(res2["has_more"], false);
     }
 
     #[test]
+    fn list_dir_includes_hidden_files() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join(".hidden_file"), b"").unwrap();
+        fs::write(dir.path().join("visible_file"), b"").unwrap();
+        fs::create_dir(dir.path().join(".hidden_dir")).unwrap();
+        fs::create_dir(dir.path().join("visible_dir")).unwrap();
+
+        let res = list_dir(&dir.path().to_string_lossy(), 0, 100, true).unwrap();
+        let entries = res["entries"].as_array().unwrap();
+        let names: Vec<&str> = entries
+            .iter()
+            .map(|e| e["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&".hidden_file"), "names={names:?}");
+        assert!(names.contains(&".hidden_dir"), "names={names:?}");
+        assert!(names.contains(&"visible_file"), "names={names:?}");
+        assert!(names.contains(&"visible_dir"), "names={names:?}");
+        assert_eq!(res["total"], 4);
+    }
+
+    #[test]
+    fn list_dir_excludes_hidden_files_when_requested() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join(".hidden_file"), b"").unwrap();
+        fs::write(dir.path().join("visible_file"), b"").unwrap();
+        fs::create_dir(dir.path().join(".hidden_dir")).unwrap();
+        fs::create_dir(dir.path().join("visible_dir")).unwrap();
+
+        let res = list_dir(&dir.path().to_string_lossy(), 0, 100, false).unwrap();
+        let entries = res["entries"].as_array().unwrap();
+        let names: Vec<&str> = entries
+            .iter()
+            .map(|e| e["name"].as_str().unwrap())
+            .collect();
+        assert!(!names.contains(&".hidden_file"), "names={names:?}");
+        assert!(!names.contains(&".hidden_dir"), "names={names:?}");
+        assert!(names.contains(&"visible_file"), "names={names:?}");
+        assert!(names.contains(&"visible_dir"), "names={names:?}");
+        assert_eq!(res["total"], 2);
+    }
+
+    #[test]
     fn list_dir_limit_is_clamped() {
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("a"), b"").unwrap();
-        let res = list_dir(&dir.path().to_string_lossy(), 0, 0).unwrap();
+        let res = list_dir(&dir.path().to_string_lossy(), 0, 0, true).unwrap();
         assert_eq!(res["limit"], 1); // clamped min 1
-        let res2 = list_dir(&dir.path().to_string_lossy(), 0, 10_000).unwrap();
+        let res2 = list_dir(&dir.path().to_string_lossy(), 0, 10_000, true).unwrap();
         assert_eq!(res2["limit"], MAX_LIST_DIR_PAGE_SIZE as u64);
     }
 
@@ -1559,13 +1632,13 @@ mod tests {
         fs::create_dir(dir.path().join("sub")).unwrap();
         fs::write(dir.path().join("sub/alphabet.rs"), b"").unwrap();
 
-        let res = search_files(&dir.path().to_string_lossy(), "alpha", 10, 5, false).unwrap();
+        let res = search_files(&dir.path().to_string_lossy(), "alpha", 10, 5, false, true).unwrap();
         assert_eq!(res["total"], 2);
 
-        let res2 = search_files(&dir.path().to_string_lossy(), "*.rs", 10, 5, false).unwrap();
+        let res2 = search_files(&dir.path().to_string_lossy(), "*.rs", 10, 5, false, true).unwrap();
         assert_eq!(res2["total"], 3);
 
-        let res3 = search_files(&dir.path().to_string_lossy(), "*.rs", 1, 5, false).unwrap();
+        let res3 = search_files(&dir.path().to_string_lossy(), "*.rs", 1, 5, false, true).unwrap();
         assert_eq!(res3["total"], 1);
     }
 
@@ -1575,7 +1648,25 @@ mod tests {
         fs::create_dir(dir.path().join("node_modules")).unwrap();
         fs::write(dir.path().join("node_modules/match.rs"), b"").unwrap();
         fs::write(dir.path().join("keep.rs"), b"").unwrap();
-        let res = search_files(&dir.path().to_string_lossy(), "*.rs", 50, 5, false).unwrap();
+        let res = search_files(&dir.path().to_string_lossy(), "*.rs", 50, 5, false, true).unwrap();
+        assert_eq!(res["total"], 1);
+    }
+
+    #[test]
+    fn search_files_excludes_hidden_files_when_requested() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join(".hidden_match.txt"), b"").unwrap();
+        fs::write(dir.path().join("visible_match.txt"), b"").unwrap();
+
+        let res =
+            search_files(&dir.path().to_string_lossy(), "match", 10, 5, false, false).unwrap();
+        let entries = res["entries"].as_array().unwrap();
+        let names: Vec<&str> = entries
+            .iter()
+            .map(|e| e["name"].as_str().unwrap())
+            .collect();
+        assert!(!names.contains(&".hidden_match.txt"), "names={names:?}");
+        assert!(names.contains(&"visible_match.txt"), "names={names:?}");
         assert_eq!(res["total"], 1);
     }
 
@@ -1589,7 +1680,15 @@ mod tests {
         fs::create_dir(dir.path().join("lib")).unwrap();
         fs::write(dir.path().join("lib/main.rs"), b"").unwrap();
 
-        let res = search_files(&dir.path().to_string_lossy(), "src/main", 10, 5, false).unwrap();
+        let res = search_files(
+            &dir.path().to_string_lossy(),
+            "src/main",
+            10,
+            5,
+            false,
+            true,
+        )
+        .unwrap();
         assert_eq!(res["total"], 1);
         let entries = res["entries"].as_array().unwrap();
         assert_eq!(entries[0]["name"], "main.rs");
@@ -1610,7 +1709,7 @@ mod tests {
         // Nested file must NOT be included — recursion is off.
         fs::write(dir.path().join("sub/inner.txt"), b"").unwrap();
 
-        let res = search_files(&dir.path().to_string_lossy(), "", 10, 6, false).unwrap();
+        let res = search_files(&dir.path().to_string_lossy(), "", 10, 6, false, true).unwrap();
         let entries = res["entries"].as_array().unwrap();
         let names: Vec<&str> = entries
             .iter()
@@ -1632,7 +1731,7 @@ mod tests {
         fs::write(dir.path().join("foo_dir/foo_file.txt"), b"").unwrap();
         fs::write(dir.path().join("foo_top.txt"), b"").unwrap();
 
-        let res = search_files(&dir.path().to_string_lossy(), "foo", 10, 5, true).unwrap();
+        let res = search_files(&dir.path().to_string_lossy(), "foo", 10, 5, true, true).unwrap();
         let entries = res["entries"].as_array().unwrap();
         let names: Vec<&str> = entries
             .iter()

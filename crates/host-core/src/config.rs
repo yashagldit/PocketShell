@@ -67,7 +67,7 @@ impl AppConfig {
         let session_limit = env::var("POCKETSHELL_SESSION_LIMIT")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(8);
+            .unwrap_or(20);
 
         let stale_session_secs = env::var("POCKETSHELL_STALE_SESSION_SECS")
             .ok()
@@ -179,7 +179,7 @@ mod tests {
         assert_eq!(cfg.heartbeat_interval_secs, 20);
         assert_eq!(cfg.stats_interval_secs, 5);
         assert_eq!(cfg.summary_interval_secs, 15);
-        assert_eq!(cfg.session_limit, 8);
+        assert_eq!(cfg.session_limit, 20);
         assert_eq!(cfg.stale_session_secs, 300);
         assert_eq!(cfg.detach_max_secs, 86400);
         assert_eq!(cfg.alert_check_interval_secs, 60);
@@ -230,7 +230,7 @@ mod tests {
         }
         let cfg = AppConfig::from_env();
         assert_eq!(cfg.heartbeat_interval_secs, 20);
-        assert_eq!(cfg.session_limit, 8);
+        assert_eq!(cfg.session_limit, 20);
         clear_all();
     }
 
