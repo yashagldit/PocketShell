@@ -1882,6 +1882,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                         host_id: host_id.clone(),
                         active_sessions: sessions.active_count(),
                         pending_devices: store.state.pending_devices.len(),
+                        app_version: Some(config.app_version.clone()),
                     };
 
                     let token = match store.access_token().map(|s| s.to_string()) {
@@ -5660,15 +5661,7 @@ async fn handle_signal(
                     .await;
                     tokio::spawn(async move {
                         tokio::time::sleep(Duration::from_millis(250)).await;
-                        match crate::service::restart() {
-                            Ok(crate::service::RestartStatus::RestartedService) => {}
-                            Ok(crate::service::RestartStatus::StartedDaemon) => {
-                                std::process::exit(0);
-                            }
-                            Err(err) => {
-                                warn!("host_restart_agent failed: {}", err);
-                            }
-                        }
+                        exit_for_restart(crate::service::restart());
                     });
                 }
                 other => {
@@ -5826,15 +5819,7 @@ async fn handle_signal(
 
                             tokio::spawn(async move {
                                 tokio::time::sleep(Duration::from_millis(250)).await;
-                                match crate::service::restart() {
-                                    Ok(crate::service::RestartStatus::RestartedService) => {}
-                                    Ok(crate::service::RestartStatus::StartedDaemon) => {
-                                        std::process::exit(0);
-                                    }
-                                    Err(err) => {
-                                        warn!("host_restart_agent failed: {}", err);
-                                    }
-                                }
+                                exit_for_restart(crate::service::restart());
                             });
                         }
                         "resize" => {
@@ -7100,6 +7085,43 @@ async fn close_all_active_sessions(
     }
 
     let _ = store.save();
+}
+
+/// Final step of `host_restart_agent`: terminate this process so the host
+/// comes back up fresh.
+///
+/// `service::restart()` looks like a one-shot "restart everything for me"
+/// call but has three exits with very different semantics, and getting any
+/// of them wrong leaves the daemon in a hollow state — `close_all_active_sessions`
+/// has already killed every PTY, dropped every WebRTC peer, aborted every
+/// agent pump, and marked every backend session `Ended`. If we don't
+/// actually die after that, the mobile UI shows "restart requested" but the
+/// host is a zombie until somebody SSHes in.
+///
+/// - `Ok(RestartedService)` is effectively unreachable in practice:
+///   `systemctl restart` / `launchctl kickstart -k` send SIGTERM to *us*
+///   while we're awaiting the subprocess, so we'd be dead before observing
+///   the return. We still `exit(0)` here as belt-and-suspenders against
+///   any platform where the subprocess returns before signaling us.
+/// - `Ok(StartedDaemon)` means a detached replacement has been forked;
+///   exit so it can take over the daemon socket and the backend WS.
+/// - `Err(_)` means none of the restart paths worked. Exiting non-zero
+///   lets a `Restart=always` supervisor (the systemd units our installers
+///   write all set this) respawn us. On unmanaged hosts the daemon dies
+///   and needs a manual start, but that's strictly better than leaving a
+///   hollowed-out process serving stale state.
+fn exit_for_restart(result: Result<crate::service::RestartStatus>) -> ! {
+    match result {
+        Ok(crate::service::RestartStatus::RestartedService) => std::process::exit(0),
+        Ok(crate::service::RestartStatus::StartedDaemon) => std::process::exit(0),
+        Err(err) => {
+            warn!(
+                "host_restart_agent failed: {} — exiting to let supervisor relaunch",
+                err
+            );
+            std::process::exit(1);
+        }
+    }
 }
 
 fn ws_message_permission_for(message_type: &str) -> Option<&'static str> {

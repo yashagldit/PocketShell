@@ -999,6 +999,7 @@ mod tests {
             host_id: "h1".into(),
             active_sessions: 2,
             pending_devices: 0,
+            app_version: None,
         };
         Mock::given(method("POST"))
             .and(path("/api/v1/presence/hosts/h1/heartbeat"))

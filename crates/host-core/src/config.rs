@@ -45,8 +45,8 @@ impl AppConfig {
             .filter(|s| !s.is_empty())
             .or_else(|| option_env!("POCKETSHELL_DEFAULT_WS_URL").map(str::to_string))
             .unwrap_or_default();
-        let app_version =
-            env::var("POCKETSHELL_APP_VERSION").unwrap_or_else(|_| "0.1.0".to_string());
+        let app_version = env::var("POCKETSHELL_APP_VERSION")
+            .unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_string());
         let min_backend_host_version = env::var("POCKETSHELL_MIN_HOST_VERSION").ok();
 
         let heartbeat_interval_secs = env::var("POCKETSHELL_HEARTBEAT_SECS")
@@ -174,7 +174,7 @@ mod tests {
         // injected at compile time for production builds and fall back to
         // empty otherwise. We don't assert on their value here to avoid
         // pinning a URL into source-controlled tests.
-        assert_eq!(cfg.app_version, "0.1.0");
+        assert_eq!(cfg.app_version, env!("CARGO_PKG_VERSION"));
         assert!(cfg.min_backend_host_version.is_none());
         assert_eq!(cfg.heartbeat_interval_secs, 20);
         assert_eq!(cfg.stats_interval_secs, 5);

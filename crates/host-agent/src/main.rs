@@ -960,6 +960,7 @@ async fn status(config: AppConfig) -> Result<()> {
                         host_id: host.host_id.clone(),
                         active_sessions: 0,
                         pending_devices: store.state.pending_devices.len(),
+                        app_version: Some(config.app_version.clone()),
                     },
                 )
                 .await

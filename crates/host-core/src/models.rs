@@ -214,6 +214,8 @@ pub struct HeartbeatRequest {
     pub host_id: String,
     pub active_sessions: usize,
     pub pending_devices: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
