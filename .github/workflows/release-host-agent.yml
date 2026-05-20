@@ -71,6 +71,27 @@ jobs:
             exit 1
           fi
 
+      - name: Set workspace version from tag
+        shell: bash
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          # Strip leading "v" (workspace.package.version is bare semver).
+          VERSION="${REF_NAME#v}"
+          # Defensive: reject anything that isn't pure semver-ish to keep the
+          # value safe to interpolate into sed.
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$'; then
+            echo "::error::tag $REF_NAME does not look like a version (got '$VERSION')"
+            exit 1
+          fi
+          # Portable sed -i (works on GNU + BSD). Cargo.toml has exactly one
+          # ^version = "..." line under [workspace.package]; dependency lines
+          # are `name = { version = "..." }` and not matched by the ^ anchor.
+          sed -i.bak -E "s/^version = \"[^\"]+\"/version = \"${VERSION}\"/" Cargo.toml
+          rm -f Cargo.toml.bak
+          echo "--- bumped workspace version ---"
+          grep -nE '^version = ' Cargo.toml
+
       - name: Install cross-compile toolchain
         if: matrix.cross_apt != ''
         shell: bash
@@ -95,6 +116,24 @@ jobs:
       - name: Strip binary
         shell: bash
         run: $STRIP_BIN "target/$TARGET/release/pocketshell"
+
+      - name: Verify --version matches tag
+        shell: bash
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          # Every runner is native-arch for its target (macos-26 arm64,
+          # ubuntu-latest x64, ubuntu-24.04-arm arm64, musl runs on glibc),
+          # so the produced binary is executable here.
+          bin="target/$TARGET/release/pocketshell"
+          EXPECTED="pocketshell ${REF_NAME#v}"
+          ACTUAL="$("$bin" --version)"
+          echo "expected: $EXPECTED"
+          echo "actual:   $ACTUAL"
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::binary --version output ($ACTUAL) doesn't match tag ($EXPECTED). The 'Set workspace version from tag' step failed or didn't propagate to the build."
+            exit 1
+          fi
 
       - name: Verify backend URL was baked in
         shell: bash
