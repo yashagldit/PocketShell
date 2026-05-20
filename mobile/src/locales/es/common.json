@@ -25,6 +25,7 @@
   "offline": "Desconectado",
   "online": "En línea",
   "nav.home": "Inicio",
+  "nav.secure_device": "Proteger dispositivo",
   "nav.pair_host": "Emparejar host",
   "nav.host_details": "Detalles del host",
   "nav.sessions": "Sesiones",

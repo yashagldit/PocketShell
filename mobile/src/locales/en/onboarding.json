@@ -66,18 +66,13 @@
   "profile.signed_in_as": "Signed in as {{email}}",
   "profile.save_failed": "Couldn't save your profile. Try again.",
 
-  "pair.title": "Pair your first host",
-  "pair.subtitle": "Run the command below on the machine you want to control. We'll wait here until it connects.",
-  "pair.codeLabel": "Pairing code",
-  "pair.tapToCopy": "Tap to copy",
-  "pair.copied": "Code copied",
-  "pair.installOnHost": "Install on your host",
-  "pair.installCopied": "Install command copied",
-  "pair.runOnHost": "Then pair with this code",
-  "pair.statusWaiting": "Waiting for the host to connect…",
-  "pair.statusPaired": "Paired! Setting things up…",
-  "pair.statusExpired": "Code expired. Skip and try again from the app.",
-  "pair.success": "Host paired",
-  "pair.error": "Couldn't generate a pairing code. You can try again later.",
-  "pair.skip": "I'll do this later"
+  "welcome.title": "You're all set",
+  "welcome.subtitle": "Here's how to get the most out of PocketShell.",
+  "welcome.tips.pair.title": "Add your first host",
+  "welcome.tips.pair.body": "Tap the + button on the home screen to install the agent and pair via QR or code.",
+  "welcome.tips.alerts.title": "Set up alerts",
+  "welcome.tips.alerts.body": "Get pushed the moment CPU spikes, disk fills up, or a host drops offline.",
+  "welcome.tips.workspaces.title": "Organize with workspaces",
+  "welcome.tips.workspaces.body": "Group terminals and files per project so you can switch context without losing your place.",
+  "welcome.cta": "Get started"
 }

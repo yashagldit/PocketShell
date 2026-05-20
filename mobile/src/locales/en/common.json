@@ -25,6 +25,7 @@
   "offline": "Offline",
   "online": "Online",
   "nav.home": "Home",
+  "nav.secure_device": "Secure Device",
   "nav.pair_host": "Pair Host",
   "nav.host_details": "Host Details",
   "nav.sessions": "Sessions",

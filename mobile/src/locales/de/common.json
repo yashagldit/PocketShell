@@ -25,6 +25,7 @@
   "offline": "Offline",
   "online": "Online",
   "nav.home": "Start",
+  "nav.secure_device": "Gerät sichern",
   "nav.pair_host": "Host verbinden",
   "nav.host_details": "Host-Details",
   "nav.sessions": "Sitzungen",

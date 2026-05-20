@@ -25,6 +25,7 @@
   "offline": "Вне сети",
   "online": "В сети",
   "nav.home": "Главная",
+  "nav.secure_device": "Защитить устройство",
   "nav.pair_host": "Подключить хост",
   "nav.host_details": "Сведения о хосте",
   "nav.sessions": "Сеансы",

@@ -25,6 +25,7 @@
   "offline": "Hors ligne",
   "online": "En ligne",
   "nav.home": "Accueil",
+  "nav.secure_device": "Sécuriser l’appareil",
   "nav.pair_host": "Appairer un hôte",
   "nav.host_details": "Détails de l'hôte",
   "nav.sessions": "Sessions",
