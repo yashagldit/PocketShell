@@ -117,6 +117,28 @@ jobs:
         shell: bash
         run: $STRIP_BIN "target/$TARGET/release/pocketshell"
 
+      # Sign the macOS binary with a Developer ID Application cert so the
+      # keychain ACL (host agent stores ED25519 priv key + refresh token via
+      # the `keyring` crate) remains stable across versions — without a stable
+      # signing identity, every new build's hash invalidates the ACL and the
+      # user gets "pocketshell wants to access your keychain" on every update.
+      - name: Import code signing certificate (macOS only)
+        if: runner.os == 'macOS'
+        uses: Apple-Actions/import-codesign-certs@v3
+        with:
+          p12-file-base64: ${{ secrets.APPLE_DEVELOPER_ID_CERT_P12 }}
+          p12-password: ${{ secrets.APPLE_DEVELOPER_ID_CERT_PASSWORD }}
+
+      - name: Codesign binary (macOS only)
+        if: runner.os == 'macOS'
+        env:
+          IDENTITY: ${{ secrets.APPLE_DEVELOPER_ID_NAME }}
+        run: |
+          bin="target/$TARGET/release/pocketshell"
+          codesign --force --timestamp --options runtime \
+            --sign "$IDENTITY" "$bin"
+          codesign --verify --strict --verbose=2 "$bin"
+
       - name: Verify --version matches tag
         shell: bash
         env:

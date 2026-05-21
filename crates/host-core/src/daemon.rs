@@ -2,7 +2,7 @@ use crate::agent_session::{
     self, AgentExitWire, AgentRouter, AgentSession, Backend as AgentBackend,
     SpawnConfig as AgentSpawnConfig,
 };
-use crate::api::{BackendClient, HeartbeatAction};
+use crate::api::BackendClient;
 use crate::audit::{write_audit_event, AuditEvent};
 use crate::auth::{refresh_token_jwt_expired, safe_refresh_if_needed};
 use crate::config::AppConfig;
@@ -11,7 +11,7 @@ use crate::error::{HostError, Result};
 use crate::local_attach;
 use crate::models::StatsSnapshot;
 use crate::models::{
-    AttachTarget, HeartbeatRequest, SessionRecord, SessionRequest, SessionState, SignalEnvelope,
+    AttachTarget, SessionRecord, SessionRequest, SessionState, SignalEnvelope,
 };
 use crate::pty::{SessionAttentionEvent, SessionManager};
 use crate::session::accept_session;
@@ -44,9 +44,6 @@ use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::{debug, error, info, trace, warn};
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
 use webrtc::data_channel::RTCDataChannel;
-
-/// Whether the backend kill-action is honored.
-const HONOR_KILL_ACTION: bool = true;
 
 /// Safety margin subtracted from the TURN cred TTL so we re-fetch slightly
 /// before they actually expire and never hand the WebRTC stack creds that
@@ -1726,7 +1723,6 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
         };
 
         let mut heartbeat_tick = interval(Duration::from_secs(config.heartbeat_interval_secs));
-        let mut consecutive_heartbeat_failures: u32 = 0;
         let mut ws_ping_tick = interval(Duration::from_secs(30));
         // Watchdog state: detect dead WS sockets that don't surface as read
         // errors (e.g. half-closed CLOSE_WAIT after a backend hiccup). The
@@ -1878,13 +1874,6 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                         break;
                     }
 
-                    let payload = HeartbeatRequest {
-                        host_id: host_id.clone(),
-                        active_sessions: sessions.active_count(),
-                        pending_devices: store.state.pending_devices.len(),
-                        app_version: Some(config.app_version.clone()),
-                    };
-
                     let token = match store.access_token().map(|s| s.to_string()) {
                         Ok(t) => t,
                         Err(err) => {
@@ -1892,34 +1881,23 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                             break;
                         }
                     };
-                    match backend.send_heartbeat(&token, &payload).await {
-                        Ok(HeartbeatAction::Kill) if HONOR_KILL_ACTION => {
-                            info!("backend requested shutdown — stopping daemon");
-                            let _ = tokio::time::timeout(
-                                Duration::from_secs(3),
-                                backend.mark_offline(&token, &host_id),
-                            ).await;
-                            sessions.close_all();
-                            webrtc_mgr.close_all().await;
-                            let _ = write_audit_event(AuditEvent {
-                                event_type: "daemon_stopped".to_string(),
-                                host_id: Some(host_id.clone()),
-                                ..AuditEvent::new("daemon_stopped")
-                            });
-                            let _ = store.save();
-                            return Ok(());
-                        }
-                        Ok(_) => {
-                            consecutive_heartbeat_failures = 0;
-                        }
-                        Err(err) => {
-                            consecutive_heartbeat_failures += 1;
-                            warn!("heartbeat failed ({}/3): {}", consecutive_heartbeat_failures, err);
-                            if consecutive_heartbeat_failures >= 3 {
-                                warn!("3 consecutive heartbeat failures — forcing reconnect");
-                                break;
-                            }
-                        }
+                    // Heartbeat rides the open WS instead of an HTTP POST per tick.
+                    let hb_envelope = SignalEnvelope {
+                        message_type: "heartbeat".to_string(),
+                        session_id: None,
+                        payload: Some(serde_json::json!({
+                            "active_sessions": sessions.active_count(),
+                            "pending_devices": store.state.pending_devices.len(),
+                            "app_version": config.app_version,
+                        })),
+                        state: None,
+                        accepted: None,
+                        reason: None,
+                        extra: std::collections::HashMap::new(),
+                    };
+                    if let Err(err) = send_signal(&mut ws, &hb_envelope).await {
+                        warn!("heartbeat send failed: {} — forcing reconnect", err);
+                        break;
                     }
 
                     let (native_to_close, all_expired) =
@@ -2224,11 +2202,22 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                         // Fan out to locally attached CLI clients
                         local_clients.send_output(&chunk.session_id, &chunk.bytes).await;
 
-                        // Always emit the signaling copy as well. WebRTC-connected
-                        // viewers ignore signaling terminal output on the mobile side,
-                        // but fallback viewers still need this path even when another
-                        // viewer already has a live data channel.
+                        // Primary path: deliver to any viewer with a live data channel.
                         let _ = webrtc_mgr.send_output(&chunk.session_id, &chunk.bytes).await;
+
+                        // Skip the WS fallback only when the session has exactly one
+                        // WebRTC channel AND that channel is authenticated. Multi-viewer
+                        // sessions (Vec<RTCDataChannel> per session_id) keep WS flowing
+                        // because `authenticated_channels` is session-keyed and can't
+                        // tell us whether every viewer's channel is auth'd — a second
+                        // viewer in the post-open/pre-auth window would otherwise be
+                        // starved. Single-viewer is the 95% case and gets the win.
+                        if webrtc_mgr.channel_count(&chunk.session_id) == 1
+                            && authenticated_channels.contains(&chunk.session_id)
+                        {
+                            continue;
+                        }
+
                         let msg = SignalEnvelope {
                             message_type: "signal".to_string(),
                             session_id: Some(chunk.session_id),
@@ -4063,7 +4052,36 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                     match incoming {
                         Ok(WsRead::Signal(msg)) => {
                             info!("ws received: type={} session_id={:?}", msg.message_type, msg.session_id);
-                            if msg.message_type == "stats_subscribe" {
+                            if msg.message_type == "daemon_kill" {
+                                // Server-initiated shutdown (free-tier enforcement,
+                                // account revocation, abuse takedown). Replaces the
+                                // old HeartbeatAction::Kill HTTP path.
+                                let reason = msg
+                                    .extra
+                                    .get("reason")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("backend_kill")
+                                    .to_string();
+                                info!("backend requested shutdown ({}) — stopping daemon", reason);
+                                sessions.close_all();
+                                webrtc_mgr.close_all().await;
+                                if let Ok(token) = store.access_token().map(|s| s.to_string()) {
+                                    let _ = tokio::time::timeout(
+                                        Duration::from_secs(3),
+                                        backend.mark_offline(&token, &host_id),
+                                    ).await;
+                                }
+                                drop(local_clients);
+                                let _ = std::fs::remove_file(&local_sock_path);
+                                let _ = write_audit_event(AuditEvent {
+                                    event_type: "daemon_stopped".to_string(),
+                                    host_id: Some(host_id.clone()),
+                                    details: Some(serde_json::json!({ "reason": reason })),
+                                    ..AuditEvent::new("daemon_stopped")
+                                });
+                                store.save()?;
+                                return Ok(());
+                            } else if msg.message_type == "stats_subscribe" {
                                 // stats_subscribe may arrive from the backend REST
                                 // endpoint (no mobile_device_id) or from a mobile
                                 // device via WebSocket.  Backend-originated subscribes

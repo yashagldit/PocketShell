@@ -458,6 +458,12 @@ impl WebRtcManager {
             .map_or(false, |v| !v.is_empty())
     }
 
+    pub fn channel_count(&self, session_id: &str) -> usize {
+        self.session_channels
+            .get(session_id)
+            .map_or(0, |v| v.len())
+    }
+
     /// Send stats data to all connected stats channels.
     pub async fn send_stats(&mut self, data: &[u8]) -> bool {
         let mut channels: Vec<Arc<RTCDataChannel>> = self

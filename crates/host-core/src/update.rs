@@ -1,23 +1,20 @@
 //! Self-update for the host agent.
 //!
-//! Downloads the matching pre-built `pocketshell` binary from a static
-//! release host, verifies its SHA-256, and atomically replaces the on-disk
+//! Downloads the matching pre-built `pocketshell` binary from GitHub
+//! Releases, verifies its SHA-256, and atomically replaces the on-disk
 //! binary. Mirrors `website/public/install.sh` so users get the same
 //! release artifacts whether they install fresh or upgrade.
 //!
-//! The release host is just an HTTPS server serving a directory tree:
+//! Asset layout (standard GitHub Releases):
 //!
 //! ```text
-//! <base_url>/latest.txt                     # one line: "vX.Y.Z"
-//! <base_url>/<tag>/pocketshell-<tag>-<triple>.tar.gz
-//! <base_url>/<tag>/pocketshell-<tag>-<triple>.tar.gz.sha256
+//! <base_url>/releases/latest                                            # 302 → /releases/tag/vX.Y.Z
+//! <base_url>/releases/download/<tag>/pocketshell-<tag>-<triple>.tar.gz
+//! <base_url>/releases/download/<tag>/pocketshell-<tag>-<triple>.tar.gz.sha256
 //! ```
 //!
-//! Defaulting to `https://pocketshell.app/releases` keeps the source
-//! repo private without sacrificing anonymous installability — the
-//! marketing site already serves `install.sh` from the same origin.
-//! Switching to GitHub Releases later is a one-constant change here +
-//! the same in install.sh.
+//! `<base_url>` is the GitHub repo URL — forks/mirrors can point
+//! `POCKETSHELL_BASE_URL` at their own repo and the same logic works.
 
 use crate::error::{HostError, Result};
 use sha2::{Digest, Sha256};
@@ -27,9 +24,9 @@ use std::process::Command;
 use std::time::Duration;
 use tracing::{info, warn};
 
-/// Default release host. Static-served, no auth required, lives next to
-/// install.sh on the marketing site.
-pub const DEFAULT_BASE_URL: &str = "https://pocketshell.app/releases";
+/// Default release host. The public host-agent repo on GitHub — assets are
+/// served as standard release downloads, no auth required.
+pub const DEFAULT_BASE_URL: &str = "https://github.com/yashagldit/PocketShell";
 
 /// Result of an update check — everything the caller needs to either show a
 /// "you're up to date" message or proceed with [`download_and_install`].
@@ -85,51 +82,43 @@ fn is_musl() -> bool {
         || Path::new("/etc/alpine-release").exists()
 }
 
-/// Fetch `<base_url>/latest.txt` and return its trimmed contents (e.g.
-/// `v0.1.0`). The file is the single source of truth for "what's current"
-/// — we deliberately avoid any directory-listing or guess-the-tag logic so
-/// the release host can be a dumb static file server.
+/// Resolve the latest release tag by following GitHub's `/releases/latest`
+/// redirect. The final URL is `<base>/releases/tag/vX.Y.Z`; the tag is the
+/// last path segment. No GitHub API call (anonymous quota would be a
+/// problem for noisy update checks), no JSON parsing.
 pub async fn resolve_latest_tag(base_url: &str) -> Result<String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
         .build()
         .map_err(|e| HostError::Config(format!("build http client: {e}")))?;
 
-    let url = format!("{}/latest.txt", base_url.trim_end_matches('/'));
-    let body = client
-        .get(&url)
+    let url = format!("{}/releases/latest", base_url.trim_end_matches('/'));
+    let resp = client
+        .head(&url)
         .send()
         .await
         .map_err(|e| HostError::Config(format!("fetch {url}: {e}")))?
         .error_for_status()
-        .map_err(|e| HostError::Config(format!("fetch {url}: {e}")))?
-        .text()
-        .await
-        .map_err(|e| HostError::Config(format!("read {url}: {e}")))?;
+        .map_err(|e| HostError::Config(format!("fetch {url}: {e}")))?;
 
-    parse_latest_txt(&body)
-}
-
-/// Pull the version tag out of a `latest.txt` body. Tolerates leading
-/// blanks/comments and CR/LF line endings so an admin can hand-edit the
-/// file safely.
-fn parse_latest_txt(body: &str) -> Result<String> {
-    for line in body.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        return Ok(line.to_string());
+    let final_url = resp.url().clone();
+    let tag = final_url
+        .path()
+        .rsplit('/')
+        .find(|seg| !seg.is_empty())
+        .unwrap_or("");
+    if tag.is_empty() || tag == "latest" {
+        return Err(HostError::Config(format!(
+            "could not parse release tag from {final_url} — is {base_url} a GitHub repo with a published release?"
+        )));
     }
-    Err(HostError::Config(
-        "latest.txt is empty or contains no version line".into(),
-    ))
+    Ok(tag.to_string())
 }
 
 fn build_urls(base_url: &str, tag: &str, target: &str) -> (String, String, String) {
     let base = base_url.trim_end_matches('/');
     let archive = format!("pocketshell-{tag}-{target}.tar.gz");
-    let dl = format!("{base}/{tag}/{archive}");
+    let dl = format!("{base}/releases/download/{tag}/{archive}");
     let sha = format!("{dl}.sha256");
     (archive, dl, sha)
 }
@@ -139,7 +128,7 @@ fn normalize(v: &str) -> &str {
 }
 
 /// Resolve target version + URLs without downloading anything. Pass
-/// `requested_version=None` to fall back on `<base_url>/latest.txt`.
+/// `requested_version=None` to fall back on `<base_url>/releases/latest`.
 pub async fn check(
     base_url: &str,
     current_version: &str,
@@ -417,39 +406,16 @@ mod tests {
     }
 
     #[test]
-    fn parse_latest_txt_extracts_first_non_blank_line() {
-        assert_eq!(parse_latest_txt("v1.2.3\n").unwrap(), "v1.2.3");
-        assert_eq!(parse_latest_txt("v1.2.3").unwrap(), "v1.2.3");
-        assert_eq!(parse_latest_txt("\nv1.2.3\n").unwrap(), "v1.2.3");
-        // CRLF (sftp upload from Windows) shouldn't poison the tag.
-        assert_eq!(parse_latest_txt("v1.2.3\r\n").unwrap(), "v1.2.3");
-    }
-
-    #[test]
-    fn parse_latest_txt_skips_comment_lines() {
-        assert_eq!(
-            parse_latest_txt("# rolled back to v1\nv1.0.0\n").unwrap(),
-            "v1.0.0"
-        );
-    }
-
-    #[test]
-    fn parse_latest_txt_errors_when_empty() {
-        assert!(parse_latest_txt("").is_err());
-        assert!(parse_latest_txt("\n\n# comment only\n").is_err());
-    }
-
-    #[test]
     fn build_urls_produces_expected_paths() {
         let (archive, dl, sha) = build_urls(
-            "https://pocketshell.app/releases",
+            "https://github.com/yashagldit/PocketShell",
             "v0.1.0",
             "aarch64-apple-darwin",
         );
         assert_eq!(archive, "pocketshell-v0.1.0-aarch64-apple-darwin.tar.gz");
         assert_eq!(
             dl,
-            "https://pocketshell.app/releases/v0.1.0/pocketshell-v0.1.0-aarch64-apple-darwin.tar.gz"
+            "https://github.com/yashagldit/PocketShell/releases/download/v0.1.0/pocketshell-v0.1.0-aarch64-apple-darwin.tar.gz"
         );
         assert_eq!(sha, format!("{dl}.sha256"));
     }
@@ -459,13 +425,13 @@ mod tests {
         // Operator-friendly: don't double-slash if someone configures the
         // base with a trailing /.
         let (_, dl, _) = build_urls(
-            "https://pocketshell.app/releases/",
+            "https://github.com/yashagldit/PocketShell/",
             "v0.1.0",
             "x86_64-unknown-linux-gnu",
         );
         assert_eq!(
             dl,
-            "https://pocketshell.app/releases/v0.1.0/pocketshell-v0.1.0-x86_64-unknown-linux-gnu.tar.gz"
+            "https://github.com/yashagldit/PocketShell/releases/download/v0.1.0/pocketshell-v0.1.0-x86_64-unknown-linux-gnu.tar.gz"
         );
     }
 
