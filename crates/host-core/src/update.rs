@@ -28,6 +28,17 @@ use tracing::{info, warn};
 /// served as standard release downloads, no auth required.
 pub const DEFAULT_BASE_URL: &str = "https://github.com/yashagldit/PocketShell";
 
+/// Apple Team ID stamped on every released macOS binary by the codesign step
+/// in `.github/workflows/release-host-agent.yml`. Not a secret — visible via
+/// `codesign -dv` on any shipped binary — so it lives in source rather than
+/// as a build-time env var. If the Apple Developer account ever rotates and
+/// produces a new Team ID, bump this constant in the same commit as the new
+/// signing cert and ship a release; older clients will reject the new binary
+/// until they pull the constant update via some out-of-band path (re-pair,
+/// manual install). That's a feature, not a bug: it forces a deliberate
+/// rotation event instead of silently accepting a foreign signer.
+const EXPECTED_APPLE_TEAM_ID: &str = "UKH6DFA3B9";
+
 /// Result of an update check — everything the caller needs to either show a
 /// "you're up to date" message or proceed with [`download_and_install`].
 #[derive(Debug, Clone)]
@@ -43,6 +54,10 @@ pub struct UpdateInfo {
     pub download_url: String,
     /// Sibling `.sha256` URL on GitHub releases.
     pub checksum_url: String,
+    /// Sibling `.cosign-bundle.json` URL on GitHub releases — Sigstore keyless
+    /// signature produced by `.github/workflows/release-host-agent.yml`. Empty
+    /// for releases predating the cosign rollout.
+    pub cosign_bundle_url: String,
     /// True iff `current_version == target_version` (after stripping leading `v`).
     pub up_to_date: bool,
 }
@@ -115,12 +130,13 @@ pub async fn resolve_latest_tag(base_url: &str) -> Result<String> {
     Ok(tag.to_string())
 }
 
-fn build_urls(base_url: &str, tag: &str, target: &str) -> (String, String, String) {
+fn build_urls(base_url: &str, tag: &str, target: &str) -> (String, String, String, String) {
     let base = base_url.trim_end_matches('/');
     let archive = format!("pocketshell-{tag}-{target}.tar.gz");
     let dl = format!("{base}/releases/download/{tag}/{archive}");
     let sha = format!("{dl}.sha256");
-    (archive, dl, sha)
+    let bundle = format!("{dl}.cosign-bundle.json");
+    (archive, dl, sha, bundle)
 }
 
 fn normalize(v: &str) -> &str {
@@ -148,7 +164,7 @@ pub async fn check(
         _ => resolve_latest_tag(base_url).await?,
     };
     let target_triple = detect_target()?;
-    let (archive_name, download_url, checksum_url) =
+    let (archive_name, download_url, checksum_url, cosign_bundle_url) =
         build_urls(base_url, &target_version, &target_triple);
     let up_to_date = normalize(&target_version) == normalize(current_version);
     Ok(UpdateInfo {
@@ -158,16 +174,37 @@ pub async fn check(
         archive_name,
         download_url,
         checksum_url,
+        cosign_bundle_url,
         up_to_date,
     })
 }
 
-/// Download the archive + checksum, verify SHA-256, extract the binary, and
+/// Knobs the caller (CLI) can flip to relax authenticity checks. Every
+/// non-default value here weakens the security posture; the corresponding CLI
+/// flag must surface that to the user.
+#[derive(Debug, Clone, Default)]
+pub struct InstallOptions {
+    /// Skip cosign keyless verification of the downloaded artifact. Only
+    /// honored when the user explicitly passes `--insecure-skip-verify` (or
+    /// equivalent). The SHA-256 + macOS codesign checks still run.
+    pub skip_cosign: bool,
+}
+
+/// Download the archive + checksum + cosign bundle, verify SHA-256 and the
+/// cosign keyless signature against our pinned workflow identity, then
 /// atomically replace the currently-running binary on disk.
 ///
 /// Returns the absolute path of the installed binary. The previous binary is
 /// preserved at `<binary>.old` so an admin can roll back manually.
 pub async fn download_and_install(info: &UpdateInfo) -> Result<PathBuf> {
+    download_and_install_with(info, &InstallOptions::default()).await
+}
+
+/// Same as [`download_and_install`] but with explicit option control.
+pub async fn download_and_install_with(
+    info: &UpdateInfo,
+    opts: &InstallOptions,
+) -> Result<PathBuf> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(120))
         .build()
@@ -231,6 +268,44 @@ pub async fn download_and_install(info: &UpdateInfo) -> Result<PathBuf> {
     fs::write(&archive_path, &archive_bytes)
         .map_err(|e| HostError::Config(format!("write archive: {e}")))?;
 
+    // Cosign keyless verification. The SHA-256 above proves the bytes match
+    // what the release origin served — same origin, same trust. The cosign
+    // signature is pinned to a specific GitHub workflow identity (the
+    // release-host-agent.yml in this repo), so it proves the bytes were
+    // produced by *that* workflow run. An attacker who owns GitHub Releases
+    // publishing alone can no longer push a malicious update — they'd also
+    // need an OIDC token from a workflow at this exact path.
+    if opts.skip_cosign {
+        warn!(
+            "--insecure-skip-verify in effect: cosign keyless verification SKIPPED for {}. \
+             Only the SHA-256 (same-origin as the artifact) was checked. \
+             Do not use this flag against an untrusted release.",
+            info.archive_name
+        );
+    } else {
+        let bundle_path = staging.join(format!("{}.cosign-bundle.json", info.archive_name));
+        let bundle_text = client
+            .get(&info.cosign_bundle_url)
+            .send()
+            .await
+            .map_err(|e| HostError::Config(format!("download cosign bundle: {e}")))?
+            .error_for_status()
+            .map_err(|e| {
+                HostError::Config(format!(
+                    "download cosign bundle from {}: {e} — release may predate the cosign \
+                     rollout. Pass --insecure-skip-verify only if you have manually verified \
+                     the SHA-256 out of band.",
+                    info.cosign_bundle_url
+                ))
+            })?
+            .text()
+            .await
+            .map_err(|e| HostError::Config(format!("read cosign bundle body: {e}")))?;
+        fs::write(&bundle_path, bundle_text.as_bytes())
+            .map_err(|e| HostError::Config(format!("write cosign bundle: {e}")))?;
+        verify_cosign_bundle(&archive_path, &bundle_path)?;
+    }
+
     info!("extracting {}", info.archive_name);
     let status = Command::new("tar")
         .arg("-xzf")
@@ -248,6 +323,20 @@ pub async fn download_and_install(info: &UpdateInfo) -> Result<PathBuf> {
         return Err(HostError::Config(
             "tarball did not contain a `pocketshell` binary".into(),
         ));
+    }
+
+    // On macOS, verify the new binary carries our Developer ID code signature
+    // before we swap it in. The SHA-256 above only proves the bytes match what
+    // was served from the release origin — same origin can publish both the
+    // tarball and its checksum, so it's integrity, not authenticity. A valid
+    // codesign chain anchored to Apple + our Team ID is authenticity: an
+    // attacker who pushes a malicious release would have to steal our Apple
+    // Developer ID cert in addition to the release publishing flow.
+    if let Err(e) = verify_macos_codesign(&new_binary) {
+        return Err(HostError::Config(format!(
+            "refusing to install: codesign verification failed for {}: {e}",
+            new_binary.display()
+        )));
     }
 
     // Atomically replace the on-disk binary. On Linux/macOS, `rename` over
@@ -319,6 +408,102 @@ impl Drop for StagingGuard {
             warn!("failed to clean up staging dir {}: {e}", self.0.display());
         }
     }
+}
+
+/// Sigstore keyless certificate identity that our release workflow produces.
+/// Matches `https://github.com/<owner>/<repo>/.github/workflows/release-host-agent.yml@refs/tags/v...`
+/// for any version tag. Anchored with `^` and `$` so a workflow at a similar
+/// path (e.g. a fork's `release-host-agent-test.yml`) cannot satisfy this.
+const COSIGN_IDENTITY_REGEXP: &str = concat!(
+    "^https://github\\.com/yashagldit/PocketShell/",
+    "\\.github/workflows/release-host-agent\\.yml@refs/tags/v[0-9][0-9A-Za-z.\\-]*$",
+);
+
+/// The OIDC issuer GitHub Actions uses to mint tokens for the workflow's
+/// keyless signing flow. This is the same string the cosign-installer action
+/// expects on the signing side; if either rotates the verify will fail loudly.
+const COSIGN_OIDC_ISSUER: &str = "https://token.actions.githubusercontent.com";
+
+/// Shell out to `cosign verify-blob` to check the keyless signature bundle
+/// produced by our release workflow. We require the cosign binary to be
+/// installed on the host — there is no usable production-grade Rust verifier
+/// in May 2026 (sigstore-rs is marked experimental; sigstore-verification was
+/// archived 2026-05-18). When sigstore-rs stabilizes, replace this with an
+/// in-process verifier and a baked-in TUF trust root.
+fn verify_cosign_bundle(artifact: &Path, bundle: &Path) -> Result<()> {
+    let output = Command::new("cosign")
+        .args(["verify-blob", "--new-bundle-format", "--bundle"])
+        .arg(bundle)
+        .args(["--certificate-identity-regexp", COSIGN_IDENTITY_REGEXP])
+        .args(["--certificate-oidc-issuer", COSIGN_OIDC_ISSUER])
+        .arg(artifact)
+        .output();
+    let output = match output {
+        Ok(o) => o,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(HostError::Config(
+                "cosign is not installed on PATH — required to verify the release signature. \
+                 Install it (`brew install cosign`, `apt install cosign`, or download from \
+                 https://github.com/sigstore/cosign/releases) and re-run, or pass \
+                 --insecure-skip-verify if you have manually verified the artifact out of band."
+                    .to_string(),
+            ));
+        }
+        Err(e) => {
+            return Err(HostError::Config(format!("spawn cosign: {e}")));
+        }
+    };
+    if output.status.success() {
+        info!("cosign verified (identity pinned to release workflow)");
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    Err(HostError::Config(format!(
+        "cosign verify-blob rejected the release artifact — refusing to install. \
+         Identity required: {COSIGN_IDENTITY_REGEXP}. cosign stderr: {stderr}"
+    )))
+}
+
+/// Build the `codesign` designated-requirement clause that proves a binary
+/// was signed by us:
+///   * `anchor apple generic` — chain ultimately rooted in Apple
+///   * intermediate `1.2.840.113635.100.6.2.6` — Developer ID CA
+///   * leaf `1.2.840.113635.100.6.1.13` — Developer ID Application cert
+///   * leaf subject OU equals our Team ID
+fn developer_id_requirement(team_id: &str) -> String {
+    format!(
+        "anchor apple generic \
+         and certificate 1[field.1.2.840.113635.100.6.2.6] exists \
+         and certificate leaf[field.1.2.840.113635.100.6.1.13] exists \
+         and certificate leaf[subject.OU] = \"{team_id}\""
+    )
+}
+
+/// Verify a downloaded binary carries our Apple Developer ID signature before
+/// we let it replace the on-disk binary. No-op on non-macOS targets — the
+/// Sigstore cosign verify (TODO) will cover Linux + macOS uniformly later.
+fn verify_macos_codesign(binary: &Path) -> Result<()> {
+    if !cfg!(target_os = "macos") {
+        return Ok(());
+    }
+    // codesign's `-R requirement` (two args) is a sign-time option; the
+    // verify form requires the equals-sign syntax `-R=<requirement>` as a
+    // single argv entry. Easy to get wrong — see `man codesign`.
+    let req_arg = format!("-R={}", developer_id_requirement(EXPECTED_APPLE_TEAM_ID));
+    let output = Command::new("codesign")
+        .args(["--verify", "--strict"])
+        .arg(&req_arg)
+        .arg(binary)
+        .output()
+        .map_err(|e| HostError::Config(format!("spawn codesign: {e}")))?;
+    if output.status.success() {
+        info!("codesign verified (Team ID {EXPECTED_APPLE_TEAM_ID})");
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    Err(HostError::Config(format!(
+        "codesign --verify rejected binary (Team ID {EXPECTED_APPLE_TEAM_ID}): {stderr}"
+    )))
 }
 
 /// `.sha256` files from our release pipeline look like:
@@ -407,7 +592,7 @@ mod tests {
 
     #[test]
     fn build_urls_produces_expected_paths() {
-        let (archive, dl, sha) = build_urls(
+        let (archive, dl, sha, bundle) = build_urls(
             "https://github.com/yashagldit/PocketShell",
             "v0.1.0",
             "aarch64-apple-darwin",
@@ -418,13 +603,14 @@ mod tests {
             "https://github.com/yashagldit/PocketShell/releases/download/v0.1.0/pocketshell-v0.1.0-aarch64-apple-darwin.tar.gz"
         );
         assert_eq!(sha, format!("{dl}.sha256"));
+        assert_eq!(bundle, format!("{dl}.cosign-bundle.json"));
     }
 
     #[test]
     fn build_urls_tolerates_trailing_slash_on_base() {
         // Operator-friendly: don't double-slash if someone configures the
         // base with a trailing /.
-        let (_, dl, _) = build_urls(
+        let (_, dl, _, _) = build_urls(
             "https://github.com/yashagldit/PocketShell/",
             "v0.1.0",
             "x86_64-unknown-linux-gnu",
@@ -471,6 +657,100 @@ mod tests {
         assert_eq!(
             with_old_suffix(Path::new("/opt/pocketshell.exe")),
             PathBuf::from("/opt/pocketshell.exe.old")
+        );
+    }
+
+    #[test]
+    fn developer_id_requirement_pins_team_id_and_apple_anchor() {
+        let req = developer_id_requirement("ABCDE12345");
+        // Pin the exact requirement clause: changing any of these tokens is a
+        // semantic change to what "we signed this" means, and should require
+        // an explicit test update — not a silent edit.
+        assert!(req.contains("anchor apple generic"));
+        assert!(req.contains("certificate 1[field.1.2.840.113635.100.6.2.6] exists"));
+        assert!(req.contains("certificate leaf[field.1.2.840.113635.100.6.1.13] exists"));
+        assert!(req.contains("certificate leaf[subject.OU] = \"ABCDE12345\""));
+    }
+
+    #[test]
+    fn verify_macos_codesign_is_noop_on_non_macos() {
+        // Off-platform the verify must short-circuit so Linux/Windows builds
+        // of `pocketshell update` don't try to spawn a non-existent `codesign`.
+        // We can't assert codesign behavior portably on macOS in unit tests
+        // because it depends on a properly-signed binary at the given path.
+        #[cfg(not(target_os = "macos"))]
+        verify_macos_codesign(Path::new("/nonexistent")).unwrap();
+    }
+
+    #[test]
+    fn cosign_identity_regexp_anchors_and_matches_expected_workflow_path() {
+        // Pin the exact shape of the certificate-identity-regexp so a typo in
+        // the workflow path (e.g. renaming release-host-agent.yml) is caught
+        // here, not at update time on every user's machine.
+        assert!(COSIGN_IDENTITY_REGEXP.starts_with("^https://github\\.com/"));
+        assert!(COSIGN_IDENTITY_REGEXP.ends_with("$"));
+        assert!(COSIGN_IDENTITY_REGEXP.contains("yashagldit/PocketShell"));
+        assert!(COSIGN_IDENTITY_REGEXP.contains("release-host-agent\\.yml"));
+        assert!(COSIGN_IDENTITY_REGEXP.contains("refs/tags/v"));
+
+        let re = regex::Regex::new(COSIGN_IDENTITY_REGEXP).expect("regexp must compile");
+        assert!(re.is_match(
+            "https://github.com/yashagldit/PocketShell/.github/workflows/release-host-agent.yml@refs/tags/v0.1.0"
+        ));
+        assert!(re.is_match(
+            "https://github.com/yashagldit/PocketShell/.github/workflows/release-host-agent.yml@refs/tags/v1.2.3-beta.4"
+        ));
+        // Negatives that must NOT satisfy the pin:
+        assert!(!re.is_match(
+            "https://github.com/somebodyelse/PocketShell/.github/workflows/release-host-agent.yml@refs/tags/v0.1.0"
+        ));
+        assert!(!re.is_match(
+            "https://github.com/yashagldit/PocketShell/.github/workflows/release-host-agent.yml@refs/heads/main"
+        ));
+        assert!(!re.is_match(
+            "https://github.com/yashagldit/PocketShell/.github/workflows/release-host-agent-test.yml@refs/tags/v0.1.0"
+        ));
+    }
+
+    #[test]
+    fn cosign_oidc_issuer_is_github_actions_token_endpoint() {
+        // Anchored to GitHub Actions' OIDC issuer URL. If GitHub ever rotates
+        // this we'll hit a runtime verify failure; pin it here so the symptom
+        // is a failing unit test instead of users getting broken updates.
+        assert_eq!(
+            COSIGN_OIDC_ISSUER,
+            "https://token.actions.githubusercontent.com"
+        );
+    }
+
+    #[test]
+    fn expected_team_id_is_set_and_well_formed() {
+        // 10-char alphanumeric Team ID, per Apple's account format. If this
+        // changes the codesign requirement clause changes too — the test
+        // catches accidental edits that would break authenticity on update.
+        assert_eq!(EXPECTED_APPLE_TEAM_ID.len(), 10);
+        assert!(EXPECTED_APPLE_TEAM_ID
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric()));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn verify_macos_codesign_rejects_unsigned_file() {
+        // Live invocation of `codesign --verify` against a known-bad file.
+        // Catches regressions in the requirement-clause syntax that wouldn't
+        // surface in the string-builder test (e.g. forgetting the `-R=` form
+        // vs. `-R ` two-arg form, which means very different things).
+        let dir = tempfile::tempdir().unwrap();
+        let unsigned = dir.path().join("not-a-macho");
+        std::fs::write(&unsigned, b"definitely not a signed Mach-O").unwrap();
+        let err = verify_macos_codesign(&unsigned).unwrap_err();
+        // We don't pin the exact codesign stderr — Apple has changed wording
+        // across macOS releases. We just need confirmation we hit the verify
+        // path, not the spawn-failed path.
+        assert!(
+            err.to_string().contains("codesign --verify rejected"),
+            "expected verify-rejection error, got: {err}"
         );
     }
 }

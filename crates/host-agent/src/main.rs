@@ -77,8 +77,10 @@ enum Commands {
     /// or after `pocketshell update` swaps the binary on disk.
     Restart,
     /// Update the host agent to the latest release (or `--version`).
-    /// Verifies the SHA-256 checksum, replaces the binary in-place, and
-    /// restarts the daemon if it's running.
+    /// Verifies the SHA-256 checksum, the Sigstore cosign keyless signature
+    /// (pinned to this repo's release workflow), and on macOS the Developer
+    /// ID code signature, then replaces the binary in-place and restarts the
+    /// daemon if it's running.
     Update {
         /// Don't apply the update — just report whether one is available.
         #[arg(long)]
@@ -93,6 +95,12 @@ enum Commands {
         /// layout described in `host_core::update`).
         #[arg(long, default_value = host_core::update::DEFAULT_BASE_URL)]
         base_url: String,
+        /// Skip cosign keyless signature verification. Use only when you have
+        /// manually verified the artifact out of band — the SHA-256 check
+        /// alone proves integrity against the release origin, not
+        /// authenticity. macOS Developer ID verification still runs.
+        #[arg(long)]
+        insecure_skip_verify: bool,
     },
     /// Expose a terminal session for mobile access.
     /// Creates a named tmux session that the daemon auto-discovers.
@@ -174,7 +182,8 @@ async fn main() -> Result<()> {
             force,
             version,
             base_url,
-        }) => update_cmd(check, force, version, base_url).await,
+            insecure_skip_verify,
+        }) => update_cmd(check, force, version, base_url, insecure_skip_verify).await,
         Some(Commands::Remote {
             name,
             detached,
@@ -1210,6 +1219,7 @@ async fn update_cmd(
     force: bool,
     version: Option<String>,
     base_url: String,
+    insecure_skip_verify: bool,
 ) -> Result<()> {
     use host_core::update;
 
@@ -1241,10 +1251,22 @@ async fn update_cmd(
         return Ok(());
     }
 
+    if insecure_skip_verify {
+        eprintln!(
+            "WARNING: --insecure-skip-verify is set; cosign signature check will be skipped. \
+             Only the SHA-256 (same-origin as the release) will be verified."
+        );
+    }
+
     println!("downloading and installing...");
-    let installed = update::download_and_install(&info)
-        .await
-        .context("installing update")?;
+    let installed = update::download_and_install_with(
+        &info,
+        &update::InstallOptions {
+            skip_cosign: insecure_skip_verify,
+        },
+    )
+    .await
+    .context("installing update")?;
 
     let _ = write_audit_event(AuditEvent::new("self_update"));
 
@@ -1713,8 +1735,14 @@ async fn interactive_menu(config: AppConfig) -> Result<()> {
             MenuAction::DaemonStop => daemon_stop(),
             MenuAction::DaemonRestart => daemon_restart(),
             MenuAction::CheckForUpdate => {
-                update_cmd(true, false, None, host_core::update::DEFAULT_BASE_URL.to_string())
-                    .await
+                update_cmd(
+                    true,
+                    false,
+                    None,
+                    host_core::update::DEFAULT_BASE_URL.to_string(),
+                    false,
+                )
+                .await
             }
             MenuAction::Update => menu_update(&theme).await,
             MenuAction::Logout => menu_logout(&theme),
@@ -1909,7 +1937,7 @@ async fn menu_update(theme: &dialoguer::theme::ColorfulTheme) -> Result<()> {
         if !force {
             return Ok(());
         }
-        return update_cmd(false, true, None, update::DEFAULT_BASE_URL.to_string()).await;
+        return update_cmd(false, true, None, update::DEFAULT_BASE_URL.to_string(), false).await;
     }
 
     let proceed = Confirm::with_theme(theme)
@@ -1925,7 +1953,7 @@ async fn menu_update(theme: &dialoguer::theme::ColorfulTheme) -> Result<()> {
         println!("update cancelled");
         return Ok(());
     }
-    update_cmd(false, false, None, update::DEFAULT_BASE_URL.to_string()).await
+    update_cmd(false, false, None, update::DEFAULT_BASE_URL.to_string(), false).await
 }
 
 fn menu_logout(theme: &dialoguer::theme::ColorfulTheme) -> Result<()> {

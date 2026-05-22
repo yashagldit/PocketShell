@@ -372,6 +372,37 @@ fn safe_canonicalize(path: &Path) -> Result<PathBuf> {
     Ok(canonical)
 }
 
+/// Canonicalize an existing file path and apply the same protected-path
+/// denylist used by the file channel before allowing another channel to read
+/// it.
+pub fn safe_canonicalize_readable_file(path: &Path, max_size: u64) -> Result<PathBuf> {
+    let canonical = safe_canonicalize(path)?;
+    let metadata = fs::metadata(&canonical)
+        .map_err(|e| HostError::Backend(format!("cannot stat {}: {}", canonical.display(), e)))?;
+
+    if metadata.is_dir() {
+        return Err(HostError::Backend(
+            "cannot read a directory as a file".to_string(),
+        ));
+    }
+    if !metadata.is_file() {
+        return Err(HostError::Backend(format!(
+            "not a regular file: {}",
+            canonical.display()
+        )));
+    }
+
+    if metadata.len() > max_size {
+        return Err(HostError::Backend(format!(
+            "file too large: {} bytes (max {})",
+            metadata.len(),
+            max_size
+        )));
+    }
+
+    Ok(canonical)
+}
+
 /// Canonicalize a destination path that may not exist yet.
 /// Resolves the closest existing ancestor to eliminate `..` traversal,
 /// then appends the remaining unresolved components (which must not contain `..`).

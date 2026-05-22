@@ -16,7 +16,9 @@ This repository is the **open-source host agent** that runs on the machine you w
                        (your terminal traffic; never touches our servers)
 ```
 
-The control plane refuses, throttles, or routes connections. It cannot read or forge data once a session is up. Compromise of our backend does not compromise your shell.
+The control plane refuses, throttles, or routes connections. Once a mobile↔host session is up, the backend cannot read or forge the terminal/files/agent bytes — the data channel is sealed with ChaCha20-Poly1305 keys derived from an X25519 exchange the backend never sees, bound to the device's long-term ED25519 pairing key. Compromise of our backend does not compromise your shell.
+
+> ⚠️ Open caveat: host↔host file transfer (a Pro feature) currently verifies SDP signatures against a public key the backend relays, rather than a pre-pinned host pubkey. A malicious backend could forge a transfer offer. Mobile↔host sessions are not affected. Tracked, fix in flight — see [Security model](#security-model).
 
 ---
 
@@ -187,13 +189,16 @@ sequenceDiagram
 |---|---|---|
 | Auth | HTTPS `/api/v1/auth/*` | OTP, JWT issue / refresh, host pair / re-auth |
 | Signaling | WSS `/ws/mobile`, `/ws/host` | `session_offer` · `session_answer` · `ice_candidate` · `session_event` · `stats_offer` · `files_offer` · `agent_offer` · `alert` · `host_summary` · `available_sessions` |
-| Presence & metrics fallback | HTTPS `/api/v1/presence/*` | last-seen, cached stats history (when P2P unavailable) |
+| Presence + lightweight metrics | WSS `/ws/host` | `heartbeat` (host_id, active_sessions, app_version) · `host_summary` (cpu%, ram%) · `stats_snapshot` and `stats_minute_batch` (cpu/mem/disk/load/battery/net IO/temps — **no processes, no command lines, no logged-in users**) |
+| Metrics history (Pro) | HTTPS `/api/v1/presence/hosts/{id}/stats/history*` | minute / 30-min / hourly / daily aggregates served from PostgreSQL — used by the history charts even when no live session is active |
 | **Terminal I/O** | **WebRTC `terminal` channel** | **PTY bytes — never touches backend** |
-| **Stats stream** | **WebRTC `stats` channel** | **JSON snapshots, separate peer connection** |
+| **Live stats (rich)** | **WebRTC `stats` channel** | **Top-50 processes · per-core CPU · logged-in users · network connections · OS info · hostname — never touches backend** |
 | **File ops** | **WebRTC `files` channel** | **Framed JSON + base64 chunks (sentinel `\x00PSFC`)** |
 | **Agent chat** | **WebRTC `agent-{id}` channel** | **Claude / Codex stdio, JSON framed** |
 
 The backend is a switchboard — it can refuse a connection, throttle it, or route it through TURN, but once the data channel is up it sees ciphertext at best and nothing at all on direct P2P.
+
+**What the backend persists.** To deliver the Pro history-chart feature, the backend stores minute-bucket aggregates of numerical metrics (cpu/mem/disk/uptime/load/battery/net IO/disk IO/max temp + collected-at) per host, rolled up into 30-min/hourly/daily over time. It does **not** persist processes, command lines, hostnames, logged-in users, or network connection lists — those flow only over WebRTC and are dropped from Redis after ~35 minutes. Account deletion removes all of the above; see `app/services/account_deletion_service.py`.
 
 ---
 
@@ -209,6 +214,11 @@ The backend is a switchboard — it can refuse a connection, throttle it, or rou
 | Storage | OS keychain — Apple Keychain · Linux secret-service · Windows DPAPI · 0o600 file fallback for headless Linux |
 
 Long-lived secrets (host private key, refresh token) live in the OS keychain via `crates/host-core/src/secret_store.rs`. Short-lived access tokens sit in `state.json` (mode `0o600`).
+
+### Known gaps
+
+- **Host↔host transfer pubkey trust** — the destination host verifies the source's SDP signature against a public key the backend relays, not a locally-pinned one. A compromised backend could forge a transfer offer that looks signed by a paired peer. Affects host↔host file transfer only; mobile↔host sessions are unaffected. Fix in flight: maintain a `trusted_hosts` store mirroring `trusted_devices`, populated at pairing time, and require the source `host_id` to look up its pubkey locally.
+- **No per-session approval prompt** — once a mobile device is trusted, every session offer is accepted immediately. Acceptable for an unlocked-phone-in-your-pocket threat model; not for a stolen-and-unlocked-phone one. A configurable approval gate is on the roadmap.
 
 Found something? Email `security@pocketshell.app`. Public issues are fine for non-sensitive bugs.
 

@@ -24,7 +24,7 @@
 //! supervised lifecycle.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -44,6 +44,7 @@ const STDERR_RING_BYTES: usize = 4 * 1024;
 /// streaming; inbound stdin writes are user-paced.
 const STDOUT_CHANNEL_CAPACITY: usize = 256;
 const STDIN_CHANNEL_CAPACITY: usize = 64;
+const MAX_AGENT_ATTACHMENT_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Which CLI to drive. The protocol shape (JSON-RPC vs stream-json) is the
 /// mobile adapter's problem; here we only care about how to spawn it.
@@ -611,13 +612,20 @@ pub fn build_codex_send_user_message(
     let mut items: Vec<serde_json::Value> = Vec::with_capacity(input.attachments.len() + 1);
     for att in &input.attachments {
         match att {
-            AgentAttachment::LocalPath { path, .. } => {
+            AgentAttachment::LocalPath { path, media_type } => {
+                let canonical = validate_local_image_attachment(path, media_type)?;
+                info!(
+                    path = %canonical.display(),
+                    media_type = %media_type,
+                    "agent attachment local path accepted"
+                );
                 items.push(serde_json::json!({
                     "type": "localImage",
-                    "data": { "path": path }
+                    "data": { "path": canonical }
                 }));
             }
             AgentAttachment::Base64 { data, media_type } => {
+                validate_base64_image_attachment(data, media_type)?;
                 let url = format!("data:{media_type};base64,{data}");
                 items.push(serde_json::json!({
                     "type": "image",
@@ -657,9 +665,19 @@ pub fn build_claude_user_message(input: &SendUserMessageInput) -> Result<String,
     let mut blocks: Vec<serde_json::Value> = Vec::with_capacity(input.attachments.len() + 1);
     for att in &input.attachments {
         let (media_type, data) = match att {
-            AgentAttachment::Base64 { data, media_type } => (media_type.clone(), data.clone()),
+            AgentAttachment::Base64 { data, media_type } => {
+                validate_base64_image_attachment(data, media_type)?;
+                (media_type.clone(), data.clone())
+            }
             AgentAttachment::LocalPath { path, media_type } => {
-                let bytes = std::fs::read(path).map_err(|e| format!("read {path}: {e}"))?;
+                let canonical = validate_local_image_attachment(path, media_type)?;
+                info!(
+                    path = %canonical.display(),
+                    media_type = %media_type,
+                    "agent attachment local path accepted"
+                );
+                let bytes = std::fs::read(&canonical)
+                    .map_err(|e| format!("read {}: {e}", canonical.display()))?;
                 use base64::Engine;
                 let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
                 (media_type.clone(), encoded)
@@ -680,6 +698,47 @@ pub fn build_claude_user_message(input: &SendUserMessageInput) -> Result<String,
         "message": { "role": "user", "content": blocks },
     });
     serde_json::to_string(&frame).map_err(|e| e.to_string())
+}
+
+fn validate_image_media_type(media_type: &str) -> Result<(), String> {
+    let ty = media_type.trim().to_ascii_lowercase();
+    let Some(subtype) = ty.strip_prefix("image/") else {
+        return Err(format!("unsupported attachment media type: {media_type}"));
+    };
+    if subtype.is_empty() || subtype.contains(';') {
+        return Err(format!("unsupported attachment media type: {media_type}"));
+    }
+    Ok(())
+}
+
+fn validate_local_image_attachment(path: &str, media_type: &str) -> Result<PathBuf, String> {
+    validate_image_media_type(media_type)?;
+    crate::files::safe_canonicalize_readable_file(Path::new(path), MAX_AGENT_ATTACHMENT_BYTES)
+        .map_err(|e| e.to_string())
+}
+
+fn validate_base64_image_attachment(data: &str, media_type: &str) -> Result<(), String> {
+    validate_image_media_type(media_type)?;
+    let max_b64_len = (MAX_AGENT_ATTACHMENT_BYTES as usize).saturating_mul(4) / 3 + 4;
+    if data.len() > max_b64_len {
+        return Err(format!(
+            "attachment too large: encoded length {} exceeds max {}",
+            data.len(),
+            max_b64_len
+        ));
+    }
+    use base64::Engine;
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .map_err(|e| format!("invalid base64 attachment: {e}"))?;
+    if decoded.len() as u64 > MAX_AGENT_ATTACHMENT_BYTES {
+        return Err(format!(
+            "attachment too large: {} bytes (max {})",
+            decoded.len(),
+            MAX_AGENT_ATTACHMENT_BYTES
+        ));
+    }
+    Ok(())
 }
 
 /// Errors raised by `spawn_session` before any I/O tasks are running.
@@ -1565,11 +1624,15 @@ mod tests {
 
     #[test]
     fn codex_builder_mixed_attachments() {
+        let dir = tempfile::tempdir().unwrap();
+        let image_path = dir.path().join("a.png");
+        std::fs::write(&image_path, b"png").unwrap();
+        let canonical = std::fs::canonicalize(&image_path).unwrap();
         let input = SendUserMessageInput {
             text: "describe".into(),
             attachments: vec![
                 AgentAttachment::LocalPath {
-                    path: "/tmp/a.png".into(),
+                    path: image_path.to_string_lossy().to_string(),
                     media_type: "image/png".into(),
                 },
                 AgentAttachment::Base64 {
@@ -1582,7 +1645,10 @@ mod tests {
         let items = v["params"]["items"].as_array().unwrap();
         assert_eq!(items.len(), 3);
         assert_eq!(items[0]["type"], "localImage");
-        assert_eq!(items[0]["data"]["path"], "/tmp/a.png");
+        assert_eq!(
+            items[0]["data"]["path"],
+            canonical.to_string_lossy().as_ref()
+        );
         assert_eq!(items[1]["type"], "image");
         assert_eq!(items[1]["data"]["image_url"], "data:image/jpeg;base64,QUJD");
         assert_eq!(items[2]["type"], "text");
@@ -2192,7 +2258,66 @@ mod tests {
             }],
         };
         let err = build_claude_user_message(&input).unwrap_err();
-        assert!(err.contains("read") || err.contains("No such"));
+        assert!(err.contains("path not found") || err.contains("No such"));
+    }
+
+    #[test]
+    fn agent_localpath_rejects_protected_paths() {
+        let input = SendUserMessageInput {
+            text: "x".into(),
+            attachments: vec![AgentAttachment::LocalPath {
+                path: "/etc/hosts".into(),
+                media_type: "image/png".into(),
+            }],
+        };
+
+        let err = build_codex_send_user_message("c", 7, &input).unwrap_err();
+        assert!(
+            err.contains("PROTECTED_PATH") || err.contains("access denied"),
+            "{err}"
+        );
+        let err = build_claude_user_message(&input).unwrap_err();
+        assert!(
+            err.contains("PROTECTED_PATH") || err.contains("access denied"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn agent_attachments_reject_non_images() {
+        let input = SendUserMessageInput {
+            text: "x".into(),
+            attachments: vec![AgentAttachment::Base64 {
+                data: "YWJj".into(),
+                media_type: "text/plain".into(),
+            }],
+        };
+
+        let err = build_codex_send_user_message("c", 7, &input).unwrap_err();
+        assert!(err.contains("unsupported attachment media type"), "{err}");
+        let err = build_claude_user_message(&input).unwrap_err();
+        assert!(err.contains("unsupported attachment media type"), "{err}");
+    }
+
+    #[test]
+    fn agent_localpath_rejects_oversized_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let image_path = dir.path().join("big.png");
+        std::fs::write(
+            &image_path,
+            vec![0u8; (MAX_AGENT_ATTACHMENT_BYTES + 1) as usize],
+        )
+        .unwrap();
+        let input = SendUserMessageInput {
+            text: "x".into(),
+            attachments: vec![AgentAttachment::LocalPath {
+                path: image_path.to_string_lossy().to_string(),
+                media_type: "image/png".into(),
+            }],
+        };
+
+        let err = build_codex_send_user_message("c", 7, &input).unwrap_err();
+        assert!(err.contains("file too large"), "{err}");
     }
 
     #[tokio::test]

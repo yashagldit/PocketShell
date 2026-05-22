@@ -12,6 +12,11 @@ name: Release host agent
 # These are baked into the binary at compile time via option_env! in
 # crates/host-core/src/config.rs. Without them the binary will start with
 # empty defaults and refuse to connect.
+#
+# The Apple Team ID is pinned in crates/host-core/src/update.rs (it's not
+# secret — it's visible via `codesign -dv` on any shipped binary), and the
+# in-binary `pocketshell update` rejects a downloaded macOS binary that
+# doesn't match Apple anchor + Developer ID Application leaf + that Team ID.
 
 on:
   push:
@@ -25,6 +30,13 @@ concurrency:
 
 permissions:
   contents: read
+  # Required for cosign keyless signing — exchanges the workflow's OIDC token
+  # for an ephemeral Fulcio cert tied to this repo + workflow identity. The
+  # in-binary updater in crates/host-core/src/update.rs pins that identity at
+  # verify time, so a compromise of the GitHub Releases publishing flow alone
+  # is not sufficient to push a malicious binary; an attacker would also need
+  # an OIDC token from this specific workflow path.
+  id-token: write
 
 jobs:
   build:
@@ -181,6 +193,47 @@ jobs:
           shasum -a 256 "$archive" > "$archive.sha256"
           ls -la "$archive" "$archive.sha256"
 
+      # Sigstore cosign keyless signing. Pinned to v3.0.6 (latest stable as of
+      # April 2026) — emits the new protobuf-spec bundle by default. The
+      # installer action is itself pinned to a commit SHA so a compromise of
+      # the action's release tags can't silently swap in a malicious cosign.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@d7d6bc7722e3daa8354c50bcb52f4837da5e9b6a # v3.8.1
+        with:
+          cosign-release: 'v3.0.6'
+
+      # `cosign sign-blob --new-bundle-format` produces a single self-contained
+      # bundle (signature + ephemeral Fulcio cert + Rekor SET) that the
+      # in-binary updater verifies entirely offline. The bundle format is
+      # required by cosign v3 anyway; flagging it explicitly keeps us
+      # forward-compatible if defaults shift again.
+      - name: Sign release artifact with cosign
+        shell: bash
+        env:
+          # cosign-installer exports COSIGN_YES=true by default; making it
+          # explicit here surfaces intent. The keyless flow uses the workflow's
+          # OIDC token to mint a 10-minute Fulcio cert — see the id-token
+          # permission at the top of this workflow.
+          COSIGN_YES: "true"
+        run: |
+          cd "target/$TARGET/release"
+          archive="pocketshell-${GITHUB_REF_NAME}-${TARGET}.tar.gz"
+          cosign sign-blob \
+            --yes \
+            --new-bundle-format \
+            --bundle "${archive}.cosign-bundle.json" \
+            "$archive"
+          # Sanity-check the bundle is well-formed against the same pinned
+          # identity the in-binary updater will require. Catches workflow
+          # path drift (e.g. renaming this file) before users do.
+          cosign verify-blob \
+            --new-bundle-format \
+            --bundle "${archive}.cosign-bundle.json" \
+            --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release-host-agent.yml@${GITHUB_REF}" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "$archive"
+          ls -la "$archive" "${archive}.sha256" "${archive}.cosign-bundle.json"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -188,6 +241,7 @@ jobs:
           path: |
             target/${{ matrix.target }}/release/pocketshell-*.tar.gz
             target/${{ matrix.target }}/release/pocketshell-*.tar.gz.sha256
+            target/${{ matrix.target }}/release/pocketshell-*.tar.gz.cosign-bundle.json
           if-no-files-found: error
 
   release:
@@ -216,3 +270,4 @@ jobs:
           files: |
             dist/pocketshell-*.tar.gz
             dist/pocketshell-*.tar.gz.sha256
+            dist/pocketshell-*.tar.gz.cosign-bundle.json
