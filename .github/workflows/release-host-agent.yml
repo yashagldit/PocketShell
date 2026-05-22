@@ -193,14 +193,21 @@ jobs:
           shasum -a 256 "$archive" > "$archive.sha256"
           ls -la "$archive" "$archive.sha256"
 
-      # Sigstore cosign keyless signing. Pinned to v3.0.6 (latest stable as of
-      # April 2026) — emits the new protobuf-spec bundle by default. The
-      # installer action is itself pinned to a commit SHA so a compromise of
-      # the action's release tags can't silently swap in a malicious cosign.
+      # Sigstore cosign keyless signing. Pinned to v2.6.3 (latest v2.x stable
+      # as of April 2026). cosign v3.x dropped the legacy detached `.sig` files
+      # in favor of self-signed bundles, but cosign-installer v3.8.1 hasn't
+      # caught up to that format change yet — so install fails on v3.x with a
+      # 404 on the missing .sig URL. v2.6.3 supports --new-bundle-format
+      # (added in v2.5) so we still get the modern protobuf bundle format.
+      # Re-evaluate the v3 pin once a newer cosign-installer ships that
+      # handles v3 signature verification.
+      #
+      # The installer action is itself pinned to a commit SHA so a compromise
+      # of the action's release tags can't silently swap in a malicious cosign.
       - name: Install cosign
         uses: sigstore/cosign-installer@d7d6bc7722e3daa8354c50bcb52f4837da5e9b6a # v3.8.1
         with:
-          cosign-release: 'v3.0.6'
+          cosign-release: 'v2.6.3'
 
       # `cosign sign-blob --new-bundle-format` produces a single self-contained
       # bundle (signature + ephemeral Fulcio cert + Rekor SET) that the
