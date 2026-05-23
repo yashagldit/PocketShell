@@ -4,6 +4,8 @@
   "or": "或",
   "install_instruction": "1. 在主機上安裝 PocketShell：",
   "install_command_copied": "安裝命令已複製到剪貼簿",
+  "install_source_note": "安裝到您的 VPS 上的主機代理程式是開源的。",
+  "install_source_link": "在 GitHub 上查看原始碼",
   "step_two_label": "2. 然後連線 — 掃描 QR 或在主機上輸入代碼：",
   "instruction": "在主機上執行：",
   "pairing_code": "配對碼",

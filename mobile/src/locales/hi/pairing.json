@@ -4,6 +4,8 @@
   "or": "या",
   "install_instruction": "1. अपने होस्ट पर PocketShell इंस्टॉल करें:",
   "install_command_copied": "इंस्टॉल कमांड क्लिपबोर्ड पर कॉपी किया गया",
+  "install_source_note": "आपके VPS पर इंस्टॉल होने वाला होस्ट एजेंट ओपन सोर्स है।",
+  "install_source_link": "GitHub पर सोर्स देखें",
   "step_two_label": "2. फिर कनेक्ट करें — QR स्कैन करें या अपने होस्ट पर कोड दर्ज करें:",
   "instruction": "अपने होस्ट पर यह चलाएं:",
   "pairing_code": "पेयरिंग कोड",

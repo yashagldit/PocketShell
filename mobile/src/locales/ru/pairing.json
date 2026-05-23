@@ -4,6 +4,8 @@
   "or": "или",
   "install_instruction": "1. Установите PocketShell на хосте:",
   "install_command_copied": "Команда установки скопирована в буфер обмена",
+  "install_source_note": "Хост-агент, устанавливаемый на ваш VPS, имеет открытый исходный код.",
+  "install_source_link": "Посмотреть исходный код на GitHub",
   "step_two_label": "2. Затем подключитесь — отсканируйте QR-код или введите код на хосте:",
   "instruction": "Выполните на хосте:",
   "pairing_code": "Код сопряжения",

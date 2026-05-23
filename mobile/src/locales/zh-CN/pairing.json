@@ -4,6 +4,8 @@
   "or": "或",
   "install_instruction": "1. 在主机上安装 PocketShell：",
   "install_command_copied": "安装命令已复制到剪贴板",
+  "install_source_note": "安装到您的 VPS 上的主机代理是开源的。",
+  "install_source_link": "在 GitHub 上查看源码",
   "step_two_label": "2. 然后连接 — 扫描二维码或在主机上输入代码：",
   "instruction": "在主机上运行：",
   "pairing_code": "配对码",

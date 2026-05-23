@@ -4,6 +4,8 @@
   "or": "ou",
   "install_instruction": "1. Installez PocketShell sur votre hôte :",
   "install_command_copied": "Commande d'installation copiée dans le presse-papiers",
+  "install_source_note": "L'agent hôte installé sur votre VPS est open source.",
+  "install_source_link": "Voir le code source sur GitHub",
   "step_two_label": "2. Puis connectez — scannez le QR ou saisissez le code sur votre hôte :",
   "instruction": "Exécutez ceci sur votre hôte :",
   "pairing_code": "Code de jumelage",

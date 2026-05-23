@@ -4,6 +4,8 @@
   "or": "oder",
   "install_instruction": "1. Installiere PocketShell auf deinem Host:",
   "install_command_copied": "Installationsbefehl in Zwischenablage kopiert",
+  "install_source_note": "Der auf deinem VPS installierte Host-Agent ist Open Source.",
+  "install_source_link": "Quellcode auf GitHub ansehen",
   "step_two_label": "2. Dann verbinden — scanne den QR-Code oder gib den Code auf deinem Host ein:",
   "instruction": "Auf deinem Host ausführen:",
   "pairing_code": "Kopplungscode",
