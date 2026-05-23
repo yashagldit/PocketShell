@@ -3,7 +3,7 @@
 
 use crate::error::{HostError, Result};
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader};
@@ -14,12 +14,28 @@ const TITLE_MAX_CHARS: usize = 80;
 /// Hard cap on lines scanned per Claude JSONL when searching for metadata —
 /// bounds worst-case I/O on a session with no qualifying user message.
 const CLAUDE_SCAN_LINE_CAP: usize = 200;
+const DEFAULT_LIMIT: usize = 50;
+const MAX_LIMIT: usize = 200;
 
-#[derive(Serialize, Copy, Clone)]
+#[derive(Debug, Serialize, Deserialize, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
 #[serde(rename_all = "lowercase")]
 pub enum Source {
     Claude,
     Codex,
+}
+
+#[derive(Clone)]
+struct SessionCandidate {
+    source: Source,
+    file_path: PathBuf,
+    mtime_micros: i64,
+}
+
+#[derive(Deserialize, Serialize)]
+struct PageCursor {
+    mtime_micros: i64,
+    source: Source,
+    file_path: String,
 }
 
 #[derive(Serialize)]
@@ -30,8 +46,6 @@ pub struct SessionInfo {
     pub title: String,
     pub project_path: String,
     pub size_bytes: u64,
-    #[serde(skip)]
-    mtime_system: SystemTime,
     pub mtime: String,
     /// True if a host-side agent child for this session_id is currently
     /// running. Mobile uses this to badge rows as "live" so the user can tap
@@ -41,33 +55,76 @@ pub struct SessionInfo {
 
 pub async fn list_sessions(
     limit: Option<usize>,
+    cursor: Option<String>,
     alive_ids: HashSet<String>,
 ) -> Result<serde_json::Value> {
     let home = dirs::home_dir().ok_or_else(|| HostError::Backend("home dir not found".into()))?;
+    let limit = limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
+    let cursor = cursor
+        .as_deref()
+        .and_then(|s| serde_json::from_str::<PageCursor>(s).ok());
 
     let claude_dir = home.join(".claude");
     let codex_dir = home.join(".codex");
 
-    let claude_task = tokio::task::spawn_blocking(move || scan_claude(&claude_dir));
-    let codex_task = tokio::task::spawn_blocking(move || scan_codex(&codex_dir));
+    let claude_task = tokio::task::spawn_blocking(move || collect_claude_candidates(&claude_dir));
+    let codex_task = tokio::task::spawn_blocking(move || collect_codex_candidates(&codex_dir));
 
     let (claude_res, codex_res) = tokio::join!(claude_task, codex_task);
-    let mut sessions = claude_res.map_err(task_err)?;
-    sessions.extend(codex_res.map_err(task_err)?);
+    let mut candidates = claude_res.map_err(task_err)?;
+    candidates.extend(codex_res.map_err(task_err)?);
 
-    for s in &mut sessions {
-        s.alive = alive_ids.contains(&s.session_id);
-    }
+    candidates.sort_by(compare_candidates);
+    let total = candidates.len();
 
-    sessions.sort_by(|a, b| b.mtime_system.cmp(&a.mtime_system));
-    let total = sessions.len();
-    if let Some(n) = limit {
-        sessions.truncate(n);
+    let page_candidates: Vec<SessionCandidate> = candidates
+        .into_iter()
+        .filter(|c| is_after_cursor(c, cursor.as_ref()))
+        .take(limit + 1)
+        .collect();
+    let has_more = page_candidates.len() > limit;
+    let next_cursor = if has_more {
+        page_candidates
+            .get(limit.saturating_sub(1))
+            .map(candidate_cursor)
+            .transpose()?
+    } else {
+        None
+    };
+
+    let codex_index = if page_candidates
+        .iter()
+        .take(limit)
+        .any(|c| c.source == Source::Codex)
+    {
+        Some(load_codex_index(
+            &home.join(".codex").join("session_index.jsonl"),
+        ))
+    } else {
+        None
+    };
+
+    let mut sessions = Vec::new();
+    for candidate in page_candidates.into_iter().take(limit) {
+        let parsed = match candidate.source {
+            Source::Claude => parse_claude_session(&candidate.file_path),
+            Source::Codex => parse_codex_session(
+                &candidate.file_path,
+                codex_index.as_ref().expect("codex index loaded"),
+            ),
+        };
+        if let Some(mut session) = parsed {
+            session.alive = alive_ids.contains(&session.session_id);
+            sessions.push(session);
+        }
     }
 
     Ok(serde_json::json!({
         "sessions": sessions,
         "total": total,
+        "pagination_supported": true,
+        "has_more": has_more,
+        "next_cursor": next_cursor,
     }))
 }
 
@@ -75,7 +132,7 @@ fn task_err(e: tokio::task::JoinError) -> HostError {
     HostError::Backend(format!("coding_sessions scan panicked: {e}"))
 }
 
-fn scan_claude(claude_dir: &Path) -> Vec<SessionInfo> {
+fn collect_claude_candidates(claude_dir: &Path) -> Vec<SessionCandidate> {
     let projects_dir = claude_dir.join("projects");
     let mut out = Vec::new();
 
@@ -105,8 +162,8 @@ fn scan_claude(claude_dir: &Path) -> Vec<SessionInfo> {
                 continue;
             }
 
-            if let Some(info) = parse_claude_session(&file_path) {
-                out.push(info);
+            if let Some(candidate) = make_candidate(Source::Claude, file_path) {
+                out.push(candidate);
             }
         }
     }
@@ -185,17 +242,14 @@ fn parse_claude_session(file_path: &Path) -> Option<SessionInfo> {
         title: title.unwrap_or_else(|| "Untitled Session".to_string()),
         project_path: cwd,
         size_bytes,
-        mtime_system,
         mtime: format_mtime(mtime_system),
         alive: false,
     })
 }
 
-fn scan_codex(codex_dir: &Path) -> Vec<SessionInfo> {
+fn collect_codex_candidates(codex_dir: &Path) -> Vec<SessionCandidate> {
     let sessions_root = codex_dir.join("sessions");
     let mut out = Vec::new();
-
-    let index = load_codex_index(&codex_dir.join("session_index.jsonl"));
 
     let mut stack: Vec<PathBuf> = vec![sessions_root];
     while let Some(dir) = stack.pop() {
@@ -224,8 +278,8 @@ fn scan_codex(codex_dir: &Path) -> Vec<SessionInfo> {
                 continue;
             }
 
-            if let Some(info) = parse_codex_session(&path, &index) {
-                out.push(info);
+            if let Some(candidate) = make_candidate(Source::Codex, path) {
+                out.push(candidate);
             }
         }
     }
@@ -305,10 +359,62 @@ fn parse_codex_session(file_path: &Path, index: &HashMap<String, String>) -> Opt
         title,
         project_path: cwd,
         size_bytes,
-        mtime_system,
         mtime: format_mtime(mtime_system),
         alive: false,
     })
+}
+
+fn make_candidate(source: Source, file_path: PathBuf) -> Option<SessionCandidate> {
+    let metadata = file_path.metadata().ok()?;
+    if !metadata.is_file() {
+        return None;
+    }
+    let mtime_system = metadata.modified().ok()?;
+    Some(SessionCandidate {
+        source,
+        file_path,
+        mtime_micros: system_time_micros(mtime_system),
+    })
+}
+
+fn system_time_micros(t: SystemTime) -> i64 {
+    match t.duration_since(SystemTime::UNIX_EPOCH) {
+        Ok(d) => d.as_micros().min(i64::MAX as u128) as i64,
+        Err(e) => {
+            let micros = e.duration().as_micros().min(i64::MAX as u128) as i64;
+            -micros
+        }
+    }
+}
+
+fn compare_candidates(a: &SessionCandidate, b: &SessionCandidate) -> std::cmp::Ordering {
+    b.mtime_micros
+        .cmp(&a.mtime_micros)
+        .then_with(|| a.source.cmp(&b.source))
+        .then_with(|| a.file_path.cmp(&b.file_path))
+}
+
+fn is_after_cursor(candidate: &SessionCandidate, cursor: Option<&PageCursor>) -> bool {
+    let Some(cursor) = cursor else {
+        return true;
+    };
+    if candidate.mtime_micros != cursor.mtime_micros {
+        return candidate.mtime_micros < cursor.mtime_micros;
+    }
+    if candidate.source != cursor.source {
+        return candidate.source > cursor.source;
+    }
+    candidate.file_path.to_string_lossy().as_ref() > cursor.file_path.as_str()
+}
+
+fn candidate_cursor(candidate: &SessionCandidate) -> Result<String> {
+    let cursor = PageCursor {
+        mtime_micros: candidate.mtime_micros,
+        source: candidate.source,
+        file_path: candidate.file_path.to_string_lossy().into_owned(),
+    };
+    serde_json::to_string(&cursor)
+        .map_err(|e| HostError::Backend(format!("coding_sessions cursor encode failed: {e}")))
 }
 
 fn format_mtime(t: SystemTime) -> String {
@@ -512,7 +618,7 @@ mod tests {
     }
 
     #[test]
-    fn session_info_serde_skips_mtime_system() {
+    fn session_info_serde_includes_public_fields() {
         let info = SessionInfo {
             session_id: "abc".into(),
             source: Source::Claude,
@@ -520,7 +626,6 @@ mod tests {
             title: "t".into(),
             project_path: "/tmp".into(),
             size_bytes: 42,
-            mtime_system: SystemTime::UNIX_EPOCH,
             mtime: "1970-01-01T00:00:00+00:00".into(),
             alive: false,
         };
@@ -528,20 +633,19 @@ mod tests {
         assert_eq!(v["session_id"], "abc");
         assert_eq!(v["source"], "claude");
         assert_eq!(v["size_bytes"], 42);
-        // `mtime_system` has #[serde(skip)]
-        assert!(v.get("mtime_system").is_none());
+        assert_eq!(v["mtime"], "1970-01-01T00:00:00+00:00");
     }
 
     #[test]
     fn scan_claude_missing_dir_returns_empty() {
         let dir = std::path::PathBuf::from("/no/such/claude/xyz-missing-9999");
-        assert!(scan_claude(&dir).is_empty());
+        assert!(collect_claude_candidates(&dir).is_empty());
     }
 
     #[test]
     fn scan_codex_missing_dir_returns_empty() {
         let dir = std::path::PathBuf::from("/no/such/codex/xyz-missing-9999");
-        assert!(scan_codex(&dir).is_empty());
+        assert!(collect_codex_candidates(&dir).is_empty());
     }
 
     #[test]

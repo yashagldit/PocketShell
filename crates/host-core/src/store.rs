@@ -375,6 +375,23 @@ impl StateStore {
             .and_then(|d| d.device_public_key.as_deref())
     }
 
+    /// Test-only constructor: builds an in-memory StateStore rooted at `path`'s
+    /// parent (used as the SecretStore fallback dir). Lets other modules in the
+    /// crate exercise StateStore-coupled logic without going through the
+    /// HOME-redirected `load()` dance.
+    #[cfg(test)]
+    pub(crate) fn new_for_test(path: PathBuf, state: AgentState) -> Self {
+        let parent = path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("/tmp"));
+        Self {
+            path,
+            state,
+            secrets: SecretStore::new(parent),
+        }
+    }
+
     pub fn host_id(&self) -> Result<String> {
         Ok(self
             .state

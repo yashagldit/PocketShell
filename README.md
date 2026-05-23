@@ -12,13 +12,13 @@ This repository is the **open-source host agent** that runs on the machine you w
 │ (closed) │                         │   (closed)   │                          │ (this 👋)│
 └────┬─────┘                         └──────────────┘                          └────┬─────┘
      │                                                                              │
-     └──── ChaCha20-Poly1305 over WebRTC datachannel ─────────────────────── PTY ───┘
+     └──── WebRTC datachannel (DTLS) · ED25519-pinned SDP transcript ──── PTY ───┘
                        (your terminal traffic; never touches our servers)
 ```
 
-The control plane refuses, throttles, or routes connections. Once a mobile↔host session is up, the backend cannot read or forge the terminal/files/agent bytes — the data channel is sealed with ChaCha20-Poly1305 keys derived from an X25519 exchange the backend never sees, bound to the device's long-term ED25519 pairing key. Compromise of our backend does not compromise your shell.
+The control plane refuses, throttles, or routes connections. Once a mobile↔host session is up, the backend cannot read or forge the terminal/files/agent bytes — they travel over a WebRTC data channel protected by DTLS (the WebRTC stack's standard transport encryption), and the DTLS peer-cert fingerprint is bound into a signed SDP transcript verified against the device's long-term ED25519 pairing key, so a backend that swaps SDPs to MitM is detected before any byte traverses the channel. A second E2E layer (ChaCha20-Poly1305 with X25519-derived session keys) wraps sensitive *signaling* messages that pass through the backend WS. Compromise of our backend does not compromise your shell.
 
-> ⚠️ Open caveat: host↔host file transfer (a Pro feature) currently verifies SDP signatures against a public key the backend relays, rather than a pre-pinned host pubkey. A malicious backend could forge a transfer offer. Mobile↔host sessions are not affected. Tracked, fix in flight — see [Security model](#security-model).
+> Host↔host direct file transfer (a Pro feature) is anchored to the mobile device as introducer: the phone signs an attestation binding both hosts' long-term public keys to the transfer, and each host verifies it against the mobile pubkey pinned at pairing — so the backend can relay SDP but cannot substitute a peer's identity. See [Security model](#security-model).
 
 ---
 
@@ -47,16 +47,28 @@ The `mobile/src/locales/` tree is here because translations benefit from being p
 Pre-built binaries:
 
 ```bash
-# linux · macOS · arm64 · x86_64
+# 1. install cosign (one-time, for Sigstore signature verification)
+brew install cosign            # macOS
+sudo apt install cosign        # Debian/Ubuntu
+# or grab a binary: https://github.com/sigstore/cosign/releases
+
+# 2. install pocketshell
 curl -fsSL https://pocketshell.app/install.sh | bash
 ```
 
 Detects your OS and arch, fetches the matching tarball from the latest
 [GitHub Release](https://github.com/yashagldit/PocketShell/releases),
-verifies its SHA-256 checksum, and installs to `~/.local/bin/pocketshell`
-(or `/usr/local/bin/pocketshell` if run as root). Read the script first
-if you'd rather not pipe to bash blindly — it's served from the static
-site and intentionally short.
+verifies its SHA-256 checksum **and the Sigstore cosign keyless
+signature** (pinned to this repo's release workflow identity), then
+installs to `~/.local/bin/pocketshell` (or `/usr/local/bin/pocketshell`
+if run as root). Without cosign installed the script refuses to proceed
+— the SHA-256 alone is same-origin integrity, not authenticity, so a
+compromised release publisher could serve a matching checksum for a
+malicious binary. Set `POCKETSHELL_SKIP_COSIGN=1` only if you've
+verified the artifact out of band.
+
+Read the script first if you'd rather not pipe to bash blindly — it's
+served from the static site and intentionally short.
 
 From source (Rust 1.78+):
 
@@ -94,7 +106,7 @@ The daemon connects out to the signaling backend over WSS and waits for a peer o
 
 ## How it works
 
-Two planes, deliberately separated. The **control plane** (HTTPS + WebSocket to the backend) carries auth, pairing, presence, SDP offers / answers, and ICE candidates. The **data plane** (WebRTC peer connection) carries every byte of your shell — PTY I/O, file chunks, stats samples, agent stdio — directly between phone and host, sealed with ChaCha20-Poly1305.
+Two planes, deliberately separated. The **control plane** (HTTPS + WebSocket to the backend) carries auth, pairing, presence, SDP offers / answers, and ICE candidates; sensitive signaling messages (file metadata) get an additional ChaCha20-Poly1305 envelope with X25519-derived keys so the backend WS sees only ciphertext. The **data plane** (WebRTC peer connection) carries every byte of your shell — PTY I/O, file chunks, stats samples, agent stdio — directly between phone and host, encrypted by DTLS at the WebRTC layer with the peer cert fingerprint bound into the ED25519-signed SDP.
 
 ```mermaid
 flowchart TB
@@ -173,7 +185,7 @@ sequenceDiagram
 
     rect rgba(92, 184, 140, 0.15)
       Note over M,H: ── WebRTC data channel established ──
-      M-->>H: terminal · keystrokes (ChaCha20-Poly1305)
+      M-->>H: terminal · keystrokes (DTLS over WebRTC datachannel)
       H-->>M: terminal · PTY output
       H-->>M: stats · JSON snapshots ~1 Hz
       M-->>H: files · list / read / write
@@ -207,20 +219,24 @@ The backend is a switchboard — it can refuse a connection, throttle it, or rou
 | Layer | Primitive |
 |---|---|
 | Identity | ED25519 long-term host & device keys |
-| Handshake | X25519 ephemeral · signed transcripts |
-| Data plane | ChaCha20-Poly1305 AEAD · per-direction keys |
+| Handshake | X25519 ephemeral · ED25519-signed SDP transcript binds DTLS cert fingerprint to the device pairing key |
+| Data plane | WebRTC DTLS (transport encryption — AES-GCM by default, ciphersuite negotiated) |
+| Signaling envelope | ChaCha20-Poly1305 AEAD · per-direction keys (wraps sensitive file/control payloads that pass through the backend WS) |
 | KDF | HKDF-SHA256, domain-separated |
 | Transport | WebRTC P2P · TURN fallback (rotating credentials) |
 | Storage | OS keychain — Apple Keychain · Linux secret-service · Windows DPAPI · 0o600 file fallback for headless Linux |
 
 Long-lived secrets (host private key, refresh token) live in the OS keychain via `crates/host-core/src/secret_store.rs`. Short-lived access tokens sit in `state.json` (mode `0o600`).
 
+### Host↔host transfer trust model
+
+The destination host verifies the source's SDP signature against a public key carried inside a *mobile-signed introducer attestation*, not a backend-relayed field. At transfer-initiation time the mobile app signs `(transfer_id, src_host_id, src_host_pubkey, dst_host_id, dst_host_pubkey, expires_at, nonce)` with its long-term device key; both hosts verify that signature against the mobile pubkey they pinned at pairing. The attestation is short-lived (≤ 5 min), bound to a single `transfer_id`, and both hosts additionally check that their own `host_id`+`public_key` match the attested values. Backend can relay SDP but cannot substitute a peer's identity. See `crates/host-core/src/signaling_crypto.rs` (`verify_host_transfer_attestation`) and `crates/host-core/src/daemon.rs` (`extract_and_verify_mobile_attestation`).
+
 ### Known gaps
 
-- **Host↔host transfer pubkey trust** — the destination host verifies the source's SDP signature against a public key the backend relays, not a locally-pinned one. A compromised backend could forge a transfer offer that looks signed by a paired peer. Affects host↔host file transfer only; mobile↔host sessions are unaffected. Fix in flight: maintain a `trusted_hosts` store mirroring `trusted_devices`, populated at pairing time, and require the source `host_id` to look up its pubkey locally.
-- **No per-session approval prompt** — once a mobile device is trusted, every session offer is accepted immediately. Acceptable for an unlocked-phone-in-your-pocket threat model; not for a stolen-and-unlocked-phone one. A configurable approval gate is on the roadmap.
+- **No per-session approval prompt (by design)** — once a mobile device is trusted, every session offer is accepted immediately. The stolen-and-unlocked-phone case is handled by layered controls instead: app open is gated by device biometric, every paired device shows up in the in-app device list and can be revoked remotely from any other paired device, and sensitive ops are written to the local audit log on the host. Adding a per-session prompt would train users to tap "approve" reflexively and degrade the UX for the common case, so it isn't on the roadmap.
 
-Found something? Email `security@pocketshell.app`. Public issues are fine for non-sensitive bugs.
+Found something? Email `support@pocketshell.app`. Public issues are fine for non-sensitive bugs.
 
 ---
 

@@ -599,6 +599,69 @@ pub enum AgentSendError {
     MissingConversationId,
     #[error("failed to build user message frame: {0}")]
     BuildFailed(String),
+    #[error("attachment rejected: {0}")]
+    AttachmentRejected(String),
+}
+
+/// Inspect a stdin line about to be forwarded to a Codex CLI process. The line
+/// is the mobile-built JSON-RPC frame; if it's a `sendUserMessage` carrying
+/// any `localImage` items, each path must clear the same denylist + size cap
+/// the file channel applies, and the media type must be `image/*`. Returns
+/// Ok for any line that isn't a `sendUserMessage` (heartbeats, init,
+/// non-attachment RPCs).
+///
+/// This is the load-bearing check that prevents a paired peer from sending
+/// `{"method":"sendUserMessage","params":{"items":[{"type":"localImage",
+/// "data":{"path":"/home/user/.ssh/id_rsa"}}]}}` and having Codex read the
+/// file. The Rust message builders (`build_codex_send_user_message`) are not
+/// on the production path — mobile builds the frame itself and the daemon
+/// forwards raw bytes — so this validator MUST run at the forwarding gate.
+pub fn validate_codex_stdin_frame(line: &str) -> Result<(), String> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || !trimmed.starts_with('{') {
+        return Ok(());
+    }
+    let v: serde_json::Value = match serde_json::from_str(trimmed) {
+        Ok(v) => v,
+        Err(_) => return Ok(()),
+    };
+    let method = v.get("method").and_then(|m| m.as_str()).unwrap_or("");
+    if method != "sendUserMessage" {
+        return Ok(());
+    }
+    let items = match v
+        .get("params")
+        .and_then(|p| p.get("items"))
+        .and_then(|i| i.as_array())
+    {
+        Some(items) => items,
+        None => return Ok(()),
+    };
+    for item in items {
+        let ty = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        if ty != "localImage" {
+            continue;
+        }
+        let path = item
+            .get("data")
+            .and_then(|d| d.get("path"))
+            .and_then(|p| p.as_str())
+            .ok_or_else(|| "localImage item missing data.path".to_string())?;
+        // Best-effort media-type check. Codex's localImage doesn't always
+        // carry one in the wire format, but if mobile sends it we want the
+        // same image/* whitelist applied; absence means we fall through to
+        // the path check, which is the security-load-bearing one anyway.
+        if let Some(mt) = item
+            .get("data")
+            .and_then(|d| d.get("mediaType").or_else(|| d.get("media_type")))
+            .and_then(|m| m.as_str())
+        {
+            validate_image_media_type(mt)?;
+        }
+        crate::files::safe_canonicalize_readable_file(Path::new(path), MAX_AGENT_ATTACHMENT_BYTES)
+            .map_err(|e| format!("localImage path rejected: {e}"))?;
+    }
+    Ok(())
 }
 
 /// Build the JSON-RPC line for a Codex `sendUserMessage` with optional image
@@ -1474,8 +1537,19 @@ impl AgentRouter {
 
     /// Send one stdin line to whichever session backs `agent_id`. Returns
     /// `SessionClosed` if there's no live binding.
+    ///
+    /// For Codex, the line is first run through [`validate_codex_stdin_frame`]
+    /// — a paired-peer-controlled `sendUserMessage` with a `localImage`
+    /// attachment pointing at e.g. `/home/user/.ssh/id_rsa` is rejected here
+    /// rather than handed to Codex's filesystem reader. Claude has no
+    /// path-form image attachment in its wire protocol, so no gate is needed.
     pub async fn send_line(&self, agent_id: &str, line: String) -> Result<(), AgentSendError> {
         let backend = self.backends.lock().await.get(agent_id).copied();
+        if matches!(backend, Some(Backend::Codex)) {
+            if let Err(reason) = validate_codex_stdin_frame(&line) {
+                return Err(AgentSendError::AttachmentRejected(reason));
+            }
+        }
         let session = match backend {
             Some(Backend::Codex) => self.codex.current().await,
             Some(Backend::Claude) => self.manager.get(agent_id).await,
@@ -2318,6 +2392,75 @@ mod tests {
 
         let err = build_codex_send_user_message("c", 7, &input).unwrap_err();
         assert!(err.contains("file too large"), "{err}");
+    }
+
+    #[test]
+    fn validate_codex_stdin_frame_passes_non_sendusermessage() {
+        // Heartbeats, init frames, other RPCs MUST pass through — the
+        // validator is a security gate, not a protocol filter, and mobile
+        // sends a lot of non-attachment traffic on this channel.
+        validate_codex_stdin_frame("").unwrap();
+        validate_codex_stdin_frame("not-json").unwrap();
+        validate_codex_stdin_frame(r#"{"method":"ping"}"#).unwrap();
+        validate_codex_stdin_frame(r#"{"jsonrpc":"2.0","id":1,"result":{}}"#).unwrap();
+        validate_codex_stdin_frame(
+            r#"{"method":"sendUserMessage","params":{"items":[{"type":"text","data":{"text":"hi"}}]}}"#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn validate_codex_stdin_frame_rejects_protected_localimage_path() {
+        // The headline exploit: mobile builds the JSON-RPC frame itself and
+        // forwards it through the agent data channel. Without this gate, the
+        // path lands on Codex stdin unchecked and Codex reads the file.
+        let frame = r#"{"method":"sendUserMessage","params":{"items":[{"type":"localImage","data":{"path":"/etc/hosts"}}]}}"#;
+        let err = validate_codex_stdin_frame(frame).unwrap_err();
+        assert!(
+            err.contains("PROTECTED_PATH") || err.contains("access denied"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn validate_codex_stdin_frame_rejects_oversized_localimage() {
+        let dir = tempfile::tempdir().unwrap();
+        let image_path = dir.path().join("big.png");
+        std::fs::write(
+            &image_path,
+            vec![0u8; (MAX_AGENT_ATTACHMENT_BYTES + 1) as usize],
+        )
+        .unwrap();
+        let frame = format!(
+            r#"{{"method":"sendUserMessage","params":{{"items":[{{"type":"localImage","data":{{"path":"{}"}}}}]}}}}"#,
+            image_path.to_string_lossy().replace('\\', "\\\\")
+        );
+        let err = validate_codex_stdin_frame(&frame).unwrap_err();
+        assert!(err.contains("file too large"), "{err}");
+    }
+
+    #[test]
+    fn validate_codex_stdin_frame_rejects_when_localimage_missing_path() {
+        let frame =
+            r#"{"method":"sendUserMessage","params":{"items":[{"type":"localImage","data":{}}]}}"#;
+        let err = validate_codex_stdin_frame(frame).unwrap_err();
+        assert!(err.contains("missing data.path"), "{err}");
+    }
+
+    #[test]
+    fn validate_codex_stdin_frame_accepts_valid_localimage() {
+        // Positive case: a legitimate PNG path under a non-denied directory.
+        let dir = tempfile::tempdir().unwrap();
+        let image_path = dir.path().join("ok.png");
+        std::fs::write(&image_path, b"png").unwrap();
+        let canonical = std::fs::canonicalize(&image_path)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "\\\\");
+        let frame = format!(
+            r#"{{"method":"sendUserMessage","params":{{"items":[{{"type":"localImage","data":{{"path":"{canonical}"}}}}]}}}}"#
+        );
+        validate_codex_stdin_frame(&frame).unwrap();
     }
 
     #[tokio::test]

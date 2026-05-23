@@ -44,6 +44,23 @@ pub struct PairAttestation {
     pub ts: i64,
 }
 
+/// Mobile-signed introducer attestation for direct host-to-host transfers.
+/// This binds the transfer id and both host identity keys so the backend can
+/// relay SDP but cannot substitute the verified host public keys.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HostTransferAttestation {
+    pub v: u8,
+    pub mobile_device_id: String,
+    pub transfer_id: String,
+    pub src_host_id: String,
+    pub src_host_public_key: String,
+    pub dst_host_id: String,
+    pub dst_host_public_key: String,
+    pub expires_at: i64,
+    pub nonce: String,
+    pub sig: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PairingValidateRequest {
     pub code: String,

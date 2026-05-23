@@ -239,8 +239,12 @@ pub async fn handle_files_action(
             .get("limit")
             .and_then(|v| v.as_u64())
             .map(|n| n as usize);
+        let cursor = payload
+            .get("cursor")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
         let alive = agent_router.alive_claude_resume_ids().await;
-        return crate::coding_sessions::list_sessions(limit, alive).await;
+        return crate::coding_sessions::list_sessions(limit, cursor, alive).await;
     }
 
     let path_str = payload

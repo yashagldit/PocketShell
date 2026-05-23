@@ -11,7 +11,8 @@ use crate::error::{HostError, Result};
 use crate::local_attach;
 use crate::models::StatsSnapshot;
 use crate::models::{
-    AttachTarget, SessionRecord, SessionRequest, SessionState, SignalEnvelope,
+    AttachTarget, HostTransferAttestation, SessionRecord, SessionRequest, SessionState,
+    SignalEnvelope,
 };
 use crate::pty::{SessionAttentionEvent, SessionManager};
 use crate::session::accept_session;
@@ -311,6 +312,45 @@ fn verify_signed_sdp_payload(
         .map_err(|_| protocol_err("signed SDP signature verification failed"))
 }
 
+fn extract_and_verify_mobile_attestation(
+    store: &StateStore,
+    mobile_device_id: &str,
+    value: Option<&serde_json::Value>,
+) -> Result<HostTransferAttestation> {
+    let protocol_err = |msg: &str| HostError::Backend(msg.to_string());
+    if mobile_device_id.is_empty() {
+        return Err(protocol_err(
+            "host transfer attestation missing mobile device id",
+        ));
+    }
+    let value = value.ok_or_else(|| protocol_err("missing mobile transfer attestation"))?;
+    let attestation: HostTransferAttestation = serde_json::from_value(value.clone())
+        .map_err(|e| protocol_err(&format!("invalid mobile transfer attestation: {e}")))?;
+    if attestation.mobile_device_id != mobile_device_id {
+        return Err(protocol_err(
+            "host transfer attestation mobile device id mismatch",
+        ));
+    }
+    let mobile_public_key = store
+        .get_device_public_key(mobile_device_id)
+        .ok_or_else(|| protocol_err("no mobile public key stored for transfer attestation"))?;
+    signaling_crypto::verify_host_transfer_attestation(&attestation, mobile_public_key)
+        .map_err(|e| protocol_err(&format!("invalid mobile transfer attestation: {e}")))?;
+    Ok(attestation)
+}
+
+fn local_host_matches_attestation(
+    store: &StateStore,
+    host_id: &str,
+    host_public_key: &str,
+) -> bool {
+    store
+        .state
+        .host
+        .as_ref()
+        .is_some_and(|host| host.host_id == host_id && host.public_key == host_public_key)
+}
+
 /// In-progress file transfer from a mobile device.
 struct PendingFileTransfer {
     request_id: String,
@@ -340,6 +380,7 @@ struct PendingFilesBinaryUpload {
 struct OutboundHostTransfer {
     peer: WebRtcPeer,
     target_host_id: String,
+    target_host_public_key: String,
     mobile_device_id: String,
     offer_id: String,
     created_at: Instant,
@@ -3809,6 +3850,25 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                 };
                                 if let Err(e) = agent_router.send_line(&agent_id, line).await {
                                     warn!("agent send_line failed agent={}: {}", agent_id, e);
+                                    // Tell the mobile peer the attachment was
+                                    // rejected so its UI can surface the
+                                    // reason instead of looking like a
+                                    // silent message drop. Other errors
+                                    // (SessionClosed, etc.) the channel pump
+                                    // already surfaces via its lifecycle.
+                                    if let agent_session::AgentSendError::AttachmentRejected(reason) = &e {
+                                        let frame = serde_json::json!({
+                                            "type": "agent_error",
+                                            "stage": "attachment_rejected",
+                                            "message": reason,
+                                        });
+                                        if let Ok(bytes) = serde_json::to_vec(&frame) {
+                                            let ch = Arc::clone(&channel);
+                                            tokio::spawn(async move {
+                                                let _ = ch.send(&bytes::Bytes::from(bytes)).await;
+                                            });
+                                        }
+                                    }
                                 }
                                 continue;
                             }
@@ -4696,6 +4756,41 @@ async fn handle_signal(
                 return Ok(());
             }
 
+            let mobile_attestation = match extract_and_verify_mobile_attestation(
+                store,
+                &mobile_device_id,
+                payload.get("mobile_attestation"),
+            ) {
+                Ok(attestation) => attestation,
+                Err(err) => {
+                    let _ = direct_transfer_event_tx.send(DirectHostTransferEvent::Result {
+                        transfer_id,
+                        mobile_device_id,
+                        ok: false,
+                        bytes_written: 0,
+                        error: Some(err.to_string()),
+                    });
+                    return Ok(());
+                }
+            };
+            if mobile_attestation.transfer_id != transfer_id
+                || mobile_attestation.dst_host_id != dst_host_id
+                || !local_host_matches_attestation(
+                    store,
+                    &mobile_attestation.src_host_id,
+                    &mobile_attestation.src_host_public_key,
+                )
+            {
+                let _ = direct_transfer_event_tx.send(DirectHostTransferEvent::Result {
+                    transfer_id,
+                    mobile_device_id,
+                    ok: false,
+                    bytes_written: 0,
+                    error: Some("host transfer attestation does not match request".to_string()),
+                });
+                return Ok(());
+            }
+
             let source_file = match crate::files::resolve_file_path_for_transfer(&src_path) {
                 Ok(path) => path,
                 Err(err) => {
@@ -4798,6 +4893,7 @@ async fn handle_signal(
                 OutboundHostTransfer {
                     peer,
                     target_host_id: dst_host_id.clone(),
+                    target_host_public_key: mobile_attestation.dst_host_public_key.clone(),
                     mobile_device_id: mobile_device_id.clone(),
                     offer_id: offer_id.clone(),
                     created_at: Instant::now(),
@@ -4809,6 +4905,10 @@ async fn handle_signal(
             extra.insert(
                 "mobile_device_id".to_string(),
                 serde_json::json!(mobile_device_id),
+            );
+            extra.insert(
+                "mobile_attestation".to_string(),
+                serde_json::to_value(&mobile_attestation).unwrap_or(serde_json::Value::Null),
             );
             let offer_payload = build_signed_sdp_payload(
                 store,
@@ -4867,26 +4967,6 @@ async fn handle_signal(
             if transfer_id.is_empty() || source_host_id.is_empty() || offer_sdp.is_empty() {
                 return Ok(());
             }
-            let Some(source_host_public_key) = msg
-                .extra
-                .get("source_host_public_key")
-                .and_then(|v| v.as_str())
-            else {
-                warn!(
-                    "host_transfer_offer rejected: missing source host public key (transfer_id={})",
-                    transfer_id
-                );
-                return Ok(());
-            };
-            if let Err(err) =
-                verify_signed_sdp_payload(payload, &offer_sdp, "offer", source_host_public_key)
-            {
-                warn!(
-                    "host_transfer_offer rejected: SDP signature failed for source host {}: {}",
-                    source_host_id, err
-                );
-                return Ok(());
-            }
             if mobile_device_id.is_empty() || !store.is_trusted(&mobile_device_id) {
                 let mut extra = std::collections::HashMap::new();
                 extra.insert(
@@ -4900,6 +4980,103 @@ async fn handle_signal(
                         "transfer_id": transfer_id,
                         "status": "error",
                         "error": "device is not trusted on destination host",
+                    })),
+                    state: None,
+                    accepted: None,
+                    reason: None,
+                    extra,
+                };
+                let _ = send_signal(ws, &reject_msg).await;
+                return Ok(());
+            }
+            let mobile_attestation = match extract_and_verify_mobile_attestation(
+                store,
+                &mobile_device_id,
+                msg.extra.get("mobile_attestation"),
+            ) {
+                Ok(attestation) => attestation,
+                Err(err) => {
+                    warn!(
+                        "host_transfer_offer rejected: invalid mobile attestation (transfer_id={}): {}",
+                        transfer_id, err
+                    );
+                    let mut extra = std::collections::HashMap::new();
+                    extra.insert(
+                        "mobile_device_id".to_string(),
+                        serde_json::json!(mobile_device_id),
+                    );
+                    let reject_msg = SignalEnvelope {
+                        message_type: "host_transfer_result".to_string(),
+                        session_id: None,
+                        payload: Some(serde_json::json!({
+                            "transfer_id": transfer_id,
+                            "status": "error",
+                            "error": "invalid host transfer attestation",
+                        })),
+                        state: None,
+                        accepted: None,
+                        reason: None,
+                        extra,
+                    };
+                    let _ = send_signal(ws, &reject_msg).await;
+                    return Ok(());
+                }
+            };
+            if mobile_attestation.transfer_id != transfer_id
+                || mobile_attestation.src_host_id != source_host_id
+                || !local_host_matches_attestation(
+                    store,
+                    &mobile_attestation.dst_host_id,
+                    &mobile_attestation.dst_host_public_key,
+                )
+            {
+                warn!(
+                    "host_transfer_offer rejected: mobile attestation does not match transfer {}",
+                    transfer_id
+                );
+                let mut extra = std::collections::HashMap::new();
+                extra.insert(
+                    "mobile_device_id".to_string(),
+                    serde_json::json!(mobile_device_id),
+                );
+                let reject_msg = SignalEnvelope {
+                    message_type: "host_transfer_result".to_string(),
+                    session_id: None,
+                    payload: Some(serde_json::json!({
+                        "transfer_id": transfer_id,
+                        "status": "error",
+                        "error": "host transfer attestation mismatch",
+                    })),
+                    state: None,
+                    accepted: None,
+                    reason: None,
+                    extra,
+                };
+                let _ = send_signal(ws, &reject_msg).await;
+                return Ok(());
+            }
+            if let Err(err) = verify_signed_sdp_payload(
+                payload,
+                &offer_sdp,
+                "offer",
+                &mobile_attestation.src_host_public_key,
+            ) {
+                warn!(
+                    "host_transfer_offer rejected: SDP signature failed for source host {}: {}",
+                    source_host_id, err
+                );
+                let mut extra = std::collections::HashMap::new();
+                extra.insert(
+                    "mobile_device_id".to_string(),
+                    serde_json::json!(mobile_device_id),
+                );
+                let reject_msg = SignalEnvelope {
+                    message_type: "host_transfer_result".to_string(),
+                    session_id: None,
+                    payload: Some(serde_json::json!({
+                        "transfer_id": transfer_id,
+                        "status": "error",
+                        "error": "host transfer offer signature failed",
                     })),
                     state: None,
                     accepted: None,
@@ -4947,6 +5124,10 @@ async fn handle_signal(
                 "mobile_device_id".to_string(),
                 serde_json::json!(mobile_device_id),
             );
+            extra.insert(
+                "mobile_attestation".to_string(),
+                serde_json::to_value(&mobile_attestation).unwrap_or(serde_json::Value::Null),
+            );
             let answer_payload = build_signed_sdp_payload(
                 store,
                 &answer_sdp,
@@ -4987,26 +5168,6 @@ async fn handle_signal(
                 .unwrap_or_default()
                 .to_string();
             if let Some(transfer) = outbound_host_transfers.get(&transfer_id) {
-                let Some(answerer_public_key) = msg
-                    .extra
-                    .get("source_host_public_key")
-                    .and_then(|v| v.as_str())
-                else {
-                    warn!(
-                        "host_transfer_answer rejected: missing answering host public key (transfer_id={})",
-                        transfer_id
-                    );
-                    return Ok(());
-                };
-                if let Err(err) =
-                    verify_signed_sdp_payload(payload, &answer_sdp, "answer", answerer_public_key)
-                {
-                    warn!(
-                        "host_transfer_answer rejected: SDP signature failed for target host {}: {}",
-                        transfer.target_host_id, err
-                    );
-                    return Ok(());
-                }
                 if !offer_id.is_empty() && transfer.offer_id != offer_id {
                     return Ok(());
                 }
@@ -5016,6 +5177,18 @@ async fn handle_signal(
                     if transfer.mobile_device_id != mobile_device_id {
                         return Ok(());
                     }
+                }
+                if let Err(err) = verify_signed_sdp_payload(
+                    payload,
+                    &answer_sdp,
+                    "answer",
+                    &transfer.target_host_public_key,
+                ) {
+                    warn!(
+                        "host_transfer_answer rejected: SDP signature failed for target host {}: {}",
+                        transfer.target_host_id, err
+                    );
+                    return Ok(());
                 }
                 transfer.peer.apply_answer(&answer_sdp).await?;
             }
@@ -7672,5 +7845,235 @@ mod tests {
         // Contains tool_result token but type is neither user nor assistant.
         let line = r#"{"type":"system","tool_use_result":{"x":1}}"#;
         assert!(sanitize_claude_outbound_line(line).is_none());
+    }
+
+    mod host_transfer_attestation_integration {
+        //! Daemon-level glue tests for the mobile-as-introducer host transfer
+        //! attestation (security audit finding B). The pure crypto path is
+        //! covered in `signaling_crypto::tests`; these tests bind the helper
+        //! `extract_and_verify_mobile_attestation` to a real `StateStore` so
+        //! we also exercise the "mobile pubkey must be pinned locally"
+        //! invariant — which is what closes the backend-MITM hole.
+        use super::*;
+        use crate::models::{
+            AgentState, HostIdentity, HostTransferAttestation, TrustedDeviceRecord,
+        };
+        use base64::Engine;
+        use chrono::Utc;
+        use ed25519_dalek::{Signer, SigningKey};
+        use rand::rngs::OsRng;
+
+        struct Fixture {
+            store: StateStore,
+            attestation: HostTransferAttestation,
+            mobile_device_id: String,
+            attestation_value: serde_json::Value,
+            _tmp: tempfile::TempDir,
+        }
+
+        fn build_attestation(
+            mobile_key: &SigningKey,
+            mobile_device_id: &str,
+            transfer_id: &str,
+            src_host_id: &str,
+            src_host_public_key: &str,
+            dst_host_id: &str,
+            dst_host_public_key: &str,
+            expires_at: i64,
+        ) -> HostTransferAttestation {
+            let mut att = HostTransferAttestation {
+                v: 1,
+                mobile_device_id: mobile_device_id.into(),
+                transfer_id: transfer_id.into(),
+                src_host_id: src_host_id.into(),
+                src_host_public_key: src_host_public_key.into(),
+                dst_host_id: dst_host_id.into(),
+                dst_host_public_key: dst_host_public_key.into(),
+                expires_at,
+                nonce: base64::engine::general_purpose::STANDARD.encode([0x42u8; 16]),
+                sig: String::new(),
+            };
+            // Reproduce the canonical payload format from
+            // signaling_crypto::canonical_host_transfer_attestation_payload.
+            let canonical = format!(
+                "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+                signaling_crypto::HOST_TRANSFER_SIGNING_PREFIX,
+                att.v,
+                att.mobile_device_id,
+                att.transfer_id,
+                att.src_host_id,
+                att.src_host_public_key,
+                att.dst_host_id,
+                att.dst_host_public_key,
+                att.expires_at,
+                att.nonce,
+            );
+            let sig = mobile_key.sign(canonical.as_bytes());
+            att.sig = base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
+            att
+        }
+
+        fn make_fixture() -> Fixture {
+            let mobile_key = SigningKey::generate(&mut OsRng);
+            let mobile_pub_b64 = base64::engine::general_purpose::STANDARD
+                .encode(mobile_key.verifying_key().to_bytes());
+            let mobile_device_id = "mobile-A".to_string();
+
+            // This host is the SOURCE in the transfer scenario.
+            let src_host_id = "src-host-1".to_string();
+            let src_host_public_key = "src-host-pub-key-b64".to_string();
+            let dst_host_id = "dst-host-2".to_string();
+            let dst_host_public_key = "dst-host-pub-key-b64".to_string();
+
+            let state = AgentState {
+                host: Some(HostIdentity {
+                    host_id: src_host_id.clone(),
+                    user_id: "u".into(),
+                    hostname: "h".into(),
+                    platform: "linux".into(),
+                    app_version: "0.1.1".into(),
+                    public_key: src_host_public_key.clone(),
+                    private_key: String::new(),
+                    registered_at: Utc::now(),
+                }),
+                trusted_devices: vec![TrustedDeviceRecord {
+                    id: "td-1".into(),
+                    host_id: src_host_id.clone(),
+                    mobile_device_id: mobile_device_id.clone(),
+                    approved_at: Some(Utc::now()),
+                    revoked_at: None,
+                    permissions_json: None,
+                    device_public_key: Some(mobile_pub_b64.clone()),
+                    created_at: Utc::now(),
+                }],
+                ..Default::default()
+            };
+
+            let tmp = tempfile::TempDir::new().unwrap();
+            let store = StateStore::new_for_test(tmp.path().join("state.json"), state);
+
+            let attestation = build_attestation(
+                &mobile_key,
+                &mobile_device_id,
+                "transfer-xyz",
+                &src_host_id,
+                &src_host_public_key,
+                &dst_host_id,
+                &dst_host_public_key,
+                Utc::now().timestamp() + 60,
+            );
+            let attestation_value = serde_json::to_value(&attestation).unwrap();
+
+            Fixture {
+                store,
+                attestation,
+                mobile_device_id,
+                attestation_value,
+                _tmp: tmp,
+            }
+        }
+
+        #[test]
+        fn extract_and_verify_accepts_valid_attestation() {
+            let f = make_fixture();
+            let out = extract_and_verify_mobile_attestation(
+                &f.store,
+                &f.mobile_device_id,
+                Some(&f.attestation_value),
+            )
+            .expect("attestation should verify");
+            assert_eq!(out.transfer_id, f.attestation.transfer_id);
+            assert_eq!(out.src_host_public_key, f.attestation.src_host_public_key);
+            assert_eq!(out.dst_host_public_key, f.attestation.dst_host_public_key);
+        }
+
+        #[test]
+        fn extract_and_verify_rejects_when_mobile_not_pinned() {
+            // The core defense: even if the attestation is well-formed and the
+            // backend forwards a valid signature from SOME key, if that key
+            // isn't the one pinned locally for the mobile device, reject.
+            let mut f = make_fixture();
+            f.store.state.trusted_devices.clear();
+            let err = extract_and_verify_mobile_attestation(
+                &f.store,
+                &f.mobile_device_id,
+                Some(&f.attestation_value),
+            )
+            .expect_err("must reject when mobile pubkey isn't locally pinned");
+            let msg = format!("{err}");
+            assert!(
+                msg.contains("no mobile public key"),
+                "unexpected error: {msg}"
+            );
+        }
+
+        #[test]
+        fn extract_and_verify_rejects_signed_by_attacker_key() {
+            // Backend-forgery scenario: attacker signs an otherwise-valid
+            // attestation with their OWN key. Local mobile pin must reject it.
+            let f = make_fixture();
+            let attacker = SigningKey::generate(&mut OsRng);
+            let forged = build_attestation(
+                &attacker,
+                &f.mobile_device_id,
+                &f.attestation.transfer_id,
+                &f.attestation.src_host_id,
+                &f.attestation.src_host_public_key,
+                &f.attestation.dst_host_id,
+                "EVIL-DST-PUBKEY", // attacker substitutes destination pubkey
+                f.attestation.expires_at,
+            );
+            let forged_value = serde_json::to_value(&forged).unwrap();
+            let err = extract_and_verify_mobile_attestation(
+                &f.store,
+                &f.mobile_device_id,
+                Some(&forged_value),
+            )
+            .expect_err("attacker-signed attestation must not verify against pinned mobile key");
+            assert!(format!("{err}").contains("invalid mobile transfer attestation"));
+        }
+
+        #[test]
+        fn extract_and_verify_rejects_mobile_device_id_mismatch() {
+            let f = make_fixture();
+            let err = extract_and_verify_mobile_attestation(
+                &f.store,
+                "different-mobile-id",
+                Some(&f.attestation_value),
+            )
+            .expect_err("device-id mismatch must be rejected");
+            assert!(format!("{err}").contains("mobile device id mismatch"));
+        }
+
+        #[test]
+        fn extract_and_verify_rejects_missing_attestation() {
+            let f = make_fixture();
+            let err = extract_and_verify_mobile_attestation(&f.store, &f.mobile_device_id, None)
+                .expect_err("missing attestation must be rejected");
+            assert!(format!("{err}").contains("missing mobile transfer attestation"));
+        }
+
+        #[test]
+        fn local_host_matches_requires_host_id_and_pubkey() {
+            let f = make_fixture();
+            // Both match → ok.
+            assert!(local_host_matches_attestation(
+                &f.store,
+                &f.attestation.src_host_id,
+                &f.attestation.src_host_public_key,
+            ));
+            // Right host_id, wrong pubkey (backend swap attempt) → reject.
+            assert!(!local_host_matches_attestation(
+                &f.store,
+                &f.attestation.src_host_id,
+                "WRONG-PUBKEY",
+            ));
+            // Wrong host_id → reject.
+            assert!(!local_host_matches_attestation(
+                &f.store,
+                "some-other-host",
+                &f.attestation.src_host_public_key,
+            ));
+        }
     }
 }

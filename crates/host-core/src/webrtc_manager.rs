@@ -459,9 +459,7 @@ impl WebRtcManager {
     }
 
     pub fn channel_count(&self, session_id: &str) -> usize {
-        self.session_channels
-            .get(session_id)
-            .map_or(0, |v| v.len())
+        self.session_channels.get(session_id).map_or(0, |v| v.len())
     }
 
     /// Send stats data to all connected stats channels.

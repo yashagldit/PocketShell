@@ -246,7 +246,9 @@ async fn pair(config: AppConfig, code: Option<String>, reset: bool) -> Result<()
     let (public_key, private_key) = if let Some(h) = store.state.host.as_ref() {
         (h.public_key.clone(), h.private_key.clone())
     } else if let Some(kp) = store.try_load_host_keypair() {
-        println!("reusing existing host keypair from keyring — will reattach if backend recognizes it");
+        println!(
+            "reusing existing host keypair from keyring — will reattach if backend recognizes it"
+        );
         kp
     } else {
         generate_keypair()
@@ -403,7 +405,9 @@ async fn pair(config: AppConfig, code: Option<String>, reset: bool) -> Result<()
             Ok(host_core::service::ServiceStatus::InstalledButStartedDaemon) => {
                 println!(" done");
                 println!("daemon service installed and enabled");
-                println!("daemon started in background because the systemd user bus is unavailable");
+                println!(
+                    "daemon started in background because the systemd user bus is unavailable"
+                );
                 print_boot_persistence_warning();
             }
             Ok(host_core::service::ServiceStatus::AlreadyRunning) => {
@@ -688,7 +692,9 @@ async fn pair_qr_new_host(config: AppConfig, mut store: StateStore) -> Result<()
             Ok(host_core::service::ServiceStatus::InstalledButStartedDaemon) => {
                 println!(" done");
                 println!("daemon service installed and enabled");
-                println!("daemon started in background because the systemd user bus is unavailable");
+                println!(
+                    "daemon started in background because the systemd user bus is unavailable"
+                );
                 print_boot_persistence_warning();
             }
             Ok(host_core::service::ServiceStatus::AlreadyRunning) => {
@@ -1202,8 +1208,8 @@ fn daemon_restart() -> Result<()> {
         }
     }
 
-    let status = host_core::service::restart()
-        .map_err(|e| anyhow!("failed to restart daemon: {e}"))?;
+    let status =
+        host_core::service::restart().map_err(|e| anyhow!("failed to restart daemon: {e}"))?;
 
     let _ = write_audit_event(AuditEvent::new("daemon_restart_command"));
 
@@ -1270,7 +1276,11 @@ async fn update_cmd(
 
     let _ = write_audit_event(AuditEvent::new("self_update"));
 
-    println!("✓ installed {} → {}", info.target_version, installed.display());
+    println!(
+        "✓ installed {} → {}",
+        info.target_version,
+        installed.display()
+    );
     println!("  previous binary saved at {}.old", installed.display());
 
     // The currently-running CLI process is still using the OLD binary in
@@ -1727,8 +1737,12 @@ async fn interactive_menu(config: AppConfig) -> Result<()> {
         println!();
         let result: Result<()> = match action {
             MenuAction::PairQr => pair_qr(config.clone(), false).await,
-            MenuAction::TrustedDevices => menu_trusted_devices(&theme, config.clone(), &store).await,
-            MenuAction::PendingDevices => devices(config.clone(), DeviceCommands::ListPending).await,
+            MenuAction::TrustedDevices => {
+                menu_trusted_devices(&theme, config.clone(), &store).await
+            }
+            MenuAction::PendingDevices => {
+                devices(config.clone(), DeviceCommands::ListPending).await
+            }
             MenuAction::Sessions => menu_sessions(&theme, &config, &store).await,
             MenuAction::Status => status(config.clone()).await,
             MenuAction::DaemonStart => daemon_start(),
@@ -1760,9 +1774,12 @@ async fn interactive_menu(config: AppConfig) -> Result<()> {
 
         println!();
         prompt(
-            &style(format!("[{}] complete — press Enter to return to menu", action.label()))
-                .dim()
-                .to_string(),
+            &style(format!(
+                "[{}] complete — press Enter to return to menu",
+                action.label()
+            ))
+            .dim()
+            .to_string(),
         );
     }
 }
@@ -1859,7 +1876,11 @@ async fn menu_trusted_devices(
     let items: Vec<String> = trusted
         .iter()
         .map(|d| {
-            let key = if d.device_public_key.is_some() { "key=yes" } else { "key=no" };
+            let key = if d.device_public_key.is_some() {
+                "key=yes"
+            } else {
+                "key=no"
+            };
             format!("{}  {}  created={}", d.mobile_device_id, key, d.created_at)
         })
         .collect();
@@ -1937,7 +1958,14 @@ async fn menu_update(theme: &dialoguer::theme::ColorfulTheme) -> Result<()> {
         if !force {
             return Ok(());
         }
-        return update_cmd(false, true, None, update::DEFAULT_BASE_URL.to_string(), false).await;
+        return update_cmd(
+            false,
+            true,
+            None,
+            update::DEFAULT_BASE_URL.to_string(),
+            false,
+        )
+        .await;
     }
 
     let proceed = Confirm::with_theme(theme)
@@ -1953,7 +1981,14 @@ async fn menu_update(theme: &dialoguer::theme::ColorfulTheme) -> Result<()> {
         println!("update cancelled");
         return Ok(());
     }
-    update_cmd(false, false, None, update::DEFAULT_BASE_URL.to_string(), false).await
+    update_cmd(
+        false,
+        false,
+        None,
+        update::DEFAULT_BASE_URL.to_string(),
+        false,
+    )
+    .await
 }
 
 fn menu_logout(theme: &dialoguer::theme::ColorfulTheme) -> Result<()> {

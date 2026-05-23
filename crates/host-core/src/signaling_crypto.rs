@@ -4,7 +4,7 @@ use chacha20poly1305::{
     aead::{Aead, KeyInit},
     ChaCha20Poly1305, Nonce,
 };
-use ed25519_dalek::{Signer, SigningKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use hkdf::Hkdf;
 use rand::rngs::OsRng;
 use rand::RngCore;
@@ -22,6 +22,11 @@ pub const X25519_SIGNING_PREFIX: &str = "pocketshell-x25519-v1";
 /// Shared signing-context prefix for Strategy A pair-attestations. MUST match
 /// the constant in `mobile/src/services/pairAttestation.ts`.
 pub const PAIR_ATTEST_SIGNING_PREFIX: &str = "pocketshell-pair-attest-v1";
+/// Shared signing-context prefix for mobile-signed host-to-host transfer
+/// attestations. MUST match the constant in `mobile/src/services/fileService.ts`.
+pub const HOST_TRANSFER_SIGNING_PREFIX: &str = "pocketshell-host-transfer-v1";
+
+const HOST_TRANSFER_MAX_LIFETIME_SECS: i64 = 5 * 60;
 
 /// Direction flag for nonce construction — prevents nonce collision between sides.
 const DIRECTION_HOST_TO_MOBILE: u32 = 0x00000001;
@@ -262,6 +267,24 @@ fn canonical_pair_attest_payload(
     )
 }
 
+fn canonical_host_transfer_attestation_payload(
+    attestation: &crate::models::HostTransferAttestation,
+) -> String {
+    format!(
+        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+        HOST_TRANSFER_SIGNING_PREFIX,
+        attestation.v,
+        attestation.mobile_device_id,
+        attestation.transfer_id,
+        attestation.src_host_id,
+        attestation.src_host_public_key,
+        attestation.dst_host_id,
+        attestation.dst_host_public_key,
+        attestation.expires_at,
+        attestation.nonce
+    )
+}
+
 fn canonical_x25519_response_payload(
     host_id: &str,
     mobile_device_id: &str,
@@ -284,6 +307,66 @@ fn canonical_x25519_response_payload(
         nonce_b64,
         ts
     )
+}
+
+/// Verify a mobile-signed direct host-to-host transfer attestation against the
+/// mobile device public key pinned on this host.
+pub fn verify_host_transfer_attestation(
+    attestation: &crate::models::HostTransferAttestation,
+    mobile_public_key_b64: &str,
+) -> Result<()> {
+    if attestation.v != 1 {
+        return Err(anyhow!("unsupported host transfer attestation version"));
+    }
+    if attestation.mobile_device_id.is_empty()
+        || attestation.transfer_id.is_empty()
+        || attestation.src_host_id.is_empty()
+        || attestation.src_host_public_key.is_empty()
+        || attestation.dst_host_id.is_empty()
+        || attestation.dst_host_public_key.is_empty()
+        || attestation.nonce.is_empty()
+        || attestation.sig.is_empty()
+    {
+        return Err(anyhow!(
+            "host transfer attestation is missing required fields"
+        ));
+    }
+
+    let now = chrono::Utc::now().timestamp();
+    if attestation.expires_at < now {
+        return Err(anyhow!("host transfer attestation expired"));
+    }
+    if attestation.expires_at - now > HOST_TRANSFER_MAX_LIFETIME_SECS {
+        return Err(anyhow!("host transfer attestation lifetime is too long"));
+    }
+
+    let nonce = base64::engine::general_purpose::STANDARD
+        .decode(&attestation.nonce)
+        .map_err(|e| anyhow!("invalid host transfer attestation nonce base64: {}", e))?;
+    if nonce.len() != 16 {
+        return Err(anyhow!("host transfer attestation nonce must be 16 bytes"));
+    }
+
+    let pub_bytes = base64::engine::general_purpose::STANDARD
+        .decode(mobile_public_key_b64)
+        .map_err(|e| anyhow!("invalid mobile public key base64: {}", e))?;
+    let verify_key = VerifyingKey::from_bytes(
+        pub_bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| anyhow!("mobile public key must be 32 bytes"))?,
+    )
+    .map_err(|e| anyhow!("invalid mobile public key: {}", e))?;
+
+    let sig_bytes = base64::engine::general_purpose::STANDARD
+        .decode(&attestation.sig)
+        .map_err(|e| anyhow!("invalid host transfer attestation signature base64: {}", e))?;
+    let signature = Signature::from_slice(&sig_bytes)
+        .map_err(|e| anyhow!("invalid host transfer attestation signature: {}", e))?;
+    let canonical = canonical_host_transfer_attestation_payload(attestation);
+    verify_key
+        .verify(canonical.as_bytes(), &signature)
+        .map_err(|e| anyhow!("host transfer attestation signature did not verify: {}", e))
 }
 
 /// Decode a base64-encoded 32-byte Ed25519 seed into a `SigningKey`. The seed
@@ -405,7 +488,7 @@ pub fn sign_pair_attestation(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+    use ed25519_dalek::VerifyingKey;
 
     #[test]
     fn test_sign_sdp_roundtrip() {
@@ -508,6 +591,58 @@ mod tests {
         // pubkey under the same code must not verify.
         let bad_pub = canonical_pair_attest_payload("ABC123", "evil-pub", &signed.nonce, signed.ts);
         assert!(vk.verify(bad_pub.as_bytes(), &sig).is_err());
+    }
+
+    #[test]
+    fn test_verify_host_transfer_attestation_roundtrip() {
+        let sk = SigningKey::generate(&mut OsRng);
+        let vk: VerifyingKey = sk.verifying_key();
+        let mobile_pub_b64 = base64::engine::general_purpose::STANDARD.encode(vk.to_bytes());
+        let mut att = crate::models::HostTransferAttestation {
+            v: 1,
+            mobile_device_id: "mobile-1".into(),
+            transfer_id: "transfer-1".into(),
+            src_host_id: "src-host".into(),
+            src_host_public_key: "src-pub".into(),
+            dst_host_id: "dst-host".into(),
+            dst_host_public_key: "dst-pub".into(),
+            expires_at: chrono::Utc::now().timestamp() + 60,
+            nonce: base64::engine::general_purpose::STANDARD.encode([7u8; 16]),
+            sig: String::new(),
+        };
+        let canonical = canonical_host_transfer_attestation_payload(&att);
+        let sig = sk.sign(canonical.as_bytes());
+        att.sig = base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
+
+        verify_host_transfer_attestation(&att, &mobile_pub_b64).unwrap();
+
+        let mut tampered = att.clone();
+        tampered.dst_host_public_key = "evil-dst-pub".into();
+        assert!(verify_host_transfer_attestation(&tampered, &mobile_pub_b64).is_err());
+    }
+
+    #[test]
+    fn test_verify_host_transfer_attestation_rejects_expired() {
+        let sk = SigningKey::generate(&mut OsRng);
+        let vk: VerifyingKey = sk.verifying_key();
+        let mobile_pub_b64 = base64::engine::general_purpose::STANDARD.encode(vk.to_bytes());
+        let mut att = crate::models::HostTransferAttestation {
+            v: 1,
+            mobile_device_id: "mobile-1".into(),
+            transfer_id: "transfer-1".into(),
+            src_host_id: "src-host".into(),
+            src_host_public_key: "src-pub".into(),
+            dst_host_id: "dst-host".into(),
+            dst_host_public_key: "dst-pub".into(),
+            expires_at: chrono::Utc::now().timestamp() - 1,
+            nonce: base64::engine::general_purpose::STANDARD.encode([7u8; 16]),
+            sig: String::new(),
+        };
+        let canonical = canonical_host_transfer_attestation_payload(&att);
+        let sig = sk.sign(canonical.as_bytes());
+        att.sig = base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
+
+        assert!(verify_host_transfer_attestation(&att, &mobile_pub_b64).is_err());
     }
 
     #[test]
