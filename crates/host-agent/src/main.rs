@@ -1465,6 +1465,14 @@ fn daemon_restart() -> Result<()> {
         }
     }
 
+    // No service unit on disk yet (e.g. fresh `npm i -g pocketshell` where the
+    // user's first action is restart). Delegate to the install path so they
+    // get the full start-flow output — boot-persistence warnings, lingering
+    // notes, etc. — instead of a bare background spawn.
+    if !host_core::service::is_service_installed() {
+        return daemon_start();
+    }
+
     let status =
         host_core::service::restart().map_err(|e| anyhow!("failed to restart daemon: {e}"))?;
 

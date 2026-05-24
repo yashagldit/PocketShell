@@ -98,6 +98,23 @@ pub fn is_service_running() -> bool {
     }
 }
 
+/// Check whether a service manager unit (launchd plist or systemd unit) is
+/// installed on disk for the daemon — regardless of whether it's running.
+/// Used by callers (e.g. `daemon restart`) to detect a fresh install where
+/// nothing has registered the service yet.
+pub fn is_service_installed() -> bool {
+    if cfg!(target_os = "macos") {
+        launchd_plist_path().exists()
+    } else if cfg!(target_os = "linux") {
+        if systemd_system_service_available().is_some() {
+            return true;
+        }
+        systemd_unit_path().exists()
+    } else {
+        false
+    }
+}
+
 // ---------------------------------------------------------------------------
 // macOS launchd
 // ---------------------------------------------------------------------------
@@ -752,8 +769,18 @@ pub fn restart() -> Result<RestartStatus> {
         }
     }
 
-    start_daemon_process()?;
-    Ok(RestartStatus::StartedDaemon)
+    // No service unit on disk — self-heal by installing one. Common after a
+    // fresh `npm i -g pocketshell` where the user's first action is restart
+    // rather than start.
+    match install_and_start() {
+        Ok(ServiceStatus::StartedDaemon) => Ok(RestartStatus::StartedDaemon),
+        Ok(_) => Ok(RestartStatus::RestartedService),
+        Err(e) => {
+            warn!("install_and_start during restart failed: {e} — falling back to background spawn");
+            start_daemon_process()?;
+            Ok(RestartStatus::StartedDaemon)
+        }
+    }
 }
 
 /// Stop the service without removing it. It will still auto-start on reboot.
