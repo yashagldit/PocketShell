@@ -643,6 +643,18 @@ const resources = {
   },
 } as const;
 
+// Map base language codes (and regional variants we don't ship) to a
+// supported locale. Used when the device's preferred tag isn't an exact
+// match in SUPPORTED_LOCALES.
+const LANGUAGE_ALIASES: Record<string, SupportedLocale> = {
+  zh: "zh-CN",
+  "zh-SG": "zh-CN",
+  "zh-HK": "zh-TW",
+  "zh-MO": "zh-TW",
+  pt: "pt-BR",
+  "pt-PT": "pt-BR",
+};
+
 function resolveDeviceLocale(): SupportedLocale {
   const tags = Localization.getLocales();
   const supported = SUPPORTED_LOCALES as readonly string[];
@@ -653,8 +665,14 @@ function resolveDeviceLocale(): SupportedLocale {
     if (supported.includes(fullTag)) {
       return fullTag as SupportedLocale;
     }
+    if (LANGUAGE_ALIASES[fullTag]) {
+      return LANGUAGE_ALIASES[fullTag];
+    }
     if (supported.includes(langCode)) {
       return langCode as SupportedLocale;
+    }
+    if (LANGUAGE_ALIASES[langCode]) {
+      return LANGUAGE_ALIASES[langCode];
     }
   }
   return DEFAULT_LOCALE;
