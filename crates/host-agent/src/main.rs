@@ -6,11 +6,13 @@ use host_core::auth::safe_refresh_if_needed;
 use host_core::config::AppConfig;
 use host_core::daemon;
 use host_core::discovery::SessionDiscovery;
-use host_core::models::{
-    AuthState, HostIdentity, HostInitiatedPollOutcome, PairingValidateRequest,
-};
+use host_core::models::{AgentState, AuthState, HostIdentity, HostInitiatedPollOutcome};
+// PAIRING CODE DISABLED 2026-05-24 — typed-code flow quarantined; QR remains.
+// `PairingValidateRequest` and `sign_pair_attestation` are only used by the
+// quarantined `pair()` function below; re-import when re-enabling.
+// use host_core::models::PairingValidateRequest;
+// use host_core::signaling_crypto::sign_pair_attestation;
 use host_core::secure::parse_jwt_exp;
-use host_core::signaling_crypto::sign_pair_attestation;
 use host_core::stats::StatsCollector;
 use host_core::store::StateStore;
 use nix::sys::signal::{kill, Signal};
@@ -33,15 +35,17 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Pair this host with the mobile app.
+    /// Pair this host with the mobile app via QR code.
     ///
-    /// With no args: displays a QR code for the mobile app to scan (new-host if
-    /// not yet paired, device-add if already paired).
-    /// With a code: validates the pairing code from the mobile app (legacy flow;
-    /// also auto-detects new-host vs device-add from local state).
+    /// Displays a QR for the mobile app to scan (new-host if not yet paired,
+    /// device-add if already paired).
     /// Use --reset to wipe existing pairing and start fresh (e.g. switching accounts).
+    ///
+    /// NOTE: typed-code pairing (`pocketshell pair <CODE>`) is DISABLED as of
+    /// 2026-05-24. The `code` arg is still accepted for backward compatibility
+    /// but is ignored with a warning — see `pair()` body wrapped in /* */ below.
     Pair {
-        /// Pairing code displayed in the mobile app (optional — omit for QR flow)
+        /// Deprecated: typed pair-code is disabled; arg is ignored. Use QR.
         code: Option<String>,
         /// Clear existing host identity before pairing (use when switching accounts)
         #[arg(long)]
@@ -102,6 +106,21 @@ enum Commands {
         #[arg(long)]
         insecure_skip_verify: bool,
     },
+    /// Completely remove PocketShell from this host.
+    /// Stops and uninstalls the daemon service, revokes the host's refresh
+    /// token server-side (best effort), clears keychain secrets, wipes
+    /// `~/.pocketshell/`, and removes the `pocketshell` binary from disk.
+    Uninstall {
+        /// Don't prompt for confirmation.
+        #[arg(long, short)]
+        yes: bool,
+        /// Keep `~/.pocketshell/` (state, audit log) on disk.
+        #[arg(long)]
+        keep_data: bool,
+        /// Don't remove the `pocketshell` binary itself.
+        #[arg(long)]
+        keep_binary: bool,
+    },
     /// Expose a terminal session for mobile access.
     /// Creates a named tmux session that the daemon auto-discovers.
     #[command(alias = "rc")]
@@ -161,16 +180,29 @@ async fn main() -> Result<()> {
             reset,
             show_qr: _,
         }) => {
-            // QR is now the default. --show-qr is accepted (no-op) for backward compat.
-            // `code.is_some()` → legacy code-entry flow (preserves existing behavior).
-            // Otherwise → QR flow, which auto-picks new-host vs device-add from state.
+            // PAIRING CODE DISABLED 2026-05-24 — typed 6-char code flow is
+            // quarantined (see `pair()` body wrapped below). Always dispatch
+            // to QR. If a code was passed, surface a visible notice so users
+            // updating muscle memory understand why their
+            // `pocketshell pair <CODE>` invocation suddenly opened a QR.
             if code.is_some() {
-                pair(config, code, reset).await
-            } else {
-                pair_qr(config, reset).await
+                eprintln!();
+                eprintln!("┌──────────────────────────────────────────────────────────────┐");
+                eprintln!("│  Typed pair-code is no longer supported.                     │");
+                eprintln!("│                                                              │");
+                eprintln!("│  The 6-character code flow has been disabled. Pairing now    │");
+                eprintln!("│  uses a QR code scanned from the mobile app.                 │");
+                eprintln!("│                                                              │");
+                eprintln!("│  Next step:                                                  │");
+                eprintln!("│    1. Open the PocketShell mobile app                        │");
+                eprintln!("│    2. Tap \"Add Host\" → camera opens                          │");
+                eprintln!("│    3. Scan the QR shown below on this terminal               │");
+                eprintln!("└──────────────────────────────────────────────────────────────┘");
+                eprintln!();
             }
+            pair_qr(config, reset).await
         }
-        Some(Commands::Logout { reset }) => logout(reset),
+        Some(Commands::Logout { reset }) => logout(reset).await,
         Some(Commands::Status) => status(config).await,
         Some(Commands::Devices { command }) => devices(config, command).await,
         Some(Commands::Daemon { command }) => daemon_cmd(config, command).await,
@@ -184,6 +216,11 @@ async fn main() -> Result<()> {
             base_url,
             insecure_skip_verify,
         }) => update_cmd(check, force, version, base_url, insecure_skip_verify).await,
+        Some(Commands::Uninstall {
+            yes,
+            keep_data,
+            keep_binary,
+        }) => uninstall_cmd(yes, keep_data, keep_binary).await,
         Some(Commands::Remote {
             name,
             detached,
@@ -207,6 +244,15 @@ fn init_logging() {
     tracing_subscriber::fmt().with_env_filter(filter).init();
 }
 
+// PAIRING CODE DISABLED 2026-05-24 — typed 6-char code flow is quarantined.
+// Function preserved verbatim inside the `/* */` block so re-enabling is a
+// matter of un-wrapping. The dispatcher above no longer calls this; QR is
+// the only supported path.
+#[allow(dead_code)]
+async fn pair(_config: AppConfig, _code: Option<String>, _reset: bool) -> Result<()> {
+    Err(anyhow!("typed pair-code flow is disabled — use QR (`pocketshell pair`)"))
+}
+/*
 async fn pair(config: AppConfig, code: Option<String>, reset: bool) -> Result<()> {
     if !confirm_root_install() {
         eprintln!("aborted.");
@@ -430,6 +476,7 @@ async fn pair(config: AppConfig, code: Option<String>, reset: bool) -> Result<()
 
     Ok(())
 }
+*/ // end PAIRING CODE DISABLED 2026-05-24
 
 /// Add only the mobile device from this pairing to the local trust store.
 /// The daemon's periodic backend sync never adds devices; it only revokes or
@@ -878,7 +925,7 @@ async fn pair_qr_device_add(config: AppConfig, mut store: StateStore) -> Result<
     Ok(())
 }
 
-fn logout(reset: bool) -> Result<()> {
+async fn logout(reset: bool) -> Result<()> {
     let mut store = StateStore::load().context("loading local state")?;
 
     // Best-effort server-side revocation BEFORE we wipe local state.
@@ -889,14 +936,9 @@ fn logout(reset: bool) -> Result<()> {
     if let Some(refresh) = store.state.auth.as_ref().map(|a| a.refresh_token.clone()) {
         if !refresh.is_empty() {
             let cfg = AppConfig::from_env();
-            if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                let api = host_core::api::BackendClient::new(cfg.backend_base_url.clone());
-                if let Err(e) = rt.block_on(api.logout(&refresh)) {
-                    eprintln!("warning: server-side logout failed: {e}");
-                }
+            let api = host_core::api::BackendClient::new(cfg.backend_base_url.clone());
+            if let Err(e) = api.logout(&refresh).await {
+                eprintln!("warning: server-side logout failed: {e}");
             }
         }
     }
@@ -955,6 +997,220 @@ fn logout(reset: bool) -> Result<()> {
 
     println!("logged out");
     Ok(())
+}
+
+/// Load state without letting corrupt state.json abort uninstall.
+fn load_state_for_uninstall() -> Option<StateStore> {
+    if let Ok(paths) = AppConfig::paths() {
+        if paths.state_file.exists() {
+            match fs::read_to_string(&paths.state_file) {
+                Ok(raw)
+                    if !raw.trim().is_empty()
+                        && serde_json::from_str::<AgentState>(&raw).is_err() =>
+                {
+                    eprintln!(
+                        "warning: state.json at {} is corrupt; continuing with teardown",
+                        paths.state_file.display()
+                    );
+                    return None;
+                }
+                Err(e) => {
+                    eprintln!(
+                        "warning: could not inspect {} ({e}); continuing with teardown",
+                        paths.state_file.display()
+                    );
+                    return None;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    match StateStore::load() {
+        Ok(s) => Some(s),
+        Err(e) => {
+            eprintln!("warning: could not load local state ({e}); continuing with teardown");
+            None
+        }
+    }
+}
+
+fn refresh_token_for_uninstall(loaded: Option<&StateStore>) -> Option<String> {
+    let from_state = loaded
+        .and_then(|s| s.state.auth.as_ref())
+        .map(|a| a.refresh_token.clone())
+        .filter(|t| !t.is_empty());
+    if from_state.is_some() {
+        return from_state;
+    }
+
+    let Ok(paths) = AppConfig::paths() else {
+        return None;
+    };
+    let secrets = host_core::secret_store::SecretStore::new(paths.state_dir);
+    match secrets.get(host_core::secret_store::KEY_REFRESH_TOKEN) {
+        Ok(Some(token)) if !token.is_empty() => Some(token),
+        Ok(_) => None,
+        Err(e) => {
+            eprintln!("warning: could not read refresh token from keyring: {e}");
+            None
+        }
+    }
+}
+
+/// Tear everything down: service, daemon, secrets, state dir, and the binary.
+/// Mirrors `logout --reset` but goes further by deleting `~/.pocketshell/` and
+/// the on-disk binary so a fresh install starts from a clean slate.
+async fn uninstall_cmd(yes: bool, keep_data: bool, keep_binary: bool) -> Result<()> {
+    if !yes {
+        eprintln!("This will:");
+        eprintln!("  • stop the daemon and uninstall the system service");
+        eprintln!("  • revoke this host's refresh token on the backend");
+        eprintln!("  • clear PocketShell secrets from the OS keychain");
+        if !keep_data {
+            eprintln!("  • delete ~/.pocketshell/ (state, audit log)");
+        }
+        if !keep_binary {
+            eprintln!("  • remove the `pocketshell` binary from disk");
+        }
+        let answer = prompt("Continue? [y/N]: ");
+        if !matches!(answer.to_lowercase().as_str(), "y" | "yes") {
+            eprintln!("aborted.");
+            return Ok(());
+        }
+    }
+
+    // Don't call StateStore::load() when state.json is corrupt: that path exits
+    // the process to protect the daemon from identity loss. Uninstall is a
+    // teardown path, so it must keep going and clear secrets directly.
+    let loaded = load_state_for_uninstall();
+
+    // Best-effort server-side revocation before wiping local refresh token —
+    // otherwise the 365-day refresh would remain valid on the backend.
+    let refresh = refresh_token_for_uninstall(loaded.as_ref());
+    if let Some(refresh) = refresh {
+        let cfg = AppConfig::from_env();
+        let api = host_core::api::BackendClient::new(cfg.backend_base_url.clone());
+        if let Err(e) = api.logout(&refresh).await {
+            eprintln!("warning: server-side logout failed: {e}");
+        }
+    }
+
+    if let Err(e) = host_core::service::uninstall() {
+        eprintln!("warning: could not uninstall service: {e}");
+    }
+
+    // Kill any PID-based daemon that's running independent of the service.
+    if let Ok(paths) = AppConfig::paths() {
+        if let Some(pid) = read_pid(&paths.pid_file) {
+            if pid_running(pid) {
+                let _ = kill(Pid::from_raw(pid), Signal::SIGTERM);
+                for _ in 0..20 {
+                    if !pid_running(pid) {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+            let _ = fs::remove_file(&paths.pid_file);
+        }
+    }
+
+    // Clear keyring before wiping state.json so partial failures don't leave
+    // orphaned secrets that get silently reused on a future re-pair. If
+    // load() failed, talk to the keyring directly using the canonical key
+    // names so corrupt state still gets a clean keychain teardown.
+    match loaded {
+        Some(mut store) => {
+            store.clear_secrets();
+            // Only persist a wiped state.json when we're keeping the data
+            // dir; otherwise we're about to remove it anyway.
+            if keep_data {
+                store.state = Default::default();
+                let _ = store.save();
+            }
+        }
+        None => {
+            if let Ok(paths) = AppConfig::paths() {
+                let secrets = host_core::secret_store::SecretStore::new(paths.state_dir);
+                let _ = secrets.clear(host_core::secret_store::KEY_HOST_PRIVATE);
+                let _ = secrets.clear(host_core::secret_store::KEY_REFRESH_TOKEN);
+            }
+        }
+    }
+
+    // Write the audit event before removing the state dir. Skipped when
+    // !keep_data — the log file is about to be deleted anyway.
+    if keep_data {
+        let _ = write_audit_event(AuditEvent::new("uninstall"));
+    }
+
+    if !keep_data {
+        if let Ok(paths) = AppConfig::paths() {
+            if paths.state_dir.exists() {
+                if let Err(e) = fs::remove_dir_all(&paths.state_dir) {
+                    eprintln!(
+                        "warning: could not remove {}: {e}",
+                        paths.state_dir.display()
+                    );
+                }
+            }
+        }
+    }
+
+    if !keep_binary {
+        remove_installed_binaries();
+    }
+
+    println!("pocketshell uninstalled.");
+    Ok(())
+}
+
+/// Remove `pocketshell` from the running binary's path AND from the other
+/// well-known install dir. Duplicate installs are real (see install.sh:
+/// `~/.local/bin` for non-root, `/usr/local/bin` for root) and one stale
+/// copy on PATH is enough to make `pocketshell <cmd>` resurrect a dead
+/// install.
+fn remove_installed_binaries() {
+    let mut removed: Vec<PathBuf> = Vec::new();
+    let mut seen: Vec<PathBuf> = Vec::new();
+
+    let try_remove = |path: PathBuf, removed: &mut Vec<PathBuf>, seen: &mut Vec<PathBuf>| {
+        let canon = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+        if seen.contains(&canon) {
+            return;
+        }
+        seen.push(canon);
+        if !path.exists() {
+            return;
+        }
+        match fs::remove_file(&path) {
+            Ok(_) => {
+                let backup = path.with_extension("old");
+                let _ = fs::remove_file(&backup);
+                removed.push(path);
+            }
+            Err(e) => eprintln!("warning: could not remove {}: {e}", path.display()),
+        }
+    };
+
+    if let Ok(exe) = std::env::current_exe() {
+        try_remove(exe, &mut removed, &mut seen);
+    } else {
+        eprintln!("warning: could not locate current binary");
+    }
+
+    let mut candidates: Vec<PathBuf> = vec![PathBuf::from("/usr/local/bin/pocketshell")];
+    if let Ok(home) = std::env::var("HOME") {
+        candidates.push(PathBuf::from(home).join(".local/bin/pocketshell"));
+    }
+    for c in candidates {
+        try_remove(c, &mut removed, &mut seen);
+    }
+
+    for p in &removed {
+        println!("removed {}", p.display());
+    }
 }
 
 async fn status(config: AppConfig) -> Result<()> {
@@ -1057,9 +1313,10 @@ async fn devices(config: AppConfig, command: DeviceCommands) -> Result<()> {
         DeviceCommands::Approve { device_id: _ } => {
             // In the new security model, devices can only be approved via `pocketshell pair`.
             // The approve command is kept for backward compatibility but now instructs the user.
-            println!("device approval is now done via `pocketshell pair <CODE>`");
+            // PAIRING CODE DISABLED 2026-05-24 — message updated to point at QR.
+            println!("device approval is now done via `pocketshell pair` (QR flow)");
             println!(
-                "have the mobile user generate a new pairing code, then run pair on this host"
+                "run `pocketshell pair` on this host and scan the QR from the mobile app"
             );
         }
         DeviceCommands::Revoke { device_id } => {
@@ -1759,7 +2016,7 @@ async fn interactive_menu(config: AppConfig) -> Result<()> {
                 .await
             }
             MenuAction::Update => menu_update(&theme).await,
-            MenuAction::Logout => menu_logout(&theme),
+            MenuAction::Logout => menu_logout(&theme).await,
             MenuAction::Quit => unreachable!(),
         };
 
@@ -1991,7 +2248,7 @@ async fn menu_update(theme: &dialoguer::theme::ColorfulTheme) -> Result<()> {
     .await
 }
 
-fn menu_logout(theme: &dialoguer::theme::ColorfulTheme) -> Result<()> {
+async fn menu_logout(theme: &dialoguer::theme::ColorfulTheme) -> Result<()> {
     use dialoguer::Confirm;
 
     let reset = Confirm::with_theme(theme)
@@ -2001,7 +2258,7 @@ fn menu_logout(theme: &dialoguer::theme::ColorfulTheme) -> Result<()> {
         .map_err(|e| anyhow!("confirm error: {e}"))?
         .unwrap_or(false);
 
-    logout(reset)
+    logout(reset).await
 }
 
 fn prompt(label: &str) -> String {
