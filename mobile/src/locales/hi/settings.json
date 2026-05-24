@@ -117,5 +117,21 @@
   "pro_gate.host_limit.message": "Pro खाते {{proCount}} होस्ट तक जोड़ सकते हैं। नया जोड़ने के लिए मौजूदा होस्ट हटाएँ, या अधिक चाहिए तो समर्थन से संपर्क करें।",
   "pro_gate.generic.title": "सीमा पहुँच गई",
   "pro_gate.generic.message": "आप इस सुविधा के लिए Pro टियर सीमा तक पहुँच गए हैं।",
-  "errors.subscription_load_failed": "सब्सक्रिप्शन लोड करने में विफल"
+  "errors.subscription_load_failed": "सब्सक्रिप्शन लोड करने में विफल",
+  "feedback.section_title": "फ़ीडबैक",
+  "feedback.row_label": "फ़ीडबैक / सुझाव भेजें",
+  "feedback.title": "हम आपसे सुनना चाहते हैं",
+  "feedback.subtitle": "बग रिपोर्ट, सुझाव या जो कुछ भी आप बताना चाहें।",
+  "feedback.category_label": "प्रकार",
+  "feedback.category_feedback": "फ़ीडबैक",
+  "feedback.category_suggestion": "सुझाव",
+  "feedback.category_bug": "बग रिपोर्ट",
+  "feedback.category_other": "अन्य",
+  "feedback.message_label": "संदेश",
+  "feedback.message_placeholder": "हमें बताएं आपके मन में क्या है…",
+  "feedback.contact_label": "उत्तर के लिए ईमेल (वैकल्पिक)",
+  "feedback.contact_placeholder": "you@example.com",
+  "feedback.submit": "भेजें",
+  "feedback.submit_success": "धन्यवाद — आपका फ़ीडबैक भेज दिया गया!",
+  "feedback.submit_failed": "फ़ीडबैक नहीं भेज सके। कृपया फिर से प्रयास करें।"
 }

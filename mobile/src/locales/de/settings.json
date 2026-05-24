@@ -117,5 +117,21 @@
   "pro_gate.host_limit.message": "Pro-Konten können bis zu {{proCount}} Hosts koppeln. Entferne einen vorhandenen Host, um einen neuen zu koppeln, oder kontaktiere den Support, wenn du mehr benötigst.",
   "pro_gate.generic.title": "Limit erreicht",
   "pro_gate.generic.message": "Du hast das Pro-Tier-Limit für diese Funktion erreicht.",
-  "errors.subscription_load_failed": "Abonnement konnte nicht geladen werden"
+  "errors.subscription_load_failed": "Abonnement konnte nicht geladen werden",
+  "feedback.section_title": "Feedback",
+  "feedback.row_label": "Feedback / Vorschläge senden",
+  "feedback.title": "Wir freuen uns auf deine Nachricht",
+  "feedback.subtitle": "Fehlerberichte, Ideen oder alles, was du uns mitteilen möchtest.",
+  "feedback.category_label": "Typ",
+  "feedback.category_feedback": "Feedback",
+  "feedback.category_suggestion": "Vorschlag",
+  "feedback.category_bug": "Fehlerbericht",
+  "feedback.category_other": "Sonstiges",
+  "feedback.message_label": "Nachricht",
+  "feedback.message_placeholder": "Erzähl uns, was dich beschäftigt…",
+  "feedback.contact_label": "Antwort-E-Mail (optional)",
+  "feedback.contact_placeholder": "du@beispiel.com",
+  "feedback.submit": "Senden",
+  "feedback.submit_success": "Danke — dein Feedback ist unterwegs!",
+  "feedback.submit_failed": "Feedback konnte nicht gesendet werden. Bitte erneut versuchen."
 }

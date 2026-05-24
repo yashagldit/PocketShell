@@ -117,5 +117,21 @@
   "pro_gate.host_limit.message": "Gli account Pro possono accoppiare fino a {{proCount}} host. Rimuovi un host esistente per accoppiarne uno nuovo, o contatta il supporto se ne servono di più.",
   "pro_gate.generic.title": "Limite raggiunto",
   "pro_gate.generic.message": "Hai raggiunto il limite del livello Pro per questa funzione.",
-  "errors.subscription_load_failed": "Caricamento abbonamento non riuscito"
+  "errors.subscription_load_failed": "Caricamento abbonamento non riuscito",
+  "feedback.section_title": "Feedback",
+  "feedback.row_label": "Invia feedback / suggerimenti",
+  "feedback.title": "Ci piacerebbe sentirti",
+  "feedback.subtitle": "Segnalazioni di bug, idee o qualsiasi cosa tu voglia condividere.",
+  "feedback.category_label": "Tipo",
+  "feedback.category_feedback": "Feedback",
+  "feedback.category_suggestion": "Suggerimento",
+  "feedback.category_bug": "Segnalazione bug",
+  "feedback.category_other": "Altro",
+  "feedback.message_label": "Messaggio",
+  "feedback.message_placeholder": "Dicci cosa hai in mente…",
+  "feedback.contact_label": "Email di risposta (facoltativa)",
+  "feedback.contact_placeholder": "tu@esempio.com",
+  "feedback.submit": "Invia",
+  "feedback.submit_success": "Grazie — il tuo feedback è in viaggio!",
+  "feedback.submit_failed": "Impossibile inviare il feedback. Riprova."
 }

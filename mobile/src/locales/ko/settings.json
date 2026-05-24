@@ -117,5 +117,21 @@
   "pro_gate.host_limit.message": "Pro 계정은 최대 {{proCount}}개의 호스트를 페어링할 수 있습니다. 새 호스트를 페어링하려면 기존 호스트를 삭제하거나, 더 필요하면 지원팀에 문의하세요.",
   "pro_gate.generic.title": "한도 도달",
   "pro_gate.generic.message": "이 기능에 대한 Pro 등급 한도에 도달했습니다.",
-  "errors.subscription_load_failed": "구독을 불러오지 못했습니다"
+  "errors.subscription_load_failed": "구독을 불러오지 못했습니다",
+  "feedback.section_title": "피드백",
+  "feedback.row_label": "피드백 / 제안 보내기",
+  "feedback.title": "여러분의 의견을 듣고 싶어요",
+  "feedback.subtitle": "버그 신고, 아이디어 등 무엇이든 알려주세요.",
+  "feedback.category_label": "유형",
+  "feedback.category_feedback": "피드백",
+  "feedback.category_suggestion": "제안",
+  "feedback.category_bug": "버그 신고",
+  "feedback.category_other": "기타",
+  "feedback.message_label": "메시지",
+  "feedback.message_placeholder": "생각하시는 점을 알려주세요…",
+  "feedback.contact_label": "답장 이메일 (선택)",
+  "feedback.contact_placeholder": "you@example.com",
+  "feedback.submit": "보내기",
+  "feedback.submit_success": "감사합니다 — 피드백이 전송되었어요!",
+  "feedback.submit_failed": "피드백을 보낼 수 없습니다. 다시 시도해 주세요."
 }

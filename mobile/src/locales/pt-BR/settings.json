@@ -117,5 +117,21 @@
   "pro_gate.host_limit.message": "Contas Pro podem parear até {{proCount}} hosts. Remova um host existente para parear um novo, ou contate o suporte se precisar de mais.",
   "pro_gate.generic.title": "Limite atingido",
   "pro_gate.generic.message": "Você atingiu o limite do nível Pro para este recurso.",
-  "errors.subscription_load_failed": "Falha ao carregar assinatura"
+  "errors.subscription_load_failed": "Falha ao carregar assinatura",
+  "feedback.section_title": "Feedback",
+  "feedback.row_label": "Enviar feedback / sugestões",
+  "feedback.title": "Adoraríamos ouvir você",
+  "feedback.subtitle": "Relatos de bugs, ideias ou qualquer coisa que queira compartilhar.",
+  "feedback.category_label": "Tipo",
+  "feedback.category_feedback": "Feedback",
+  "feedback.category_suggestion": "Sugestão",
+  "feedback.category_bug": "Relato de bug",
+  "feedback.category_other": "Outro",
+  "feedback.message_label": "Mensagem",
+  "feedback.message_placeholder": "Conte-nos o que está pensando…",
+  "feedback.contact_label": "E-mail de resposta (opcional)",
+  "feedback.contact_placeholder": "voce@exemplo.com",
+  "feedback.submit": "Enviar",
+  "feedback.submit_success": "Obrigado — seu feedback foi enviado!",
+  "feedback.submit_failed": "Não foi possível enviar o feedback. Tente novamente."
 }

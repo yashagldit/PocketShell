@@ -117,5 +117,21 @@
   "pro_gate.host_limit.message": "Proアカウントは最大{{proCount}}台のホストをペアリングできます。新しいホストをペアリングするには既存のホストを削除するか、それ以上必要な場合はサポートにお問い合わせください。",
   "pro_gate.generic.title": "上限に達しました",
   "pro_gate.generic.message": "この機能のProティアの上限に達しました。",
-  "errors.subscription_load_failed": "サブスクリプションの読み込みに失敗しました"
+  "errors.subscription_load_failed": "サブスクリプションの読み込みに失敗しました",
+  "feedback.section_title": "フィードバック",
+  "feedback.row_label": "フィードバック / 提案を送る",
+  "feedback.title": "ご意見をお聞かせください",
+  "feedback.subtitle": "バグ報告、アイデア、その他なんでもお知らせください。",
+  "feedback.category_label": "種類",
+  "feedback.category_feedback": "フィードバック",
+  "feedback.category_suggestion": "提案",
+  "feedback.category_bug": "バグ報告",
+  "feedback.category_other": "その他",
+  "feedback.message_label": "メッセージ",
+  "feedback.message_placeholder": "お考えをお聞かせください…",
+  "feedback.contact_label": "返信用メール（任意）",
+  "feedback.contact_placeholder": "you@example.com",
+  "feedback.submit": "送信",
+  "feedback.submit_success": "ありがとうございます — フィードバックを送信しました！",
+  "feedback.submit_failed": "フィードバックを送信できませんでした。もう一度お試しください。"
 }

@@ -117,5 +117,21 @@
   "pro_gate.host_limit.message": "Pro accounts can pair up to {{proCount}} hosts. Remove an existing host to pair a new one, or contact support if you need more.",
   "pro_gate.generic.title": "Limit reached",
   "pro_gate.generic.message": "You've reached the Pro tier limit for this feature.",
-  "errors.subscription_load_failed": "Failed to load subscription"
+  "errors.subscription_load_failed": "Failed to load subscription",
+  "feedback.section_title": "Feedback",
+  "feedback.row_label": "Send feedback / suggestions",
+  "feedback.title": "We'd love to hear from you",
+  "feedback.subtitle": "Bug reports, ideas, or anything you'd like us to know — drop it in.",
+  "feedback.category_label": "Type",
+  "feedback.category_feedback": "Feedback",
+  "feedback.category_suggestion": "Suggestion",
+  "feedback.category_bug": "Bug report",
+  "feedback.category_other": "Other",
+  "feedback.message_label": "Message",
+  "feedback.message_placeholder": "Tell us what's on your mind…",
+  "feedback.contact_label": "Reply-to email (optional)",
+  "feedback.contact_placeholder": "you@example.com",
+  "feedback.submit": "Send",
+  "feedback.submit_success": "Thanks — your feedback is on its way!",
+  "feedback.submit_failed": "Couldn't send feedback. Please try again."
 }

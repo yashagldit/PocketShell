@@ -117,5 +117,21 @@
   "pro_gate.host_limit.message": "Las cuentas Pro pueden emparejar hasta {{proCount}} hosts. Elimina un host existente para emparejar uno nuevo, o contacta con soporte si necesitas más.",
   "pro_gate.generic.title": "Límite alcanzado",
   "pro_gate.generic.message": "Has alcanzado el límite de nivel Pro para esta función.",
-  "errors.subscription_load_failed": "No se pudo cargar la suscripción"
+  "errors.subscription_load_failed": "No se pudo cargar la suscripción",
+  "feedback.section_title": "Comentarios",
+  "feedback.row_label": "Enviar comentarios / sugerencias",
+  "feedback.title": "Nos encantaría saber de ti",
+  "feedback.subtitle": "Reportes de errores, ideas o cualquier cosa que quieras compartir.",
+  "feedback.category_label": "Tipo",
+  "feedback.category_feedback": "Comentario",
+  "feedback.category_suggestion": "Sugerencia",
+  "feedback.category_bug": "Reporte de error",
+  "feedback.category_other": "Otro",
+  "feedback.message_label": "Mensaje",
+  "feedback.message_placeholder": "Cuéntanos qué tienes en mente…",
+  "feedback.contact_label": "Correo de respuesta (opcional)",
+  "feedback.contact_placeholder": "tu@ejemplo.com",
+  "feedback.submit": "Enviar",
+  "feedback.submit_success": "¡Gracias — tu comentario está en camino!",
+  "feedback.submit_failed": "No se pudo enviar el comentario. Inténtalo de nuevo."
 }

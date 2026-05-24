@@ -117,5 +117,21 @@
   "pro_gate.host_limit.message": "Аккаунты Pro могут сопрягать до {{proCount}} хостов. Удалите существующий хост, чтобы сопрячь новый, или обратитесь в поддержку, если вам нужно больше.",
   "pro_gate.generic.title": "Достигнут лимит",
   "pro_gate.generic.message": "Вы достигли лимита уровня Pro для этой функции.",
-  "errors.subscription_load_failed": "Не удалось загрузить подписку"
+  "errors.subscription_load_failed": "Не удалось загрузить подписку",
+  "feedback.section_title": "Обратная связь",
+  "feedback.row_label": "Отправить отзыв / предложение",
+  "feedback.title": "Мы хотим услышать вас",
+  "feedback.subtitle": "Сообщения об ошибках, идеи — всё, чем хотите поделиться.",
+  "feedback.category_label": "Тип",
+  "feedback.category_feedback": "Отзыв",
+  "feedback.category_suggestion": "Предложение",
+  "feedback.category_bug": "Сообщение об ошибке",
+  "feedback.category_other": "Другое",
+  "feedback.message_label": "Сообщение",
+  "feedback.message_placeholder": "Расскажите, что у вас на уме…",
+  "feedback.contact_label": "Email для ответа (необязательно)",
+  "feedback.contact_placeholder": "you@example.com",
+  "feedback.submit": "Отправить",
+  "feedback.submit_success": "Спасибо — ваш отзыв отправлен!",
+  "feedback.submit_failed": "Не удалось отправить отзыв. Пожалуйста, попробуйте снова."
 }

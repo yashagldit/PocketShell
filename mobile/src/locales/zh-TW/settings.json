@@ -117,5 +117,21 @@
   "pro_gate.host_limit.message": "Pro 帳戶最多可配對 {{proCount}} 個主機。移除現有主機以配對新主機,如需更多請聯絡支援。",
   "pro_gate.generic.title": "已達上限",
   "pro_gate.generic.message": "您已達到此功能的 Pro 等級上限。",
-  "errors.subscription_load_failed": "載入訂閱失敗"
+  "errors.subscription_load_failed": "載入訂閱失敗",
+  "feedback.section_title": "意見回饋",
+  "feedback.row_label": "傳送意見回饋 / 建議",
+  "feedback.title": "我們想聽聽您的想法",
+  "feedback.subtitle": "錯誤報告、想法或任何您想告訴我們的事情。",
+  "feedback.category_label": "類型",
+  "feedback.category_feedback": "意見回饋",
+  "feedback.category_suggestion": "建議",
+  "feedback.category_bug": "錯誤報告",
+  "feedback.category_other": "其他",
+  "feedback.message_label": "訊息",
+  "feedback.message_placeholder": "告訴我們您的想法…",
+  "feedback.contact_label": "回覆電子郵件（選填）",
+  "feedback.contact_placeholder": "you@example.com",
+  "feedback.submit": "傳送",
+  "feedback.submit_success": "謝謝 — 您的意見已傳送！",
+  "feedback.submit_failed": "無法傳送意見回饋。請再試一次。"
 }

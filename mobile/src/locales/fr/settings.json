@@ -117,5 +117,21 @@
   "pro_gate.host_limit.message": "Les comptes Pro peuvent appairer jusqu'à {{proCount}} hôtes. Supprimez un hôte existant pour en appairer un nouveau, ou contactez le support si vous en avez besoin de plus.",
   "pro_gate.generic.title": "Limite atteinte",
   "pro_gate.generic.message": "Vous avez atteint la limite du niveau Pro pour cette fonctionnalité.",
-  "errors.subscription_load_failed": "Échec du chargement de l'abonnement"
+  "errors.subscription_load_failed": "Échec du chargement de l'abonnement",
+  "feedback.section_title": "Commentaires",
+  "feedback.row_label": "Envoyer des commentaires / suggestions",
+  "feedback.title": "Nous aimerions vous entendre",
+  "feedback.subtitle": "Rapports de bugs, idées ou tout ce que vous voulez partager.",
+  "feedback.category_label": "Type",
+  "feedback.category_feedback": "Commentaire",
+  "feedback.category_suggestion": "Suggestion",
+  "feedback.category_bug": "Rapport de bug",
+  "feedback.category_other": "Autre",
+  "feedback.message_label": "Message",
+  "feedback.message_placeholder": "Dites-nous ce qui vous préoccupe…",
+  "feedback.contact_label": "E-mail de réponse (facultatif)",
+  "feedback.contact_placeholder": "vous@exemple.com",
+  "feedback.submit": "Envoyer",
+  "feedback.submit_success": "Merci — votre commentaire est en route !",
+  "feedback.submit_failed": "Impossible d'envoyer le commentaire. Veuillez réessayer."
 }

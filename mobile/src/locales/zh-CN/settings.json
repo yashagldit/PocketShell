@@ -117,5 +117,21 @@
   "pro_gate.host_limit.message": "Pro 账户最多可配对 {{proCount}} 个主机。移除现有主机以配对新主机,如需更多请联系支持。",
   "pro_gate.generic.title": "已达到限制",
   "pro_gate.generic.message": "您已达到此功能的 Pro 等级限制。",
-  "errors.subscription_load_failed": "加载订阅失败"
+  "errors.subscription_load_failed": "加载订阅失败",
+  "feedback.section_title": "反馈",
+  "feedback.row_label": "发送反馈 / 建议",
+  "feedback.title": "我们想听听您的想法",
+  "feedback.subtitle": "错误报告、想法或任何您想告诉我们的内容。",
+  "feedback.category_label": "类型",
+  "feedback.category_feedback": "反馈",
+  "feedback.category_suggestion": "建议",
+  "feedback.category_bug": "错误报告",
+  "feedback.category_other": "其他",
+  "feedback.message_label": "消息",
+  "feedback.message_placeholder": "告诉我们您的想法…",
+  "feedback.contact_label": "回复邮箱（可选）",
+  "feedback.contact_placeholder": "you@example.com",
+  "feedback.submit": "发送",
+  "feedback.submit_success": "感谢您 — 反馈已发送！",
+  "feedback.submit_failed": "无法发送反馈。请重试。"
 }
