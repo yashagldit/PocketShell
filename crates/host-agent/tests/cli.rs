@@ -37,7 +37,8 @@ fn top_level_help_lists_all_subcommands() {
         .stdout(predicate::str::contains("sessions"))
         .stdout(predicate::str::contains("remote"))
         .stdout(predicate::str::contains("restart"))
-        .stdout(predicate::str::contains("update"));
+        .stdout(predicate::str::contains("update"))
+        .stdout(predicate::str::contains("uninstall"));
 }
 
 #[test]
@@ -154,6 +155,18 @@ fn update_help_succeeds_and_lists_flags() {
         .stdout(predicate::str::contains("--force"))
         .stdout(predicate::str::contains("--version"))
         .stdout(predicate::str::contains("--base-url"));
+}
+
+#[test]
+fn uninstall_help_succeeds_and_lists_flags() {
+    let tmp = TempDir::new().unwrap();
+    cmd(&tmp)
+        .args(["uninstall", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--yes"))
+        .stdout(predicate::str::contains("--keep-data"))
+        .stdout(predicate::str::contains("--keep-binary"));
 }
 
 #[test]

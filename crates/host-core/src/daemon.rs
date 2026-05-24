@@ -1494,6 +1494,13 @@ fn handle_file_transfer_msg(
                 })
             }
         }
+        "cancel" => {
+            transfers.remove(&id);
+            Some(FileTransferUpdate::Error {
+                request_id: id,
+                message: "transfer_cancelled".to_string(),
+            })
+        }
         _ => {
             warn!("unknown file transfer op: {}", op);
             None
@@ -3065,6 +3072,24 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                         }
                                         continue;
                                     }
+                                    "upload_cancel" => {
+                                        if let Some(upload) = files_binary_uploads.remove(&upload_key) {
+                                            drop(upload.file);
+                                            let _ = std::fs::remove_file(&upload.tmp_path);
+                                            info!("files upload cancelled: {}", upload_key);
+                                        }
+                                        let response = serde_json::json!({
+                                            "channel": "files",
+                                            "response_to": request_id,
+                                            "status": "error",
+                                            "error": "upload cancelled",
+                                            "error_code": "upload_cancelled"
+                                        });
+                                        if let Err(e) = send_framed_files_response(channel, &response).await {
+                                            warn!("files upload cancel send failed: {}", e);
+                                        }
+                                        continue;
+                                    }
                                     _ => {}
                                 }
                             }
@@ -3975,6 +4000,10 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                         }
                                         let mut extra = std::collections::HashMap::new();
                                         extra.insert("host_id".to_string(), serde_json::json!(host_id));
+                                        extra.insert(
+                                            "mobile_device_id".to_string(),
+                                            serde_json::json!(mobile_device_id),
+                                        );
                                         let ice_msg = SignalEnvelope {
                                             message_type: "files_ice_candidate".to_string(),
                                             session_id: None,
@@ -3996,6 +4025,10 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                         }
                                         let mut extra = std::collections::HashMap::new();
                                         extra.insert("host_id".to_string(), serde_json::json!(host_id));
+                                        extra.insert(
+                                            "mobile_device_id".to_string(),
+                                            serde_json::json!(mobile_device_id),
+                                        );
                                         let ice_msg = SignalEnvelope {
                                             message_type: "agent_ice_candidate".to_string(),
                                             session_id: None,
@@ -6564,6 +6597,10 @@ async fn handle_signal(
                                 Ok(answer_sdp) if !answer_sdp.is_empty() => {
                                     let mut extra = std::collections::HashMap::new();
                                     extra.insert("host_id".to_string(), serde_json::json!(host_id));
+                                    extra.insert(
+                                        "mobile_device_id".to_string(),
+                                        serde_json::json!(mobile_device_id),
+                                    );
                                     let answer_payload = build_signed_sdp_payload(
                                         store,
                                         &answer_sdp,
@@ -6643,6 +6680,10 @@ async fn handle_signal(
                                 Ok(answer_sdp) if !answer_sdp.is_empty() => {
                                     let mut extra = std::collections::HashMap::new();
                                     extra.insert("host_id".to_string(), serde_json::json!(host_id));
+                                    extra.insert(
+                                        "mobile_device_id".to_string(),
+                                        serde_json::json!(mobile_device_id),
+                                    );
                                     let answer_payload = build_signed_sdp_payload(
                                         store,
                                         &answer_sdp,
