@@ -1,0 +1,271 @@
+name: Publish to npm
+
+# Publishes the `pocketshell` wrapper + four platform-specific binary
+# packages (@pocketshell/<triple>) to the npm registry, sourcing the
+# binaries from a GitHub Release produced by release-host-agent.yml.
+#
+# Deliberately split out of release-host-agent.yml so that an npm
+# registry outage or trusted-publisher misconfiguration cannot fail
+# the (~10 min) main release build. The GitHub Release is the source of
+# truth; npm is a secondary distribution channel. If this workflow fails,
+# the release is already cut and `curl | bash` still works — re-run this
+# workflow via the manual entry on `release-host-agent.yml` once the npm
+# side is fixed (we do NOT expose workflow_dispatch here directly because
+# npm Trusted Publishing pins to ONE entry workflow filename per package).
+#
+# Auth: npm Trusted Publishing via OIDC (npm classic tokens were revoked
+# 2025-12-09). No NPM_TOKEN — the workflow's OIDC token is exchanged for
+# a short-lived publish credential by the npm registry. Configure on
+# npmjs.com per package:
+#
+#   Package settings → Publishing access → Trusted publishers → Add
+#     Publisher:        GitHub Actions
+#     Organization:     yashagldit
+#     Repository:       PocketShell
+#     Workflow filename: release-host-agent.yml         <-- NOT this file
+#     Environment:      (leave blank)
+#
+# npm checks the ENTRY workflow that initiated the run, not the reusable
+# workflow that runs `npm publish`. release-host-agent.yml is the entry
+# point (tag push + manual re-run); this file runs as workflow_call only.
+#
+# Bootstrap (one-time per package, since npm requires a package to exist
+# before its trusted publisher can be configured): publish a placeholder
+# 0.0.0 manually with a temporary granular token, configure trusted
+# publishing on npmjs.com, then revoke the token. After that, only OIDC.
+#
+# All values from outside this repo (inputs.tag, matrix values) are
+# rebound into env: before any shell expansion, to keep workflow
+# expressions out of run: scripts (defense-in-depth vs actions injection).
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Git tag of the release whose artifacts to publish (e.g. v0.1.0).
+        required: true
+        type: string
+
+concurrency:
+  group: npm-publish-${{ inputs.tag }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  # Required twice: (a) for npm Trusted Publishing OIDC handshake (replaces
+  # NPM_TOKEN entirely), and (b) for the Sigstore provenance attestation
+  # npm CLI now generates automatically when publishing under OIDC. Same
+  # mechanism as the cosign step in release-host-agent.yml.
+  id-token: write
+
+jobs:
+  publish-platform:
+    name: publish / ${{ matrix.npm_name }}
+    strategy:
+      # Don't let one failed platform publish abort the others — npm
+      # publishes are independent, and a partial publish is recoverable
+      # by re-running this workflow on the same tag (npm rejects republish
+      # of an existing version, so successful ones are idempotent skips).
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            npm_name: '@pocketshell/darwin-arm64'
+            os: darwin
+            cpu: arm64
+            libc: ''
+          - target: x86_64-unknown-linux-gnu
+            npm_name: '@pocketshell/linux-x64-gnu'
+            os: linux
+            cpu: x64
+            libc: glibc
+          - target: aarch64-unknown-linux-gnu
+            npm_name: '@pocketshell/linux-arm64-gnu'
+            os: linux
+            cpu: arm64
+            libc: glibc
+          - target: x86_64-unknown-linux-musl
+            npm_name: '@pocketshell/linux-x64-musl'
+            os: linux
+            cpu: x64
+            libc: musl
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag }}
+      TARGET: ${{ matrix.target }}
+      NPM_NAME: ${{ matrix.npm_name }}
+      PKG_OS: ${{ matrix.os }}
+      PKG_CPU: ${{ matrix.cpu }}
+      PKG_LIBC: ${{ matrix.libc }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # npm Trusted Publishing requires npm CLI >= 11.5.1, which ships
+          # with Node 22.x. Node 20 ships npm 10 and would fail the OIDC
+          # handshake at publish time.
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Ensure npm CLI supports trusted publishing
+        shell: bash
+        run: |
+          # Guard against future setup-node versions shipping older npm.
+          # npm 11.5.1 introduced OIDC trusted-publishing support.
+          npm install -g npm@latest
+          npm --version
+
+      - name: Validate tag and compute version
+        shell: bash
+        run: |
+          # Same regex as release-host-agent.yml — keeps the value safe to
+          # use as both an npm version and a release-asset URL component.
+          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$'; then
+            echo "::error::tag '$TAG' is not a valid version tag"
+            exit 1
+          fi
+          echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
+
+      - name: Download release artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          archive="pocketshell-${TAG}-${TARGET}.tar.gz"
+          mkdir -p stage
+          gh release download "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "$archive" \
+            --pattern "${archive}.sha256" \
+            --dir stage
+          ( cd stage && shasum -a 256 -c "${archive}.sha256" )
+          tar -xzf "stage/$archive" -C stage
+          test -f stage/pocketshell || { echo "::error::binary missing from $archive"; exit 1; }
+
+      - name: Assemble platform package
+        shell: bash
+        run: |
+          out="npm-pkg"
+          mkdir -p "$out/bin"
+          mv stage/pocketshell "$out/bin/pocketshell"
+          chmod +x "$out/bin/pocketshell"
+
+          # Build the package.json with jq so escaping stays correct even
+          # if any matrix value ever grows special characters. Platform
+          # packages deliberately do NOT declare a `bin` entry — the
+          # `pocketshell` shim is owned by the wrapper package, and a bin
+          # collision would break `npm i -g`.
+          jq -n \
+            --arg name    "$NPM_NAME" \
+            --arg version "$VERSION" \
+            --arg os      "$PKG_OS" \
+            --arg cpu     "$PKG_CPU" \
+            --arg libc    "$PKG_LIBC" \
+            '{
+              name: $name,
+              version: $version,
+              description: "Prebuilt pocketshell host-agent binary. Installed automatically as an optional dependency of the `pocketshell` package.",
+              homepage: "https://pocketshell.app",
+              repository: { type: "git", url: "https://github.com/yashagldit/PocketShell" },
+              license: "Apache-2.0",
+              os: [$os],
+              cpu: [$cpu],
+              files: ["bin/"]
+            }
+            + (if $libc == "" then {} else { libc: [$libc] } end)
+            ' > "$out/package.json"
+
+          echo "--- generated package.json ---"
+          cat "$out/package.json"
+
+      - name: Publish to npm (OIDC trusted publishing)
+        shell: bash
+        run: |
+          cd npm-pkg
+          # No NODE_AUTH_TOKEN — npm CLI 11.5+ detects the GitHub Actions
+          # OIDC context (id-token: write permission above) and performs
+          # the trusted-publishing handshake automatically. Provenance is
+          # attached automatically under OIDC; --provenance is no longer
+          # required (or honored).
+          #
+          # --access public is required on the first publish of a scoped
+          # package; ignored on subsequent versions.
+          #
+          # If this exact version already exists (e.g. re-run after a
+          # partial publish), npm returns E409 — treat as success so
+          # re-runs are idempotent.
+          if npm publish --access public 2>&1 | tee publish.log; then
+            exit 0
+          fi
+          if grep -qE 'E409|cannot publish over the previously published versions' publish.log; then
+            echo "::notice::${NPM_NAME}@${VERSION} already published — treating as success"
+            exit 0
+          fi
+          exit 1
+
+  publish-wrapper:
+    name: publish / pocketshell (wrapper)
+    needs: publish-platform
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # npm Trusted Publishing requires npm CLI >= 11.5.1, which ships
+          # with Node 22.x. Node 20 ships npm 10 and would fail the OIDC
+          # handshake at publish time.
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Ensure npm CLI supports trusted publishing
+        shell: bash
+        run: |
+          # Guard against future setup-node versions shipping older npm.
+          # npm 11.5.1 introduced OIDC trusted-publishing support.
+          npm install -g npm@latest
+          npm --version
+
+      - name: Compute version
+        shell: bash
+        run: |
+          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$'; then
+            echo "::error::tag '$TAG' is not a valid version tag"
+            exit 1
+          fi
+          echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
+
+      - name: Stamp release version into wrapper package.json
+        shell: bash
+        run: |
+          cd npm/pocketshell
+          # Rewrite both the package's own version and every
+          # optionalDependency version (all stored as the placeholder
+          # "0.0.0-placeholder" in the checked-in file). Pinning the
+          # platform-package versions to the wrapper's exact version
+          # means `npm i pocketshell@1.2.3` deterministically pulls
+          # @pocketshell/<triple>@1.2.3 and nothing else.
+          jq --arg v "$VERSION" '
+            .version = $v
+            | .optionalDependencies |= with_entries(.value = $v)
+          ' package.json > package.json.tmp
+          mv package.json.tmp package.json
+          echo "--- stamped package.json ---"
+          cat package.json
+
+      - name: Publish wrapper to npm (OIDC trusted publishing)
+        shell: bash
+        run: |
+          cd npm/pocketshell
+          # See publish-platform for OIDC / provenance notes — same flow.
+          if npm publish --access public 2>&1 | tee publish.log; then
+            exit 0
+          fi
+          if grep -qE 'E409|cannot publish over the previously published versions' publish.log; then
+            echo "::notice::pocketshell@${VERSION} already published — treating as success"
+            exit 0
+          fi
+          exit 1

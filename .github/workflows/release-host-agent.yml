@@ -22,6 +22,17 @@ on:
   push:
     tags:
       - 'v*'
+  # Manual re-run path for the npm publish step alone, in case it failed
+  # on the original tag push (npm registry outage, trusted-publisher
+  # misconfig, etc.). When triggered this way, the build + release jobs
+  # short-circuit (release already exists) and only publish-npm runs
+  # meaningfully against the existing GitHub Release artifacts.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to (re)publish to npm (e.g. v0.1.0). Must already be a published GitHub Release.
+        required: true
+        type: string
 
 # Prevent two release runs from racing on the same tag.
 concurrency:
@@ -40,6 +51,9 @@ permissions:
 
 jobs:
   build:
+    # Skip the heavy build matrix on workflow_dispatch — that path exists
+    # solely to re-run the npm publish step against an existing release.
+    if: github.event_name == 'push'
     name: build / ${{ matrix.target }}
     strategy:
       fail-fast: false
@@ -254,6 +268,8 @@ jobs:
   release:
     name: Publish GitHub Release
     needs: build
+    # Same reason as `build` — only the npm publish job runs on dispatch.
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -278,3 +294,27 @@ jobs:
             dist/pocketshell-*.tar.gz
             dist/pocketshell-*.tar.gz.sha256
             dist/pocketshell-*.tar.gz.cosign-bundle.json
+
+  # Publish to npm as a secondary distribution channel. Split into its own
+  # workflow so a registry outage / trusted-publisher misconfiguration
+  # cannot fail the (~10 min) main release build above — the GitHub
+  # Release is the source of truth, and `curl | bash` keeps working
+  # regardless. Re-run via the `workflow_dispatch` entry on THIS workflow
+  # (Republish to npm) with the desired tag.
+  #
+  # No NPM_TOKEN: auth is npm Trusted Publishing (OIDC). See the long
+  # header in publish-npm.yml for the one-time npmjs.com configuration.
+  # npm pins the trusted publisher to this entry workflow filename
+  # (release-host-agent.yml), so workflow_dispatch for re-runs lives here.
+  publish-npm:
+    name: Publish to npm
+    needs: release
+    # On push: runs after `release` succeeds.
+    # On workflow_dispatch: `release` is skipped, so we explicitly allow
+    # the skipped state through with `always() && ...`.
+    if: always() && (needs.release.result == 'success' || needs.release.result == 'skipped')
+    uses: ./.github/workflows/publish-npm.yml
+    with:
+      # `inputs.tag` is set only on workflow_dispatch; `github.ref_name`
+      # carries the tag on a tag-push event.
+      tag: ${{ inputs.tag || github.ref_name }}

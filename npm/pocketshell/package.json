@@ -1,0 +1,26 @@
+{
+  "name": "pocketshell",
+  "version": "0.0.0-placeholder",
+  "description": "Secure mobile-to-host terminal access — installs the pocketshell host-agent CLI.",
+  "homepage": "https://pocketshell.app",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yashagldit/PocketShell"
+  },
+  "license": "Apache-2.0",
+  "bin": {
+    "pocketshell": "bin/pocketshell.js"
+  },
+  "files": [
+    "bin/"
+  ],
+  "engines": {
+    "node": ">=14"
+  },
+  "optionalDependencies": {
+    "@pocketshell/darwin-arm64": "0.0.0-placeholder",
+    "@pocketshell/linux-x64-gnu": "0.0.0-placeholder",
+    "@pocketshell/linux-arm64-gnu": "0.0.0-placeholder",
+    "@pocketshell/linux-x64-musl": "0.0.0-placeholder"
+  }
+}
