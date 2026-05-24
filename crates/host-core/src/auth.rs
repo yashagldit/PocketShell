@@ -322,7 +322,7 @@ mod tests {
         // 401 from the reauth endpoint means the signing key itself is no
         // longer trusted (host record deleted, disabled, …). The daemon's
         // outer-loop branch on AuthRevoked will then warn "re-pair via
-        // pocketshell pair <CODE>" — which is the only correct response
+        // pocketshell pair" — which is the only correct response
         // when permanent identity is gone.
         let server = MockServer::start().await;
         Mock::given(method("POST"))

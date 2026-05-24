@@ -1584,6 +1584,11 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
     let mut stats = StatsCollector::new();
     let mut stats_active = false;
     let mut stats_deadline: Option<Instant> = None;
+    // host_summary is sent every `summary_interval_secs` for mobile home-screen
+    // tiles. Default true for backward compat with backends that don't send the
+    // subscribe/unsubscribe gate — once the backend ships the gate, it sends
+    // `summary_unsubscribe` on connect when no mobile is viewing.
+    let mut summary_active = true;
     info!("PocketShell native session persistence enabled");
     let mut sessions = SessionManager::new(config.session_limit);
     let (webrtc_event_tx, mut webrtc_event_rx) =
@@ -1728,7 +1733,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                     .map(refresh_token_jwt_expired)
                     .unwrap_or(false);
                 if permanent {
-                    warn!("auth fully rejected (refresh + signing-key) — re-pair via `pocketshell pair <CODE>`");
+                    warn!("auth fully rejected (refresh + signing-key) — re-pair via `pocketshell pair` (scan QR with mobile)");
                 } else {
                     warn!(
                         "token refresh rejected and signing-key reauth failed — retrying in ~30s"
@@ -2018,7 +2023,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                             // last trusted device, no mobile can reach this
                             // host anymore. Shut down so we stop hammering the
                             // backend with stale heartbeats. The user can
-                            // re-pair via `pocketshell pair <CODE>` to bring
+                            // re-pair via `pocketshell pair` (QR) to bring
                             // the host back — that flow re-installs and starts
                             // the service.
                             //
@@ -2057,13 +2062,13 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                             // Backend doesn't recognize this host_id under the
                             // authenticated user — the user deleted the host
                             // from the mobile app. Wipe local identity so a
-                            // subsequent `pocketshell pair <CODE>` (without
+                            // subsequent `pocketshell pair` (without
                             // --reset) cleanly re-registers as a new host
                             // instead of replaying the now-gone host_id and
                             // tripping the "paired with a different account"
                             // guard.
                             warn!(
-                                "host record removed on backend — wiping local state and stopping daemon (run `pocketshell pair <CODE>` to re-add)"
+                                "host record removed on backend — wiping local state and stopping daemon (run `pocketshell pair` to re-add — scan QR with mobile app)"
                             );
                             let _ = write_audit_event(AuditEvent {
                                 event_type: "host_deleted_by_user".to_string(),
@@ -2117,10 +2122,15 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                     }
                 }
                 _ = summary_tick.tick() => {
-                    // Lightweight unconditional presence + cpu/ram beat for the
-                    // mobile hosts list. Independent of `stats_active`: the
-                    // backend forwards this to all of the user's connected
-                    // mobiles so they don't have to poll.
+                    // Lightweight presence + cpu/ram beat for the mobile hosts
+                    // list. Gated on `summary_active` (toggled by backend via
+                    // `summary_subscribe`/`summary_unsubscribe`) — the backend
+                    // only enables it when a mobile viewer is actually
+                    // connected. Independent of `stats_active`: those are
+                    // separate subscriptions (live stats stream).
+                    if !summary_active {
+                        continue;
+                    }
                     let snap = stats.snapshot();
                     let ram_percent = if snap.memory_total_bytes > 0 {
                         (snap.memory_used_bytes as f64 / snap.memory_total_bytes as f64 * 100.0) as f32
@@ -4174,6 +4184,16 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                 });
                                 store.save()?;
                                 return Ok(());
+                            } else if msg.message_type == "summary_subscribe" {
+                                if !summary_active {
+                                    info!("summary subscription activated");
+                                }
+                                summary_active = true;
+                            } else if msg.message_type == "summary_unsubscribe" {
+                                if summary_active {
+                                    info!("summary subscription paused (no mobile viewers)");
+                                }
+                                summary_active = false;
                             } else if msg.message_type == "stats_subscribe" {
                                 // stats_subscribe may arrive from the backend REST
                                 // endpoint (no mobile_device_id) or from a mobile
@@ -4272,6 +4292,9 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
         if disconnect_reason == ControlPlaneDisconnect::TokenRotated {
             stats_active = false;
             stats_deadline = None;
+            // Default back to always-on summaries; the new connection's
+            // backend will send `summary_unsubscribe` if no mobile viewer.
+            summary_active = true;
             minute_stats_buffer.clear();
             continue;
         }
@@ -4281,9 +4304,11 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
             backoff_secs
         );
 
-        // Reset stats subscription on disconnect.
+        // Reset subscriptions on disconnect — both default back to their
+        // initial state so the next connection's backend can re-gate them.
         stats_active = false;
         stats_deadline = None;
+        summary_active = true;
         minute_stats_buffer.clear();
 
         // Reconcile session resources after WebSocket disconnect.

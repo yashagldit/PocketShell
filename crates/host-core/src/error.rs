@@ -4,11 +4,11 @@ use thiserror::Error;
 pub enum HostError {
     #[error("configuration error: {0}")]
     Config(String),
-    #[error("not paired: run `pocketshell pair <CODE>` first")]
+    #[error("not paired: run `pocketshell pair` first (scan the QR with the mobile app)")]
     NotLoggedIn,
     #[error("backend request failed: {0}")]
     Backend(String),
-    #[error("authentication revoked or invalid; please run `pocketshell pair <CODE>` again")]
+    #[error("authentication revoked or invalid; please run `pocketshell pair` again (scan the QR with the mobile app)")]
     AuthRevoked,
     #[error("host no longer exists on the backend (removed from account)")]
     HostGone,
@@ -36,7 +36,7 @@ mod tests {
         );
         assert_eq!(
             HostError::NotLoggedIn.to_string(),
-            "not paired: run `pocketshell pair <CODE>` first"
+            "not paired: run `pocketshell pair` first (scan the QR with the mobile app)"
         );
         assert_eq!(
             HostError::Backend("500".into()).to_string(),
@@ -44,7 +44,7 @@ mod tests {
         );
         assert_eq!(
             HostError::AuthRevoked.to_string(),
-            "authentication revoked or invalid; please run `pocketshell pair <CODE>` again"
+            "authentication revoked or invalid; please run `pocketshell pair` again (scan the QR with the mobile app)"
         );
         assert_eq!(
             HostError::HostGone.to_string(),
