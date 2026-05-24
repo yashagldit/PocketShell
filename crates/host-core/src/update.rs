@@ -282,6 +282,20 @@ pub async fn download_and_install_with(
              Do not use this flag against an untrusted release.",
             info.archive_name
         );
+    } else if !cosign_available() {
+        // Cosign not installed on this host. Rather than block the update,
+        // continue with SHA-256 + (on macOS) codesign as the trust anchors and
+        // surface a loud warning. The user can install cosign to re-enable
+        // keyless-signature verification on subsequent updates.
+        warn!(
+            "cosign not installed on PATH — skipping keyless signature verification for {}. \
+             SHA-256 (same-origin as the artifact){} was still checked. \
+             Install cosign (`brew install cosign`, `apt install cosign`, or \
+             https://github.com/sigstore/cosign/releases) to re-enable signature \
+             verification on future updates.",
+            info.archive_name,
+            if cfg!(target_os = "macos") { " and Apple codesign" } else { "" }
+        );
     } else {
         let bundle_path = staging.join(format!("{}.cosign-bundle.json", info.archive_name));
         let bundle_text = client
@@ -423,6 +437,20 @@ const COSIGN_IDENTITY_REGEXP: &str = concat!(
 /// keyless signing flow. This is the same string the cosign-installer action
 /// expects on the signing side; if either rotates the verify will fail loudly.
 const COSIGN_OIDC_ISSUER: &str = "https://token.actions.githubusercontent.com";
+
+/// Probe whether `cosign` is invokable on PATH. Used to decide between
+/// running a real signature verification and falling back to the SHA-256 +
+/// codesign trust anchors with a loud warning. We deliberately don't try to
+/// auto-install cosign — silently fetching another binary to verify this
+/// binary expands the trust surface in a non-obvious way.
+fn cosign_available() -> bool {
+    Command::new("cosign")
+        .arg("version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok()
+}
 
 /// Shell out to `cosign verify-blob` to check the keyless signature bundle
 /// produced by our release workflow. We require the cosign binary to be
