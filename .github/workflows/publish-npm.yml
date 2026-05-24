@@ -238,6 +238,18 @@ jobs:
           fi
           echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
 
+      - name: Copy root README into wrapper package
+        shell: bash
+        run: |
+          # The wrapper's npm page should show the project README, not a
+          # one-screen placeholder. The checked-in npm/pocketshell/README.md
+          # exists only so the package layout is valid when iterating
+          # locally — CI always overwrites it with the repo root README so
+          # the npm page stays in sync with GitHub.
+          cp README.md npm/pocketshell/README.md
+          echo "--- wrapper README first 5 lines ---"
+          head -5 npm/pocketshell/README.md
+
       - name: Stamp release version into wrapper package.json
         shell: bash
         run: |

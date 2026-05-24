@@ -1,7 +1,7 @@
 {
   "step_pair.title": "Pair any host in seconds",
   "step_pair.subtitle": "Scan a code, you're in",
-  "step_pair.description": "Install the agent on Linux, macOS, or a Pi, run `pocketshell pair`, and scan the QR or type the code. ED25519 keys, end-to-end via WebRTC — your terminal traffic never touches our servers.",
+  "step_pair.description": "Install the agent on Linux, macOS, or a Pi, run `pocketshell pair`, and scan the QR with your phone. ED25519 keys, end-to-end via WebRTC — your terminal traffic never touches our servers.",
   "step_terminal.title": "A real terminal, anywhere",
   "step_terminal.subtitle": "Full PTY, not a toy",
   "step_terminal.description": "Ctrl chords, arrow keys, tab completion, search, and clipboard. Attach to tmux or screen, edit in vim, drive long-running deploys — from a coffee shop or the back of a cab.",
@@ -17,7 +17,6 @@
   "skip": "Skip",
   "next": "Next",
   "get_started": "Get Started",
-
   "personalize.progress": "{{current}} of {{total}}",
   "personalize.continue": "Continue",
   "personalize.q1.title": "What will you mainly use PocketShell for?",
@@ -31,12 +30,10 @@
   "personalize.hosts.one": "Just one",
   "personalize.hosts.few": "2–5 machines",
   "personalize.hosts.many": "More than 5",
-
   "paywall.web.title": "Subscriptions in the mobile app",
   "paywall.web.body": "PocketShell Pro is purchased through the App Store or Play Store. Continue with the free tier here, or pick up where you left off in the mobile app.",
   "paywall.web.continue": "Continue with free",
   "paywall.purchase.success": "Welcome to PocketShell Pro",
-
   "login.title": "Create your account",
   "login.subtitle": "Sign in to sync your hosts, sessions, and settings across devices.",
   "login.apple": "Continue with Apple",
@@ -57,7 +54,6 @@
   "login.otp.subtitle": "Enter the 6-digit code we just sent.",
   "login.otp.placeholder": "123456",
   "login.otp.verify": "Verify",
-
   "profile.title": "Pick a display name",
   "profile.subtitle": "This is shown to your hosts and in session logs. You can change it later in settings.",
   "profile.label": "Display name",
@@ -65,7 +61,6 @@
   "profile.continue": "Continue",
   "profile.signed_in_as": "Signed in as {{email}}",
   "profile.save_failed": "Couldn't save your profile. Try again.",
-
   "welcome.title": "You're all set",
   "welcome.subtitle": "Here's how to get the most out of PocketShell.",
   "welcome.tips.pair.title": "Add your first host",

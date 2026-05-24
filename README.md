@@ -44,31 +44,38 @@ The `mobile/src/locales/` tree is here because translations benefit from being p
 
 ## Install
 
-Pre-built binaries:
+Pre-built binaries — pick either:
 
 ```bash
-# 1. install cosign (one-time, for Sigstore signature verification)
-brew install cosign            # macOS
-sudo apt install cosign        # Debian/Ubuntu
-# or grab a binary: https://github.com/sigstore/cosign/releases
-
-# 2. install pocketshell
+# install script
+brew install cosign  # one-time, for Sigstore signature verification
 curl -fsSL https://pocketshell.app/install.sh | bash
+
+# npm
+npm i -g pocketshell
 ```
 
-Detects your OS and arch, fetches the matching tarball from the latest
-[GitHub Release](https://github.com/yashagldit/PocketShell/releases),
-verifies its SHA-256 checksum **and the Sigstore cosign keyless
-signature** (pinned to this repo's release workflow identity), then
-installs to `~/.local/bin/pocketshell` (or `/usr/local/bin/pocketshell`
-if run as root). Without cosign installed the script refuses to proceed
-— the SHA-256 alone is same-origin integrity, not authenticity, so a
+**Install script** detects your OS and arch, fetches the matching
+tarball from the latest [GitHub
+Release](https://github.com/yashagldit/PocketShell/releases), verifies
+its SHA-256 checksum **and the Sigstore cosign keyless signature**
+(pinned to this repo's release workflow identity), then installs to
+`~/.local/bin/pocketshell` (or `/usr/local/bin/pocketshell` if run as
+root). Without cosign installed the script refuses to proceed — the
+SHA-256 alone is same-origin integrity, not authenticity, so a
 compromised release publisher could serve a matching checksum for a
 malicious binary. Set `POCKETSHELL_SKIP_COSIGN=1` only if you've
 verified the artifact out of band.
 
 Read the script first if you'd rather not pipe to bash blindly — it's
 served from the static site and intentionally short.
+
+**npm** ships the binary inside platform-specific packages
+(`@pocketshell/darwin-arm64`, `@pocketshell/linux-x64-gnu`, etc.)
+selected by npm's `os` / `cpu` / `libc` filters. The packages are
+published from this repo's release workflow via [npm Trusted
+Publishing](https://docs.npmjs.com/trusted-publishers/) (OIDC, no
+long-lived tokens), with build provenance attached automatically.
 
 From source (Rust 1.78+):
 
