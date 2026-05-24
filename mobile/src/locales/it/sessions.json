@@ -38,5 +38,7 @@
   "badge.detached": "staccato",
   "badge.connected": "connesso",
   "badge.connecting": "connessione",
-  "badge.reconnecting": "riconnessione"
+  "badge.reconnecting": "riconnessione",
+  "errors.device_registration_missing": "Registrazione dispositivo mancante. Effettua nuovamente l'accesso.",
+  "errors.join_failed": "Adesione alla sessione non riuscita"
 }

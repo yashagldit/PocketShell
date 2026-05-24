@@ -69,5 +69,9 @@
   "welcome.tips.alerts.body": "Receba uma notificação assim que a CPU disparar, o disco encher ou um host ficar offline.",
   "welcome.tips.workspaces.title": "Organize com espaços de trabalho",
   "welcome.tips.workspaces.body": "Agrupe terminais e arquivos por projeto para trocar de contexto sem perder o foco.",
-  "welcome.cta": "Começar"
+  "welcome.cta": "Começar",
+  "preview.metric_cpu": "CPU",
+  "preview.metric_mem": "MEM",
+  "preview.metric_disk": "DISCO",
+  "preview.metric_net": "REDE"
 }

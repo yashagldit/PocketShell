@@ -69,5 +69,9 @@
   "welcome.tips.alerts.body": "Получайте уведомления, как только CPU скакнёт, диск заполнится или хост отключится.",
   "welcome.tips.workspaces.title": "Организуйте через рабочие пространства",
   "welcome.tips.workspaces.body": "Группируйте терминалы и файлы по проектам, чтобы переключать контекст не теряя нить.",
-  "welcome.cta": "Начать"
+  "welcome.cta": "Начать",
+  "preview.metric_cpu": "CPU",
+  "preview.metric_mem": "ПАМ",
+  "preview.metric_disk": "ДИСК",
+  "preview.metric_net": "СЕТЬ"
 }

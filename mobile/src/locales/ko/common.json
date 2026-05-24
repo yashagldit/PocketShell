@@ -44,5 +44,14 @@
   "nav.agent_chat": "에이전트 채팅",
   "nav.pocketshell_pro": "PocketShell Pro",
   "nav.manage_subscription": "구독 관리",
-  "nav.scan_host_qr": "호스트 QR 스캔"
+  "nav.scan_host_qr": "호스트 QR 스캔",
+  "splash.stage.restoring_session": "로컬 세션 복원 중",
+  "splash.stage.verifying_credentials": "백엔드에서 자격 증명 확인 중",
+  "splash.stage.registering_device": "기기 + 푸시 토큰 등록 중",
+  "splash.stage.syncing_workspaces": "워크스페이스 동기화 중",
+  "splash.stage.requesting_biometric": "생체 인증 잠금 해제 요청 중",
+  "splash.stage.session_ready": "세션 준비 완료 — 시작 중",
+  "splash.stage.no_session": "저장된 세션 없음",
+  "actions.close": "닫기",
+  "actions.retry": "다시 시도"
 }

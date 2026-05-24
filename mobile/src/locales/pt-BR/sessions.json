@@ -38,5 +38,7 @@
   "badge.detached": "desanexado",
   "badge.connected": "conectado",
   "badge.connecting": "conectando",
-  "badge.reconnecting": "reconectando"
+  "badge.reconnecting": "reconectando",
+  "errors.device_registration_missing": "Registro do dispositivo ausente. Faça login novamente.",
+  "errors.join_failed": "Falha ao entrar na sessão"
 }

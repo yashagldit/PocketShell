@@ -69,5 +69,13 @@
   "scan_qr.pairing_success": "{{host}}とペアリングしました",
   "scan_qr.add_device_success": "{{host}}にデバイスを追加しました",
   "scan_qr.pair_failed": "ホストのペアリングに失敗しました",
-  "ownership_disclosure": "所有しているか、アクセスを許可されたホストのみをペアリングしてください。"
+  "ownership_disclosure": "所有しているか、アクセスを許可されたホストのみをペアリングしてください。",
+  "screen.subtitle": "新しいホストをアカウントに接続する3つの簡単なステップ。",
+  "scan_qr_hint": "ホストのターミナルに表示されたQRコードにカメラを向けてください。",
+  "step.install.title": "エージェントをインストール",
+  "step.install.body": "ホスト(macOSまたはLinux)で一度だけ実行してください。",
+  "step.run.title": "ペアリングQRを生成",
+  "step.run.body": "その後、ホストでこれを実行します。ターミナルにQRコードが表示されます。",
+  "step.scan.title": "QRをスキャン",
+  "step.scan.body": "下のスキャナーを開き、QRに向けてください。"
 }

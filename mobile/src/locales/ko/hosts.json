@@ -95,5 +95,10 @@
   "pin.unpinned_detail": "이 호스트에 대한 ID 키가 저장되어 있지 않습니다. QR로 페어링하여 종단간 검증을 활성화하세요.",
   "pin.unpinned_banner": "호스트 ID 미검증. 호스트의 QR을 스캔하세요.",
   "pin.cta_verify": "QR로 검증",
-  "pin.cta_dismiss": "닫기"
+  "pin.cta_dismiss": "닫기",
+  "detail.delete": "호스트 삭제",
+  "errors.failed_to_open_file_explorer": "파일 탐색기를 열지 못했습니다",
+  "errors.load_failed": "호스트를 불러오지 못했습니다",
+  "errors.delete_failed": "호스트를 삭제하지 못했습니다",
+  "errors.load_trusted_devices_failed": "신뢰할 수 있는 기기를 불러오지 못했습니다"
 }

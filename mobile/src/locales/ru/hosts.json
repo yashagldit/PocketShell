@@ -95,5 +95,10 @@
   "pin.unpinned_detail": "Для этого хоста не сохранён ключ идентификации. Выполните сопряжение по QR для сквозной проверки.",
   "pin.unpinned_banner": "Личность хоста не подтверждена. Отсканируйте QR-код хоста.",
   "pin.cta_verify": "Проверить по QR",
-  "pin.cta_dismiss": "Закрыть"
+  "pin.cta_dismiss": "Закрыть",
+  "detail.delete": "Удалить хост",
+  "errors.failed_to_open_file_explorer": "Не удалось открыть проводник",
+  "errors.load_failed": "Не удалось загрузить хосты",
+  "errors.delete_failed": "Не удалось удалить хост",
+  "errors.load_trusted_devices_failed": "Не удалось загрузить доверенные устройства"
 }

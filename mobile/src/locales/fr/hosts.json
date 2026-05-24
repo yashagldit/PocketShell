@@ -95,5 +95,10 @@
   "pin.unpinned_detail": "Aucune clé d'identité n'a été enregistrée pour cet hôte. Appairez via QR pour activer la vérification de bout en bout.",
   "pin.unpinned_banner": "Identité de l'hôte non vérifiée. Scannez le QR code de l'hôte.",
   "pin.cta_verify": "Vérifier avec QR",
-  "pin.cta_dismiss": "Fermer"
+  "pin.cta_dismiss": "Fermer",
+  "detail.delete": "Supprimer l'hôte",
+  "errors.failed_to_open_file_explorer": "Impossible d'ouvrir l'explorateur de fichiers",
+  "errors.load_failed": "Échec du chargement des hôtes",
+  "errors.delete_failed": "Échec de la suppression de l'hôte",
+  "errors.load_trusted_devices_failed": "Échec du chargement des appareils de confiance"
 }

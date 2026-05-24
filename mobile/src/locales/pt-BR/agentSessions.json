@@ -38,5 +38,6 @@
   "badge.paused": "Pausa",
   "badge.running": "Em execução",
   "project.showAll": "Ver mais {{count}}",
-  "project.showLess": "Ver menos"
+  "project.showLess": "Ver menos",
+  "badge.terminal": ">_"
 }

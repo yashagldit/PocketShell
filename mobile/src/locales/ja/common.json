@@ -44,5 +44,14 @@
   "nav.agent_chat": "エージェントチャット",
   "nav.pocketshell_pro": "PocketShell Pro",
   "nav.manage_subscription": "サブスクリプションを管理",
-  "nav.scan_host_qr": "ホストQRをスキャン"
+  "nav.scan_host_qr": "ホストQRをスキャン",
+  "splash.stage.restoring_session": "ローカルセッションを復元中",
+  "splash.stage.verifying_credentials": "バックエンドで認証情報を確認中",
+  "splash.stage.registering_device": "デバイスとプッシュトークンを登録中",
+  "splash.stage.syncing_workspaces": "ワークスペースを同期中",
+  "splash.stage.requesting_biometric": "生体認証によるロック解除を要求中",
+  "splash.stage.session_ready": "セッション準備完了 — 起動中",
+  "splash.stage.no_session": "保存されたセッションがありません",
+  "actions.close": "閉じる",
+  "actions.retry": "再試行"
 }

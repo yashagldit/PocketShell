@@ -217,5 +217,22 @@
   "metric_detail.fs.all": "すべて",
   "advancedDisk.read": "読み込み",
   "advancedDisk.write": "書き込み",
-  "advancedDisk.storage": "ストレージ"
+  "advancedDisk.storage": "ストレージ",
+  "labels.mem": "MEM",
+  "labels.network": "ネットワーク",
+  "labels.disk_io": "DISK I/O",
+  "labels.temp": "温度",
+  "labels.memory_used": "使用中",
+  "labels.memory_avail": "利用可",
+  "labels.memory_free": "空き",
+  "labels.ram": "RAM",
+  "labels.memory_total": "合計",
+  "labels.memory_available": "利用可能",
+  "labels.memory_cache_buf": "キャッシュ",
+  "labels.memory_swap": "スワップ",
+  "labels.net_established": "EST",
+  "labels.net_time_wait": "TWAIT",
+  "labels.net_close_wait": "CWAIT",
+  "labels.net_listen": "LISTEN",
+  "labels.net_total": "TOTAL"
 }

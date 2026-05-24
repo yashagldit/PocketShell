@@ -217,5 +217,22 @@
   "metric_detail.fs.all": "सभी",
   "advancedDisk.read": "पठन",
   "advancedDisk.write": "लेखन",
-  "advancedDisk.storage": "भंडारण"
+  "advancedDisk.storage": "भंडारण",
+  "labels.mem": "MEM",
+  "labels.network": "नेटवर्क",
+  "labels.disk_io": "DISK I/O",
+  "labels.temp": "तापमान",
+  "labels.memory_used": "उपयोग",
+  "labels.memory_avail": "उपलब्ध",
+  "labels.memory_free": "मुक्त",
+  "labels.ram": "RAM",
+  "labels.memory_total": "कुल",
+  "labels.memory_available": "उपलब्ध",
+  "labels.memory_cache_buf": "कैश/बफ़",
+  "labels.memory_swap": "स्वैप",
+  "labels.net_established": "EST",
+  "labels.net_time_wait": "TWAIT",
+  "labels.net_close_wait": "CWAIT",
+  "labels.net_listen": "LISTEN",
+  "labels.net_total": "TOTAL"
 }

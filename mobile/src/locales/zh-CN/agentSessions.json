@@ -38,5 +38,6 @@
   "badge.paused": "已暂停",
   "badge.running": "运行中",
   "project.showAll": "显示更多 ({{count}})",
-  "project.showLess": "显示更少"
+  "project.showLess": "显示更少",
+  "badge.terminal": ">_"
 }

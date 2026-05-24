@@ -86,5 +86,19 @@
   "unifiedTabBar.kill": "Kill",
   "unifiedTabBar.empty_hint": "Press + to open a tab",
   "unifiedTabBar.unknown_host": "Unknown",
-  "unifiedTabBar.terminal_fallback": "Terminal"
+  "unifiedTabBar.terminal_fallback": "Terminal",
+  "accessory.arrow_left": "Arrow left",
+  "accessory.arrow_up": "Arrow up",
+  "accessory.arrow_down": "Arrow down",
+  "accessory.arrow_right": "Arrow right",
+  "accessory.tab": "Tab",
+  "accessory.esc": "Esc",
+  "accessory.ctrl": "Ctrl",
+  "accessory.alt": "Alt",
+  "accessory.paste": "Paste",
+  "accessory.paste_image": "Img",
+  "accessory.gallery": "Gallery",
+  "accessory.select": "Select",
+  "accessory.search": "Search",
+  "accessory.hide": "Hide"
 }

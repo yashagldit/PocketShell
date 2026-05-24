@@ -38,5 +38,7 @@
   "badge.detached": "已斷开",
   "badge.connected": "已連接",
   "badge.connecting": "正在連接",
-  "badge.reconnecting": "正在重連"
+  "badge.reconnecting": "正在重連",
+  "errors.device_registration_missing": "裝置註冊遺失。請重新登入。",
+  "errors.join_failed": "加入工作階段失敗"
 }

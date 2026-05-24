@@ -217,5 +217,22 @@
   "metric_detail.fs.all": "全部",
   "advancedDisk.read": "读取",
   "advancedDisk.write": "写入",
-  "advancedDisk.storage": "存储"
+  "advancedDisk.storage": "存储",
+  "labels.mem": "内存",
+  "labels.network": "网络",
+  "labels.disk_io": "磁盘 I/O",
+  "labels.temp": "温度",
+  "labels.memory_used": "已用",
+  "labels.memory_avail": "可用",
+  "labels.memory_free": "空闲",
+  "labels.ram": "RAM",
+  "labels.memory_total": "总计",
+  "labels.memory_available": "可用",
+  "labels.memory_cache_buf": "缓存/缓冲",
+  "labels.memory_swap": "交换",
+  "labels.net_established": "EST",
+  "labels.net_time_wait": "TWAIT",
+  "labels.net_close_wait": "CWAIT",
+  "labels.net_listen": "LISTEN",
+  "labels.net_total": "合计"
 }

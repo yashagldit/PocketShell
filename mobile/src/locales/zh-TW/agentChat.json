@@ -91,5 +91,19 @@
   "diff.truncation_note": "App 內僅顯示有限的差異預覽。",
   "diff.hunk_truncated": "... 其他行已隱藏",
   "diff.file_count_one": "{{count}} 個檔案",
-  "diff.file_count_other": "{{count}} 個檔案"
+  "diff.file_count_other": "{{count}} 個檔案",
+  "openInTerminal.button": "在終端機中開啟",
+  "errors.failed_to_load_models": "載入模型失敗",
+  "help.title": "關於聊天",
+  "help.intro": "Chats 是您主機上 Claude Code 和 Codex 工作階段的檢視器。您在終端機中執行 AI — 應用程式讀取其寫入的轉錄檔。",
+  "help.step.local.title": "讀取主機上的轉錄",
+  "help.step.local.body": "Claude Code 和 Codex 將每個工作階段儲存為磁碟上的 JSONL 檔案(例如 ~/.claude/projects/…)。PocketShell 透過您配對的主機讀取這些檔案並在此列出。",
+  "help.step.privacy.title": "您的聊天保留在您的機器上",
+  "help.step.privacy.body": "對話和 AI 處理絕不會接觸 PocketShell 的伺服器。轉錄串流在您的手機和主機之間是端到端的 — 如網路需要,我們只中繼加密位元組。",
+  "help.step.run.title": "在終端機中執行代理程式",
+  "help.step.run.body": "若要開始或繼續聊天,請在主機上開啟終端機並執行 claude 或 codex。CLI 寫入第一行後,工作階段會立即出現在此清單中。",
+  "help.step.resume.title": "點選任何聊天即可開啟",
+  "help.step.resume.body": "點選列以閱讀轉錄,或長按以執行「在終端機中繼續」等操作 — 在主機上繼續對話。",
+  "help.footnote": "隨時點選標題中的說明圖示即可再次查看。",
+  "menu.help": "關於 Agent Chat"
 }

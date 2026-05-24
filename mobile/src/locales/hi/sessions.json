@@ -38,5 +38,7 @@
   "badge.detached": "डिटैच्ड",
   "badge.connected": "कनेक्टेड",
   "badge.connecting": "कनेक्ट हो रहा है",
-  "badge.reconnecting": "पुनः कनेक्ट हो रहा है"
+  "badge.reconnecting": "पुनः कनेक्ट हो रहा है",
+  "errors.device_registration_missing": "डिवाइस पंजीकरण गुम है। कृपया फिर से लॉगिन करें।",
+  "errors.join_failed": "सत्र में शामिल होने में विफल"
 }

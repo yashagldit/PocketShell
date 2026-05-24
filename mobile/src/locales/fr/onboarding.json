@@ -69,5 +69,9 @@
   "welcome.tips.alerts.body": "Soyez notifié dès que le CPU s'emballe, que le disque sature ou qu'un hôte se déconnecte.",
   "welcome.tips.workspaces.title": "Organisez avec les espaces de travail",
   "welcome.tips.workspaces.body": "Regroupez terminaux et fichiers par projet pour changer de contexte sans perdre le fil.",
-  "welcome.cta": "Commencer"
+  "welcome.cta": "Commencer",
+  "preview.metric_cpu": "CPU",
+  "preview.metric_mem": "MÉM",
+  "preview.metric_disk": "DISQUE",
+  "preview.metric_net": "RÉSEAU"
 }

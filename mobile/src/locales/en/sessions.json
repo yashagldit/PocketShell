@@ -38,5 +38,7 @@
   "badge.detached": "detached",
   "badge.connected": "connected",
   "badge.connecting": "connecting",
-  "badge.reconnecting": "reconnecting"
+  "badge.reconnecting": "reconnecting",
+  "errors.device_registration_missing": "Device registration missing. Please login again.",
+  "errors.join_failed": "Failed to join session"
 }

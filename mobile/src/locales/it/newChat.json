@@ -23,5 +23,8 @@
   "folder.use": "Usa",
   "folder.connecting": "Connessione all'host…",
   "folder.connectionFailed": "Impossibile connettersi all'host. Torna indietro e riprova.",
-  "folder.loadFailed": "Caricamento directory fallito"
+  "folder.loadFailed": "Caricamento directory fallito",
+  "terminal.source.title": "Apri terminale",
+  "terminal.projects.title": "Progetti recenti",
+  "terminal.folder.title": "Scegli una cartella"
 }

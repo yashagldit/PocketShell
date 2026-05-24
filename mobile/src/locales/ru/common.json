@@ -44,5 +44,14 @@
   "nav.agent_chat": "Чат агента",
   "nav.pocketshell_pro": "PocketShell Pro",
   "nav.manage_subscription": "Управление подпиской",
-  "nav.scan_host_qr": "Сканировать QR хоста"
+  "nav.scan_host_qr": "Сканировать QR хоста",
+  "splash.stage.restoring_session": "восстановление локальной сессии",
+  "splash.stage.verifying_credentials": "проверка учетных данных на сервере",
+  "splash.stage.registering_device": "регистрация устройства и push-токена",
+  "splash.stage.syncing_workspaces": "синхронизация рабочих пространств",
+  "splash.stage.requesting_biometric": "запрос биометрической разблокировки",
+  "splash.stage.session_ready": "сессия готова — запуск",
+  "splash.stage.no_session": "нет сохраненной сессии",
+  "actions.close": "Закрыть",
+  "actions.retry": "Повторить"
 }

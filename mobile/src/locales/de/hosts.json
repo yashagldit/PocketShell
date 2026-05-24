@@ -96,5 +96,9 @@
   "pin.unpinned_detail": "Für diesen Host wurde kein Identitätsschlüssel gespeichert. Per QR koppeln, um Ende-zu-Ende-Verifizierung zu aktivieren.",
   "pin.unpinned_banner": "Host-Identität nicht verifiziert. Scanne den QR-Code des Hosts.",
   "pin.cta_verify": "Mit QR verifizieren",
-  "pin.cta_dismiss": "Schließen"
+  "pin.cta_dismiss": "Schließen",
+  "errors.failed_to_open_file_explorer": "Datei-Explorer konnte nicht geöffnet werden",
+  "errors.load_failed": "Hosts konnten nicht geladen werden",
+  "errors.delete_failed": "Host konnte nicht gelöscht werden",
+  "errors.load_trusted_devices_failed": "Vertraute Geräte konnten nicht geladen werden"
 }

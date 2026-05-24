@@ -69,5 +69,9 @@
   "welcome.tips.alerts.body": "CPU 急上昇、ディスク満杯、ホストのオフライン化を即座に通知します。",
   "welcome.tips.workspaces.title": "ワークスペースで整理",
   "welcome.tips.workspaces.body": "プロジェクトごとに端末とファイルをまとめ、作業の流れを失わずにコンテキストを切り替えられます。",
-  "welcome.cta": "はじめる"
+  "welcome.cta": "はじめる",
+  "preview.metric_cpu": "CPU",
+  "preview.metric_mem": "MEM",
+  "preview.metric_disk": "DISK",
+  "preview.metric_net": "NET"
 }

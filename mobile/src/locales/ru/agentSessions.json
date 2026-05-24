@@ -38,5 +38,6 @@
   "badge.paused": "Пауза",
   "badge.running": "Выполняется",
   "project.showAll": "Показать еще {{count}}",
-  "project.showLess": "Скрыть"
+  "project.showLess": "Скрыть",
+  "badge.terminal": ">_"
 }

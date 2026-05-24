@@ -38,5 +38,6 @@
   "badge.paused": "रुका हुआ",
   "badge.running": "चल रहा है",
   "project.showAll": "{{count}} और दिखाएँ",
-  "project.showLess": "कम दिखाएँ"
+  "project.showLess": "कम दिखाएँ",
+  "badge.terminal": ">_"
 }

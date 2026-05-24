@@ -69,5 +69,9 @@
   "welcome.tips.alerts.body": "在 CPU 飙升、磁盘占满或主机掉线时立刻收到通知。",
   "welcome.tips.workspaces.title": "用工作区组织一切",
   "welcome.tips.workspaces.body": "按项目归类终端和文件，切换上下文也不丢失思路。",
-  "welcome.cta": "开始使用"
+  "welcome.cta": "开始使用",
+  "preview.metric_cpu": "CPU",
+  "preview.metric_mem": "内存",
+  "preview.metric_disk": "磁盘",
+  "preview.metric_net": "网络"
 }

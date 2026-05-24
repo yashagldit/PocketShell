@@ -96,5 +96,9 @@
   "pin.unpinned_detail": "इस होस्ट के लिए कोई पहचान कुंजी सहेजी नहीं गई है। एंड-टू-एंड सत्यापन के लिए QR से जोड़ें।",
   "pin.unpinned_banner": "होस्ट पहचान सत्यापित नहीं। होस्ट का QR स्कैन करें।",
   "pin.cta_verify": "QR से सत्यापित करें",
-  "pin.cta_dismiss": "बंद करें"
+  "pin.cta_dismiss": "बंद करें",
+  "errors.failed_to_open_file_explorer": "फ़ाइल एक्सप्लोरर खोलने में विफल",
+  "errors.load_failed": "होस्ट लोड करने में विफल",
+  "errors.delete_failed": "होस्ट हटाने में विफल",
+  "errors.load_trusted_devices_failed": "विश्वसनीय डिवाइस लोड करने में विफल"
 }

@@ -38,5 +38,7 @@
   "badge.detached": "已断开",
   "badge.connected": "已连接",
   "badge.connecting": "正在连接",
-  "badge.reconnecting": "正在重连"
+  "badge.reconnecting": "正在重连",
+  "errors.device_registration_missing": "设备注册缺失。请重新登录。",
+  "errors.join_failed": "加入会话失败"
 }

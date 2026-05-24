@@ -69,5 +69,9 @@
   "welcome.tips.alerts.body": "CPU 급증, 디스크 가득 참, 호스트 오프라인 시 즉시 알림을 받습니다.",
   "welcome.tips.workspaces.title": "워크스페이스로 정리",
   "welcome.tips.workspaces.body": "프로젝트별로 터미널과 파일을 묶어 흐름을 잃지 않고 컨텍스트를 전환하세요.",
-  "welcome.cta": "시작하기"
+  "welcome.cta": "시작하기",
+  "preview.metric_cpu": "CPU",
+  "preview.metric_mem": "MEM",
+  "preview.metric_disk": "DISK",
+  "preview.metric_net": "NET"
 }

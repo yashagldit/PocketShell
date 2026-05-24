@@ -217,5 +217,22 @@
   "metric_detail.fs.all": "전체",
   "advancedDisk.read": "읽기",
   "advancedDisk.write": "쓰기",
-  "advancedDisk.storage": "저장 공간"
+  "advancedDisk.storage": "저장 공간",
+  "labels.mem": "MEM",
+  "labels.network": "네트워크",
+  "labels.disk_io": "DISK I/O",
+  "labels.temp": "온도",
+  "labels.memory_used": "사용",
+  "labels.memory_avail": "사용 가능",
+  "labels.memory_free": "여유",
+  "labels.ram": "RAM",
+  "labels.memory_total": "전체",
+  "labels.memory_available": "사용 가능",
+  "labels.memory_cache_buf": "캐시/버퍼",
+  "labels.memory_swap": "스왑",
+  "labels.net_established": "EST",
+  "labels.net_time_wait": "TWAIT",
+  "labels.net_close_wait": "CWAIT",
+  "labels.net_listen": "LISTEN",
+  "labels.net_total": "TOTAL"
 }

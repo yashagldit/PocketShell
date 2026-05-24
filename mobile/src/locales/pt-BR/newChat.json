@@ -23,5 +23,8 @@
   "folder.use": "Usar",
   "folder.connecting": "Conectando ao host…",
   "folder.connectionFailed": "Não foi possível conectar ao host. Volte e tente novamente.",
-  "folder.loadFailed": "Falha ao carregar diretório"
+  "folder.loadFailed": "Falha ao carregar diretório",
+  "terminal.source.title": "Abrir terminal",
+  "terminal.projects.title": "Projetos recentes",
+  "terminal.folder.title": "Escolher uma pasta"
 }

@@ -91,5 +91,19 @@
   "diff.truncation_note": "应用中仅显示有限的差异预览。",
   "diff.hunk_truncated": "... 更多行已隐藏",
   "diff.file_count_one": "{{count}} 个文件",
-  "diff.file_count_other": "{{count}} 个文件"
+  "diff.file_count_other": "{{count}} 个文件",
+  "openInTerminal.button": "在终端中打开",
+  "errors.failed_to_load_models": "加载模型失败",
+  "help.title": "关于聊天",
+  "help.intro": "Chats 是您主机上 Claude Code 和 Codex 会话的查看器。您在终端中运行 AI — 应用读取它写入的转录文件。",
+  "help.step.local.title": "读取主机上的转录",
+  "help.step.local.body": "Claude Code 和 Codex 将每个会话保存为磁盘上的 JSONL 文件(如 ~/.claude/projects/…)。PocketShell 通过您配对的主机读取这些文件并在此列出。",
+  "help.step.privacy.title": "您的聊天留在您的机器上",
+  "help.step.privacy.body": "对话和 AI 处理永远不会接触 PocketShell 的服务器。转录流在您的手机和主机之间端到端 — 如果网络需要,我们只中继加密字节。",
+  "help.step.run.title": "在终端中运行代理",
+  "help.step.run.body": "要开始或继续聊天,请在主机上打开终端并运行 claude 或 codex。CLI 写入第一行后,会话会立即出现在此列表中。",
+  "help.step.resume.title": "点击任何聊天以打开",
+  "help.step.resume.body": "点击行以阅读转录,或长按以执行「在终端中恢复」等操作 — 在主机上继续对话。",
+  "help.footnote": "随时点击标题中的帮助图标即可再次查看。",
+  "menu.help": "关于 Agent Chat"
 }

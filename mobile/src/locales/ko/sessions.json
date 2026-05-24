@@ -38,5 +38,7 @@
   "badge.detached": "분리됨",
   "badge.connected": "연결됨",
   "badge.connecting": "연결 중",
-  "badge.reconnecting": "다시 연결 중"
+  "badge.reconnecting": "다시 연결 중",
+  "errors.device_registration_missing": "기기 등록이 없습니다. 다시 로그인해 주세요.",
+  "errors.join_failed": "세션 참여 실패"
 }

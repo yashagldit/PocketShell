@@ -91,5 +91,19 @@
   "diff.truncation_note": "앱에서는 제한된 diff 미리보기를 표시합니다.",
   "diff.hunk_truncated": "... 추가 줄 숨김",
   "diff.file_count_one": "{{count}}개 파일",
-  "diff.file_count_other": "{{count}}개 파일"
+  "diff.file_count_other": "{{count}}개 파일",
+  "openInTerminal.button": "터미널에서 열기",
+  "errors.failed_to_load_models": "모델을 불러오지 못했습니다",
+  "help.title": "채팅 정보",
+  "help.intro": "Chats는 호스트에 저장된 Claude Code 및 Codex 세션을 보는 뷰어입니다. 터미널에서 AI를 실행하면 앱이 작성된 트랜스크립트 파일을 읽습니다.",
+  "help.step.local.title": "호스트의 트랜스크립트 읽기",
+  "help.step.local.body": "Claude Code와 Codex는 각 세션을 디스크에 JSONL 파일로 저장합니다(예: ~/.claude/projects/…). PocketShell은 페어링된 호스트를 통해 이 파일을 읽어 여기에 나열합니다.",
+  "help.step.privacy.title": "채팅은 사용자의 기기에만 저장됩니다",
+  "help.step.privacy.body": "대화와 AI 처리는 절대 PocketShell 서버를 거치지 않습니다. 트랜스크립트 스트림은 폰과 호스트 사이에서 종단간 암호화됩니다 — 네트워크가 필요할 때만 암호화된 바이트를 중계합니다.",
+  "help.step.run.title": "터미널에서 에이전트 실행",
+  "help.step.run.body": "채팅을 시작하거나 계속하려면, 호스트에서 터미널을 열고 claude 또는 codex를 실행하세요. CLI가 첫 줄을 작성하는 즉시 세션이 이 목록에 나타납니다.",
+  "help.step.resume.title": "채팅을 탭하여 열기",
+  "help.step.resume.body": "행을 탭하여 트랜스크립트를 읽거나, 길게 눌러 \"터미널에서 재개\"와 같은 작업을 사용하세요 — 호스트에서 대화를 다시 시작합니다.",
+  "help.footnote": "헤더의 도움말 아이콘을 언제든지 탭하면 이 안내를 다시 볼 수 있습니다.",
+  "menu.help": "Agent Chat 정보"
 }

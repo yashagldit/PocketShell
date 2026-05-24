@@ -69,5 +69,13 @@
   "scan_qr.pairing_success": "Associato con {{host}}",
   "scan_qr.add_device_success": "Dispositivo aggiunto a {{host}}",
   "scan_qr.pair_failed": "Associazione host fallita",
-  "ownership_disclosure": "Associa solo host che possiedi o a cui sei autorizzato ad accedere."
+  "ownership_disclosure": "Associa solo host che possiedi o a cui sei autorizzato ad accedere.",
+  "screen.subtitle": "Tre passaggi rapidi per collegare un nuovo host al tuo account.",
+  "scan_qr_hint": "Punta la fotocamera sul QR mostrato nel terminale del tuo host.",
+  "step.install.title": "Installa l'agent",
+  "step.install.body": "Esegui questo una volta sull'host (macOS o Linux).",
+  "step.run.title": "Genera un QR di accoppiamento",
+  "step.run.body": "Poi esegui questo sul tuo host. Apparirà un QR nel terminale.",
+  "step.scan.title": "Scansiona il QR",
+  "step.scan.body": "Apri lo scanner qui sotto e puntalo sul QR."
 }

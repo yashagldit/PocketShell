@@ -45,6 +45,7 @@
   "error.loadHistoryFailed": "Couldn't load transcript history",
   "loadHistory.progress": "Loading transcript… {{loaded}} / {{total}}",
   "error.prepareImageFailed": "Failed to prepare image",
+  "errors.failed_to_load_models": "Failed to load models",
   "toolSheet.eyebrow": "Tool details",
   "toolSheet.subtitle": "{{count}} calls in this batch",
   "toolSheet.callIndex": "Call {{index}}",

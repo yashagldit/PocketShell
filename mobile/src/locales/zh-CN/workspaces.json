@@ -23,5 +23,6 @@
   "tab_summary_empty": "空",
   "tab_label_terminal": "{{host}} 上的终端",
   "tab_label_files": "{{host}} 上的文件",
-  "on_host": "在 {{host}} 上"
+  "on_host": "在 {{host}} 上",
+  "errors.load_failed": "加载工作区失败"
 }

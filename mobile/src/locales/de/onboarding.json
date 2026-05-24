@@ -69,5 +69,9 @@
   "welcome.tips.alerts.body": "Werde sofort benachrichtigt, wenn die CPU ausschlägt, die Festplatte voll wird oder ein Host offline geht.",
   "welcome.tips.workspaces.title": "Mit Workspaces organisieren",
   "welcome.tips.workspaces.body": "Gruppiere Terminals und Dateien pro Projekt, damit du den Kontext wechseln kannst, ohne den Faden zu verlieren.",
-  "welcome.cta": "Loslegen"
+  "welcome.cta": "Loslegen",
+  "preview.metric_cpu": "CPU",
+  "preview.metric_mem": "MEM",
+  "preview.metric_disk": "DISK",
+  "preview.metric_net": "NET"
 }

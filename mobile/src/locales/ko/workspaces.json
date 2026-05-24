@@ -23,5 +23,6 @@
   "tab_summary_empty": "비어 있음",
   "tab_label_terminal": "{{host}}의 터미널",
   "tab_label_files": "{{host}}의 파일",
-  "on_host": "{{host}}에서"
+  "on_host": "{{host}}에서",
+  "errors.load_failed": "워크스페이스를 불러오지 못했습니다"
 }

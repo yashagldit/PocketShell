@@ -95,5 +95,10 @@
   "pin.unpinned_detail": "Nessuna chiave di identità è stata registrata per questo host. Esegui il pairing tramite QR per la verifica end-to-end.",
   "pin.unpinned_banner": "Identità host non verificata. Scansiona il QR dell'host.",
   "pin.cta_verify": "Verifica con QR",
-  "pin.cta_dismiss": "Chiudi"
+  "pin.cta_dismiss": "Chiudi",
+  "detail.delete": "Elimina host",
+  "errors.failed_to_open_file_explorer": "Impossibile aprire l'esplora file",
+  "errors.load_failed": "Caricamento host non riuscito",
+  "errors.delete_failed": "Eliminazione host non riuscita",
+  "errors.load_trusted_devices_failed": "Caricamento dispositivi attendibili non riuscito"
 }

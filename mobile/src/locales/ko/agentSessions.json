@@ -38,5 +38,6 @@
   "badge.paused": "일시 중지됨",
   "badge.running": "실행 중",
   "project.showAll": "{{count}}개 더 보기",
-  "project.showLess": "접기"
+  "project.showLess": "접기",
+  "badge.terminal": ">_"
 }

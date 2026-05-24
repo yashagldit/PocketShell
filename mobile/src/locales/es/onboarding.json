@@ -69,5 +69,9 @@
   "welcome.tips.alerts.body": "Recibe una notificación cuando la CPU se dispare, el disco se llene o un host se desconecte.",
   "welcome.tips.workspaces.title": "Organiza con espacios de trabajo",
   "welcome.tips.workspaces.body": "Agrupa terminales y archivos por proyecto para cambiar de contexto sin perder el hilo.",
-  "welcome.cta": "Comenzar"
+  "welcome.cta": "Comenzar",
+  "preview.metric_cpu": "CPU",
+  "preview.metric_mem": "MEM",
+  "preview.metric_disk": "DISCO",
+  "preview.metric_net": "RED"
 }

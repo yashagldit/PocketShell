@@ -69,5 +69,13 @@
   "scan_qr.pairing_success": "Vinculado con {{host}}",
   "scan_qr.add_device_success": "Dispositivo añadido a {{host}}",
   "scan_qr.pair_failed": "Error al vincular el host",
-  "ownership_disclosure": "Empareja solo los hosts que poseas o estés autorizado a acceder."
+  "ownership_disclosure": "Empareja solo los hosts que poseas o estés autorizado a acceder.",
+  "screen.subtitle": "Tres pasos rápidos para conectar un nuevo host a tu cuenta.",
+  "scan_qr_hint": "Apunta tu cámara al QR que aparece en la terminal de tu host.",
+  "step.install.title": "Instalar el agente",
+  "step.install.body": "Ejecuta esto una vez en el host (macOS o Linux).",
+  "step.run.title": "Generar un QR de emparejamiento",
+  "step.run.body": "Luego ejecuta esto en tu host. Aparecerá un código QR en la terminal.",
+  "step.scan.title": "Escanear el QR",
+  "step.scan.body": "Abre el escáner abajo y apúntalo al QR."
 }

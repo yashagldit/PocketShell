@@ -44,5 +44,14 @@
   "nav.agent_chat": "代理聊天",
   "nav.pocketshell_pro": "PocketShell Pro",
   "nav.manage_subscription": "管理訂閱",
-  "nav.scan_host_qr": "掃描主機 QR"
+  "nav.scan_host_qr": "掃描主機 QR",
+  "splash.stage.restoring_session": "正在還原本地工作階段",
+  "splash.stage.verifying_credentials": "正在向後端驗證憑證",
+  "splash.stage.registering_device": "正在註冊裝置與推播權杖",
+  "splash.stage.syncing_workspaces": "正在同步工作區",
+  "splash.stage.requesting_biometric": "正在請求生物辨識解鎖",
+  "splash.stage.session_ready": "工作階段就緒 — 啟動中",
+  "splash.stage.no_session": "沒有已儲存的工作階段",
+  "actions.close": "關閉",
+  "actions.retry": "重試"
 }

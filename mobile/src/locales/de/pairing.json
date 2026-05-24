@@ -69,5 +69,13 @@
   "scan_qr.pairing_success": "Mit {{host}} gekoppelt",
   "scan_qr.add_device_success": "Gerät zu {{host}} hinzugefügt",
   "scan_qr.pair_failed": "Kopplung fehlgeschlagen",
-  "ownership_disclosure": "Verbinde nur Hosts, die du besitzt oder zu deren Zugriff du berechtigt bist."
+  "ownership_disclosure": "Verbinde nur Hosts, die du besitzt oder zu deren Zugriff du berechtigt bist.",
+  "screen.subtitle": "Drei schnelle Schritte, um einen neuen Host mit deinem Konto zu verbinden.",
+  "scan_qr_hint": "Richte deine Kamera auf den QR-Code im Terminal deines Hosts.",
+  "step.install.title": "Agent installieren",
+  "step.install.body": "Führe dies einmal auf dem Host aus (macOS oder Linux).",
+  "step.run.title": "Pairing-QR generieren",
+  "step.run.body": "Führe dann dies auf deinem Host aus. Ein QR-Code erscheint im Terminal.",
+  "step.scan.title": "QR scannen",
+  "step.scan.body": "Öffne unten den Scanner und richte ihn auf den QR-Code."
 }

@@ -96,5 +96,9 @@
   "pin.unpinned_detail": "このホストに対して ID キーが保存されていません。QR でペアリングしてエンドツーエンド検証を有効にしてください。",
   "pin.unpinned_banner": "ホスト ID 未検証。QR コードをスキャンしてください。",
   "pin.cta_verify": "QR で検証",
-  "pin.cta_dismiss": "閉じる"
+  "pin.cta_dismiss": "閉じる",
+  "errors.failed_to_open_file_explorer": "ファイルエクスプローラーを開けませんでした",
+  "errors.load_failed": "ホストの読み込みに失敗しました",
+  "errors.delete_failed": "ホストの削除に失敗しました",
+  "errors.load_trusted_devices_failed": "信頼済みデバイスの読み込みに失敗しました"
 }

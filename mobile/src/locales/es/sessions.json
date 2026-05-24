@@ -38,5 +38,7 @@
   "badge.detached": "separado",
   "badge.connected": "conectado",
   "badge.connecting": "conectando",
-  "badge.reconnecting": "reconectando"
+  "badge.reconnecting": "reconectando",
+  "errors.device_registration_missing": "Falta el registro del dispositivo. Por favor, inicia sesión de nuevo.",
+  "errors.join_failed": "No se pudo unir a la sesión"
 }

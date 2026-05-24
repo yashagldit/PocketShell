@@ -96,5 +96,9 @@
   "pin.unpinned_detail": "No identity key has been pinned for this host. Pair via QR to enable end-to-end verification.",
   "pin.unpinned_banner": "Host identity not verified. Scan the host's QR code to enable end-to-end verification.",
   "pin.cta_verify": "Verify with QR",
-  "pin.cta_dismiss": "Dismiss"
+  "pin.cta_dismiss": "Dismiss",
+  "errors.failed_to_open_file_explorer": "Failed to open file explorer",
+  "errors.load_failed": "Failed to load hosts",
+  "errors.delete_failed": "Failed to delete host",
+  "errors.load_trusted_devices_failed": "Failed to load trusted devices"
 }

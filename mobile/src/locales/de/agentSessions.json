@@ -38,5 +38,6 @@
   "badge.paused": "Pausiert",
   "badge.running": "Läuft",
   "project.showAll": "{{count}} weitere anzeigen",
-  "project.showLess": "Weniger anzeigen"
+  "project.showLess": "Weniger anzeigen",
+  "badge.terminal": ">_"
 }

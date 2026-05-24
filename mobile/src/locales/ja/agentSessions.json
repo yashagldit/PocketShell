@@ -38,5 +38,6 @@
   "badge.paused": "一時停止",
   "badge.running": "実行中",
   "project.showAll": "さらに{{count}}件を表示",
-  "project.showLess": "表示を減らす"
+  "project.showLess": "表示を減らす",
+  "badge.terminal": ">_"
 }

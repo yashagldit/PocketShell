@@ -23,5 +23,6 @@
   "tab_summary_empty": "Empty",
   "tab_label_terminal": "Terminal on {{host}}",
   "tab_label_files": "Files on {{host}}",
-  "on_host": "on {{host}}"
+  "on_host": "on {{host}}",
+  "errors.load_failed": "Failed to load workspaces"
 }

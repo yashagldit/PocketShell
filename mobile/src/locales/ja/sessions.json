@@ -38,5 +38,7 @@
   "badge.detached": "切断中",
   "badge.connected": "接続済み",
   "badge.connecting": "接続中",
-  "badge.reconnecting": "再接続中"
+  "badge.reconnecting": "再接続中",
+  "errors.device_registration_missing": "デバイス登録がありません。再度ログインしてください。",
+  "errors.join_failed": "セッションへの参加に失敗しました"
 }

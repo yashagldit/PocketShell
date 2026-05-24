@@ -69,5 +69,13 @@
   "scan_qr.pairing_success": "{{host}}와 페어링됨",
   "scan_qr.add_device_success": "{{host}}에 장치 추가됨",
   "scan_qr.pair_failed": "호스트 페어링 실패",
-  "ownership_disclosure": "본인이 소유하거나 접근 권한이 있는 호스트만 페어링하세요."
+  "ownership_disclosure": "본인이 소유하거나 접근 권한이 있는 호스트만 페어링하세요.",
+  "screen.subtitle": "계정에 새 호스트를 연결하는 빠른 3단계.",
+  "scan_qr_hint": "카메라를 호스트 터미널에 표시된 QR 코드에 맞추세요.",
+  "step.install.title": "에이전트 설치",
+  "step.install.body": "호스트(macOS 또는 Linux)에서 한 번만 실행하세요.",
+  "step.run.title": "페어링 QR 생성",
+  "step.run.body": "그런 다음 호스트에서 이것을 실행하세요. 터미널에 QR 코드가 나타납니다.",
+  "step.scan.title": "QR 스캔",
+  "step.scan.body": "아래 스캐너를 열어 QR에 맞추세요."
 }

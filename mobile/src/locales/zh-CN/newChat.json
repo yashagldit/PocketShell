@@ -23,5 +23,8 @@
   "folder.use": "使用",
   "folder.connecting": "正在连接主机…",
   "folder.connectionFailed": "无法连接到主机。请返回并重试。",
-  "folder.loadFailed": "加载目录失败"
+  "folder.loadFailed": "加载目录失败",
+  "terminal.source.title": "打开终端",
+  "terminal.projects.title": "最近的项目",
+  "terminal.folder.title": "选择文件夹"
 }

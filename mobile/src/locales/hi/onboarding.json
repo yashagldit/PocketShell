@@ -69,5 +69,9 @@
   "welcome.tips.alerts.body": "CPU बढ़ने, डिस्क भर जाने या होस्ट ऑफ़लाइन होने पर तुरंत सूचना पाएं।",
   "welcome.tips.workspaces.title": "वर्कस्पेस से व्यवस्थित करें",
   "welcome.tips.workspaces.body": "टर्मिनल और फ़ाइलें प्रोजेक्ट के अनुसार समूहित करें ताकि अपना ध्यान खोए बिना संदर्भ बदल सकें।",
-  "welcome.cta": "शुरू करें"
+  "welcome.cta": "शुरू करें",
+  "preview.metric_cpu": "CPU",
+  "preview.metric_mem": "MEM",
+  "preview.metric_disk": "DISK",
+  "preview.metric_net": "NET"
 }

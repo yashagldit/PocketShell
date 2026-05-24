@@ -23,5 +23,6 @@
   "tab_summary_empty": "空",
   "tab_label_terminal": "{{host}} のターミナル",
   "tab_label_files": "{{host}} のファイル",
-  "on_host": "{{host}} で"
+  "on_host": "{{host}} で",
+  "errors.load_failed": "ワークスペースの読み込みに失敗しました"
 }

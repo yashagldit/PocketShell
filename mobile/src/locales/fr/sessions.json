@@ -38,5 +38,7 @@
   "badge.detached": "détaché",
   "badge.connected": "connecté",
   "badge.connecting": "connexion",
-  "badge.reconnecting": "reconnexion"
+  "badge.reconnecting": "reconnexion",
+  "errors.device_registration_missing": "Enregistrement de l'appareil manquant. Veuillez vous reconnecter.",
+  "errors.join_failed": "Échec de la connexion à la session"
 }

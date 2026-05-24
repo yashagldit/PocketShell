@@ -23,5 +23,8 @@
   "folder.use": "Nutzen",
   "folder.connecting": "Verbindung zum Host wird hergestellt…",
   "folder.connectionFailed": "Verbindung zum Host fehlgeschlagen. Geh zurück und versuche es erneut.",
-  "folder.loadFailed": "Verzeichnis konnte nicht geladen werden"
+  "folder.loadFailed": "Verzeichnis konnte nicht geladen werden",
+  "terminal.source.title": "Terminal öffnen",
+  "terminal.projects.title": "Letzte Projekte",
+  "terminal.folder.title": "Ordner wählen"
 }

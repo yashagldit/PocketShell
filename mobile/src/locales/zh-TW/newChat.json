@@ -23,5 +23,8 @@
   "folder.use": "使用",
   "folder.connecting": "正在連線到主機…",
   "folder.connectionFailed": "無法連線到主機。請返回並重試。",
-  "folder.loadFailed": "載入目錄失敗"
+  "folder.loadFailed": "載入目錄失敗",
+  "terminal.source.title": "開啟終端機",
+  "terminal.projects.title": "最近的專案",
+  "terminal.folder.title": "選擇資料夾"
 }

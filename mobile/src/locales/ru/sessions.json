@@ -38,5 +38,7 @@
   "badge.detached": "отсоединен",
   "badge.connected": "подключен",
   "badge.connecting": "подключение",
-  "badge.reconnecting": "переподключение"
+  "badge.reconnecting": "переподключение",
+  "errors.device_registration_missing": "Регистрация устройства отсутствует. Войдите снова.",
+  "errors.join_failed": "Не удалось присоединиться к сессии"
 }

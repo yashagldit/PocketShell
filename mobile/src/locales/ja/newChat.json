@@ -23,5 +23,8 @@
   "folder.use": "使う",
   "folder.connecting": "ホストに接続中…",
   "folder.connectionFailed": "ホストに接続できませんでした。戻ってもう一度試してください。",
-  "folder.loadFailed": "ディレクトリを読み込めませんでした"
+  "folder.loadFailed": "ディレクトリを読み込めませんでした",
+  "terminal.source.title": "ターミナルを開く",
+  "terminal.projects.title": "最近のプロジェクト",
+  "terminal.folder.title": "フォルダを選択"
 }

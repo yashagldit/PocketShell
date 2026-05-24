@@ -217,5 +217,22 @@
   "metric_detail.fs.all": "Все",
   "advancedDisk.read": "Чтение",
   "advancedDisk.write": "Запись",
-  "advancedDisk.storage": "Хранилище"
+  "advancedDisk.storage": "Хранилище",
+  "labels.mem": "ПАМ",
+  "labels.network": "СЕТЬ",
+  "labels.disk_io": "ДИСК I/O",
+  "labels.temp": "ТЕМП",
+  "labels.memory_used": "Исп.",
+  "labels.memory_avail": "Дост.",
+  "labels.memory_free": "Своб.",
+  "labels.ram": "RAM",
+  "labels.memory_total": "Всего",
+  "labels.memory_available": "Доступно",
+  "labels.memory_cache_buf": "Кэш/Буф",
+  "labels.memory_swap": "Подкачка",
+  "labels.net_established": "EST",
+  "labels.net_time_wait": "TWAIT",
+  "labels.net_close_wait": "CWAIT",
+  "labels.net_listen": "LISTEN",
+  "labels.net_total": "ВСЕГО"
 }

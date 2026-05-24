@@ -69,5 +69,13 @@
   "scan_qr.pairing_success": "Jumelé avec {{host}}",
   "scan_qr.add_device_success": "Appareil ajouté à {{host}}",
   "scan_qr.pair_failed": "Échec du jumelage de l'hôte",
-  "ownership_disclosure": "N'appairez que des hôtes qui vous appartiennent ou auxquels vous êtes autorisé à accéder."
+  "ownership_disclosure": "N'appairez que des hôtes qui vous appartiennent ou auxquels vous êtes autorisé à accéder.",
+  "screen.subtitle": "Trois étapes rapides pour connecter un nouvel hôte à votre compte.",
+  "scan_qr_hint": "Pointez votre caméra sur le QR affiché dans le terminal de votre hôte.",
+  "step.install.title": "Installer l'agent",
+  "step.install.body": "Exécutez ceci une fois sur l'hôte (macOS ou Linux).",
+  "step.run.title": "Générer un QR d'appairage",
+  "step.run.body": "Exécutez ensuite ceci sur votre hôte. Un QR code apparaîtra dans le terminal.",
+  "step.scan.title": "Scanner le QR",
+  "step.scan.body": "Ouvrez le scanner ci-dessous et pointez-le sur le QR."
 }

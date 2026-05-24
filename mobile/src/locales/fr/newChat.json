@@ -23,5 +23,8 @@
   "folder.use": "Utiliser",
   "folder.connecting": "Connexion à l'hôte…",
   "folder.connectionFailed": "Impossible de se connecter à l'hôte. Reviens en arrière et réessaie.",
-  "folder.loadFailed": "Échec du chargement du répertoire"
+  "folder.loadFailed": "Échec du chargement du répertoire",
+  "terminal.source.title": "Ouvrir le terminal",
+  "terminal.projects.title": "Projets récents",
+  "terminal.folder.title": "Choisir un dossier"
 }

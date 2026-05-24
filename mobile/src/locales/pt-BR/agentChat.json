@@ -91,5 +91,19 @@
   "diff.truncation_note": "Exibindo prévia limitada do diff no app.",
   "diff.hunk_truncated": "... mais linhas ocultas",
   "diff.file_count_one": "{{count}} arquivo",
-  "diff.file_count_other": "{{count}} arquivos"
+  "diff.file_count_other": "{{count}} arquivos",
+  "openInTerminal.button": "Abrir no terminal",
+  "errors.failed_to_load_models": "Falha ao carregar modelos",
+  "help.title": "Sobre os chats",
+  "help.intro": "Chats é um visualizador para as sessões do Claude Code e Codex que ficam no seu host. Você executa a IA no terminal — o app lê os arquivos de transcrição que ela escreve.",
+  "help.step.local.title": "Lê transcrições no seu host",
+  "help.step.local.body": "Claude Code e Codex salvam cada sessão como arquivo JSONL no disco (ex. ~/.claude/projects/…). O PocketShell lê esses arquivos pelo seu host pareado e os lista aqui.",
+  "help.step.privacy.title": "Seus chats ficam na sua máquina",
+  "help.step.privacy.body": "Conversas e processamento de IA nunca passam pelos servidores do PocketShell. O fluxo de transcrição é ponta a ponta entre o seu telefone e o seu host — apenas retransmitimos bytes criptografados se sua rede precisar.",
+  "help.step.run.title": "Execute o agente em um terminal",
+  "help.step.run.body": "Para iniciar ou continuar um chat, abra um terminal no host e execute claude ou codex. A sessão aparece nesta lista assim que a CLI escreve sua primeira linha.",
+  "help.step.resume.title": "Toque em qualquer chat para abri-lo",
+  "help.step.resume.body": "Toque em uma linha para ler a transcrição, ou pressione e segure para ações como Retomar no terminal — que retoma a conversa no host.",
+  "help.footnote": "Toque no ícone de ajuda no cabeçalho a qualquer momento para ver isto novamente.",
+  "menu.help": "Sobre Agent Chat"
 }

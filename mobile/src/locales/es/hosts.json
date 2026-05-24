@@ -95,5 +95,10 @@
   "pin.unpinned_detail": "No se ha fijado ninguna clave de identidad para este host. Empareja por QR para habilitar la verificación de extremo a extremo.",
   "pin.unpinned_banner": "Identidad del host no verificada. Escanea el QR del host.",
   "pin.cta_verify": "Verificar con QR",
-  "pin.cta_dismiss": "Cerrar"
+  "pin.cta_dismiss": "Cerrar",
+  "detail.delete": "Eliminar host",
+  "errors.failed_to_open_file_explorer": "No se pudo abrir el explorador de archivos",
+  "errors.load_failed": "No se pudieron cargar los hosts",
+  "errors.delete_failed": "No se pudo eliminar el host",
+  "errors.load_trusted_devices_failed": "No se pudieron cargar los dispositivos de confianza"
 }

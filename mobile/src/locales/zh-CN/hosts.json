@@ -95,5 +95,10 @@
   "pin.unpinned_detail": "尚未为此主机固定身份密钥。请通过二维码配对以启用端到端验证。",
   "pin.unpinned_banner": "主机身份未验证。请扫描主机的二维码。",
   "pin.cta_verify": "用二维码验证",
-  "pin.cta_dismiss": "关闭"
+  "pin.cta_dismiss": "关闭",
+  "detail.delete": "删除主机",
+  "errors.failed_to_open_file_explorer": "无法打开文件浏览器",
+  "errors.load_failed": "加载主机失败",
+  "errors.delete_failed": "删除主机失败",
+  "errors.load_trusted_devices_failed": "加载受信任设备失败"
 }

@@ -217,5 +217,22 @@
   "metric_detail.fs.all": "全部",
   "advancedDisk.read": "讀取",
   "advancedDisk.write": "寫入",
-  "advancedDisk.storage": "儲存空間"
+  "advancedDisk.storage": "儲存空間",
+  "labels.mem": "記憶體",
+  "labels.network": "網路",
+  "labels.disk_io": "磁碟 I/O",
+  "labels.temp": "溫度",
+  "labels.memory_used": "已用",
+  "labels.memory_avail": "可用",
+  "labels.memory_free": "可用",
+  "labels.ram": "RAM",
+  "labels.memory_total": "總計",
+  "labels.memory_available": "可用",
+  "labels.memory_cache_buf": "快取/緩衝",
+  "labels.memory_swap": "置換",
+  "labels.net_established": "EST",
+  "labels.net_time_wait": "TWAIT",
+  "labels.net_close_wait": "CWAIT",
+  "labels.net_listen": "LISTEN",
+  "labels.net_total": "合計"
 }

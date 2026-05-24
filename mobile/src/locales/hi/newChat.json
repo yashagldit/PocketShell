@@ -23,5 +23,8 @@
   "folder.use": "उपयोग करें",
   "folder.connecting": "होस्ट से कनेक्ट हो रहा है…",
   "folder.connectionFailed": "होस्ट से कनेक्ट नहीं हो सका। वापस जाएँ और फिर कोशिश करें.",
-  "folder.loadFailed": "डायरेक्टरी लोड करने में विफल"
+  "folder.loadFailed": "डायरेक्टरी लोड करने में विफल",
+  "terminal.source.title": "टर्मिनल खोलें",
+  "terminal.projects.title": "हाल के प्रोजेक्ट",
+  "terminal.folder.title": "फ़ोल्डर चुनें"
 }

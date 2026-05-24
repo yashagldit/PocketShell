@@ -91,5 +91,19 @@
   "diff.truncation_note": "アプリ内では一部の差分のみ表示しています。",
   "diff.hunk_truncated": "... 他の行は非表示",
   "diff.file_count_one": "{{count}}ファイル",
-  "diff.file_count_other": "{{count}}ファイル"
+  "diff.file_count_other": "{{count}}ファイル",
+  "openInTerminal.button": "ターミナルで開く",
+  "errors.failed_to_load_models": "モデルの読み込みに失敗しました",
+  "help.title": "チャットについて",
+  "help.intro": "Chatsは、ホストに保存されているClaude CodeとCodexのセッションを表示するビューアーです。ターミナルでAIを実行すると、アプリがそのトランスクリプトファイルを読み取ります。",
+  "help.step.local.title": "ホスト上のトランスクリプトを読み取る",
+  "help.step.local.body": "Claude CodeとCodexは、各セッションをJSONLファイルとしてディスクに保存します(例: ~/.claude/projects/…)。PocketShellはペアリングされたホストを介してこれらのファイルを読み取り、ここに一覧表示します。",
+  "help.step.privacy.title": "チャットはあなたのマシンに留まります",
+  "help.step.privacy.body": "会話とAI処理はPocketShellのサーバーに一切触れません。トランスクリプトストリームは電話機とホスト間でエンドツーエンドです — ネットワークが必要とする場合は暗号化されたバイトをリレーするだけです。",
+  "help.step.run.title": "ターミナルでエージェントを実行",
+  "help.step.run.body": "チャットを開始または続行するには、ホストでターミナルを開き、claudeまたはcodexを実行します。CLIが最初の行を書き込むとすぐにセッションがこのリストに表示されます。",
+  "help.step.resume.title": "チャットをタップして開く",
+  "help.step.resume.body": "行をタップしてトランスクリプトを読むか、長押しして「ターミナルで再開」などの操作を表示できます — ホストで会話を再開します。",
+  "help.footnote": "ヘッダーのヘルプアイコンをいつでもタップしてこれを再表示できます。",
+  "menu.help": "エージェントチャットについて"
 }

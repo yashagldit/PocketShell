@@ -95,5 +95,10 @@
   "pin.unpinned_detail": "尚未為此主機固定身分金鑰。請透過 QR 碼配對以啟用端對端驗證。",
   "pin.unpinned_banner": "主機身分未驗證。請掃描主機的 QR 碼。",
   "pin.cta_verify": "用 QR 碼驗證",
-  "pin.cta_dismiss": "關閉"
+  "pin.cta_dismiss": "關閉",
+  "detail.delete": "刪除主機",
+  "errors.failed_to_open_file_explorer": "無法開啟檔案瀏覽器",
+  "errors.load_failed": "載入主機失敗",
+  "errors.delete_failed": "刪除主機失敗",
+  "errors.load_trusted_devices_failed": "載入受信任的裝置失敗"
 }

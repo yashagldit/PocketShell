@@ -44,5 +44,14 @@
   "nav.agent_chat": "एजेंट चैट",
   "nav.pocketshell_pro": "PocketShell Pro",
   "nav.manage_subscription": "सदस्यता प्रबंधित करें",
-  "nav.scan_host_qr": "होस्ट QR स्कैन करें"
+  "nav.scan_host_qr": "होस्ट QR स्कैन करें",
+  "splash.stage.restoring_session": "स्थानीय सत्र पुनर्स्थापित किया जा रहा है",
+  "splash.stage.verifying_credentials": "बैकएंड के साथ क्रेडेंशियल सत्यापित किए जा रहे हैं",
+  "splash.stage.registering_device": "डिवाइस + पुश टोकन पंजीकृत किया जा रहा है",
+  "splash.stage.syncing_workspaces": "कार्यक्षेत्र सिंक किए जा रहे हैं",
+  "splash.stage.requesting_biometric": "बायोमेट्रिक अनलॉक का अनुरोध किया जा रहा है",
+  "splash.stage.session_ready": "सत्र तैयार — लॉन्च हो रहा है",
+  "splash.stage.no_session": "कोई सहेजा गया सत्र नहीं",
+  "actions.close": "बंद करें",
+  "actions.retry": "पुनः प्रयास करें"
 }

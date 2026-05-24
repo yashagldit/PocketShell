@@ -23,5 +23,6 @@
   "tab_summary_empty": "खाली",
   "tab_label_terminal": "{{host}} पर टर्मिनल",
   "tab_label_files": "{{host}} पर फ़ाइलें",
-  "on_host": "{{host}} पर"
+  "on_host": "{{host}} पर",
+  "errors.load_failed": "कार्यक्षेत्र लोड करने में विफल"
 }

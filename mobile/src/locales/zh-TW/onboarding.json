@@ -69,5 +69,9 @@
   "welcome.tips.alerts.body": "CPU 飆升、磁碟用滿或主機離線時立刻收到通知。",
   "welcome.tips.workspaces.title": "用工作區整理一切",
   "welcome.tips.workspaces.body": "依專案分組終端機和檔案，切換情境也不失焦。",
-  "welcome.cta": "開始使用"
+  "welcome.cta": "開始使用",
+  "preview.metric_cpu": "CPU",
+  "preview.metric_mem": "記憶體",
+  "preview.metric_disk": "磁碟",
+  "preview.metric_net": "網路"
 }

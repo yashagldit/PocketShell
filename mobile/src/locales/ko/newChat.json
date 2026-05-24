@@ -23,5 +23,8 @@
   "folder.use": "사용",
   "folder.connecting": "호스트에 연결 중…",
   "folder.connectionFailed": "호스트에 연결할 수 없습니다. 뒤로 돌아가 다시 시도하세요.",
-  "folder.loadFailed": "디렉터리 로드 실패"
+  "folder.loadFailed": "디렉터리 로드 실패",
+  "terminal.source.title": "터미널 열기",
+  "terminal.projects.title": "최근 프로젝트",
+  "terminal.folder.title": "폴더 선택"
 }

@@ -217,5 +217,22 @@
   "metric_detail.fs.all": "Todo",
   "advancedDisk.read": "Lectura",
   "advancedDisk.write": "Escritura",
-  "advancedDisk.storage": "Almacenamiento"
+  "advancedDisk.storage": "Almacenamiento",
+  "labels.mem": "MEM",
+  "labels.network": "RED",
+  "labels.disk_io": "DISK I/O",
+  "labels.temp": "TEMP",
+  "labels.memory_used": "Usado",
+  "labels.memory_avail": "Disp.",
+  "labels.memory_free": "Libre",
+  "labels.ram": "RAM",
+  "labels.memory_total": "Total",
+  "labels.memory_available": "Disponible",
+  "labels.memory_cache_buf": "Caché/Buf",
+  "labels.memory_swap": "Swap",
+  "labels.net_established": "EST",
+  "labels.net_time_wait": "TWAIT",
+  "labels.net_close_wait": "CWAIT",
+  "labels.net_listen": "LISTEN",
+  "labels.net_total": "TOTAL"
 }

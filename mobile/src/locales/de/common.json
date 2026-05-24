@@ -44,5 +44,14 @@
   "nav.agent_chat": "Agenten-Chat",
   "nav.pocketshell_pro": "PocketShell Pro",
   "nav.manage_subscription": "Abo verwalten",
-  "nav.scan_host_qr": "Host-QR scannen"
+  "nav.scan_host_qr": "Host-QR scannen",
+  "splash.stage.restoring_session": "lokale Sitzung wird wiederhergestellt",
+  "splash.stage.verifying_credentials": "Anmeldedaten werden mit Backend geprüft",
+  "splash.stage.registering_device": "Gerät + Push-Token werden registriert",
+  "splash.stage.syncing_workspaces": "Workspaces werden synchronisiert",
+  "splash.stage.requesting_biometric": "biometrische Entsperrung wird angefordert",
+  "splash.stage.session_ready": "Sitzung bereit – wird gestartet",
+  "splash.stage.no_session": "keine gespeicherte Sitzung",
+  "actions.close": "Schließen",
+  "actions.retry": "Erneut versuchen"
 }

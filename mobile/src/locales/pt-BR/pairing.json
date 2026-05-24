@@ -69,5 +69,13 @@
   "scan_qr.pairing_success": "Pareado com {{host}}",
   "scan_qr.add_device_success": "Dispositivo adicionado ao {{host}}",
   "scan_qr.pair_failed": "Falha ao parear host",
-  "ownership_disclosure": "Pareie apenas hosts que você possui ou tem autorização para acessar."
+  "ownership_disclosure": "Pareie apenas hosts que você possui ou tem autorização para acessar.",
+  "screen.subtitle": "Três passos rápidos para conectar um novo host à sua conta.",
+  "scan_qr_hint": "Aponte sua câmera para o QR exibido no terminal do seu host.",
+  "step.install.title": "Instalar o agente",
+  "step.install.body": "Execute isto uma vez no host (macOS ou Linux).",
+  "step.run.title": "Gerar um QR de pareamento",
+  "step.run.body": "Em seguida, execute isto no seu host. Um QR aparecerá no terminal.",
+  "step.scan.title": "Escanear o QR",
+  "step.scan.body": "Abra o scanner abaixo e aponte para o QR."
 }

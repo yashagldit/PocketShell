@@ -44,5 +44,14 @@
   "nav.agent_chat": "代理聊天",
   "nav.pocketshell_pro": "PocketShell Pro",
   "nav.manage_subscription": "管理订阅",
-  "nav.scan_host_qr": "扫描主机二维码"
+  "nav.scan_host_qr": "扫描主机二维码",
+  "splash.stage.restoring_session": "正在恢复本地会话",
+  "splash.stage.verifying_credentials": "正在向后端验证凭据",
+  "splash.stage.registering_device": "正在注册设备和推送令牌",
+  "splash.stage.syncing_workspaces": "正在同步工作区",
+  "splash.stage.requesting_biometric": "正在请求生物识别解锁",
+  "splash.stage.session_ready": "会话就绪 — 正在启动",
+  "splash.stage.no_session": "无已保存的会话",
+  "actions.close": "关闭",
+  "actions.retry": "重试"
 }

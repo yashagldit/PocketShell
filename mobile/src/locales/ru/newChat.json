@@ -23,5 +23,8 @@
   "folder.use": "Использовать",
   "folder.connecting": "Подключение к хосту…",
   "folder.connectionFailed": "Не удалось подключиться к хосту. Вернитесь и попробуйте снова.",
-  "folder.loadFailed": "Ошибка загрузки директории"
+  "folder.loadFailed": "Ошибка загрузки директории",
+  "terminal.source.title": "Открыть терминал",
+  "terminal.projects.title": "Недавние проекты",
+  "terminal.folder.title": "Выберите папку"
 }

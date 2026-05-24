@@ -69,5 +69,9 @@
   "welcome.tips.alerts.body": "Ricevi una notifica appena la CPU schizza, il disco si riempie o un host va offline.",
   "welcome.tips.workspaces.title": "Organizza con gli spazi di lavoro",
   "welcome.tips.workspaces.body": "Raggruppa terminali e file per progetto e cambia contesto senza perdere il filo.",
-  "welcome.cta": "Inizia"
+  "welcome.cta": "Inizia",
+  "preview.metric_cpu": "CPU",
+  "preview.metric_mem": "MEM",
+  "preview.metric_disk": "DISCO",
+  "preview.metric_net": "RETE"
 }
