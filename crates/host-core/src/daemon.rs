@@ -3971,6 +3971,38 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                         "system/list_processes" => {
                                             crate::rpc::handle_list_processes(&mut stats, req)
                                         }
+                                        "audit/list" => {
+                                            // Re-check permission per RPC: the one-time channel
+                                            // auth runs only at open, so revoking shell access
+                                            // mid-session would otherwise leave the audit log
+                                            // readable until the channel closes.
+                                            if let Err(reason) = device_permission_result(
+                                                &store,
+                                                &mobile_device_id,
+                                                "shell",
+                                            ) {
+                                                audit_authz_denied(
+                                                    &store,
+                                                    &mobile_device_id,
+                                                    "audit/list",
+                                                    &reason,
+                                                    None,
+                                                );
+                                                crate::rpc::RpcResponse::err(
+                                                    req_id.clone(),
+                                                    crate::rpc::RpcError::permission_denied(
+                                                        reason,
+                                                    ),
+                                                )
+                                            } else {
+                                                crate::rpc::handle_audit_list(
+                                                    &store,
+                                                    &mobile_device_id,
+                                                    req,
+                                                )
+                                                .await
+                                            }
+                                        }
                                         other => crate::rpc::RpcResponse::err(
                                             req_id.clone(),
                                             crate::rpc::RpcError::internal(format!(

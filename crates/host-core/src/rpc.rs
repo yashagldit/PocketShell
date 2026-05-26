@@ -94,7 +94,7 @@ pub fn parse_request(data: &[u8]) -> Option<RpcRequest> {
 /// fast path. The control-message handler in `daemon.rs` checks this and
 /// routes stateful methods inline so it can pass `&mut StatsCollector`.
 pub fn is_stateful_method(method: &str) -> bool {
-    matches!(method, "system/list_processes")
+    matches!(method, "system/list_processes" | "audit/list")
 }
 
 /// Dispatch an RPC request to the matching handler.
@@ -173,6 +173,150 @@ pub fn handle_list_processes(
         "total": total,
         "more": more,
         "captured_at_ms": now_ms(),
+    });
+    RpcResponse::ok(id, result)
+}
+
+/// Maximum number of audit events returnable in a single `audit/list` page.
+/// Sized so the worst-case response (with long target paths, detailed JSON
+/// payloads, large reason strings ≈ 1 KB/event) stays under WebRTC-data's
+/// 64 KB unfragmented send budget with headroom for the envelope.
+pub const AUDIT_LIST_MAX_LIMIT: usize = 100;
+/// Default page size when the mobile omits `limit`.
+pub const AUDIT_LIST_DEFAULT_LIMIT: usize = 50;
+/// Hard cap on `event_type_prefix` length. Short event-type taxonomies
+/// (`files.`, `process.`, etc.) are well under this; the cap exists purely to
+/// block an authenticated mobile from CPU-DOS'ing the daemon with a multi-MB
+/// prefix that forces a fresh memcmp against every line in the audit log.
+pub const AUDIT_LIST_MAX_PREFIX_LEN: usize = 64;
+
+/// Stateful handler for `audit/list`. Pulled out of [`dispatch`] because it
+/// needs the `StateStore` (to auto-fill host_id/user_id when auditing the read)
+/// and the mobile_device_id (captured from the channel auth context) — neither
+/// of which travels through the stateless dispatch path.
+///
+/// Async because the underlying audit-file read is wrapped in
+/// [`tokio::task::spawn_blocking`]: up to 5 MB of synchronous file I/O must
+/// not stall the daemon's main event loop (the stream tick + other channels
+/// share it).
+///
+/// Params (all optional):
+/// - `limit`: integer, clamped to [1, [`AUDIT_LIST_MAX_LIMIT`]], default
+///   [`AUDIT_LIST_DEFAULT_LIMIT`].
+/// - `before_ts`: RFC3339 timestamp; only returns events strictly older than
+///   this. The mobile sets it to the `at` of the oldest event in the previous
+///   page to walk further back in history.
+/// - `event_type_prefix`: returns only events whose `event_type` starts with
+///   this string. Capped to [`AUDIT_LIST_MAX_PREFIX_LEN`] bytes to bound
+///   the per-line memcmp work.
+///
+/// Response: `{ events: [...], more: bool }`. `events` are newest-first.
+/// Writes an `audit.read` event for the *initial* page (before_ts is None) so
+/// each "open the audit viewer" action is itself auditable (NIST SP 800-53
+/// AU-9); subsequent pagination calls do not emit audit.read events, which
+/// keeps a viewer that walks the whole history from flooding the log and
+/// evicting genuine operational events under the 5 MB rotation cap.
+pub async fn handle_audit_list(
+    store: &crate::store::StateStore,
+    mobile_device_id: &str,
+    req: RpcRequest,
+) -> RpcResponse {
+    let id = req.id;
+    // Saturating u64→usize cast keeps the clamp meaningful on smaller targets;
+    // u64::MAX saturates to usize::MAX before clamp pulls it down to the cap.
+    let limit = req
+        .params
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .map(|n| usize::try_from(n).unwrap_or(usize::MAX).clamp(1, AUDIT_LIST_MAX_LIMIT))
+        .unwrap_or(AUDIT_LIST_DEFAULT_LIMIT);
+    let before_ts = req
+        .params
+        .get("before_ts")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    if let Some(b) = &before_ts {
+        if chrono::DateTime::parse_from_rfc3339(b).is_err() {
+            return RpcResponse::err(
+                id,
+                RpcError::invalid_params(
+                    "before_ts must be an RFC3339 timestamp with timezone",
+                ),
+            );
+        }
+    }
+    let event_type_prefix = req
+        .params
+        .get("event_type_prefix")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    if let Some(p) = &event_type_prefix {
+        if p.len() > AUDIT_LIST_MAX_PREFIX_LEN {
+            return RpcResponse::err(
+                id,
+                RpcError::invalid_params(format!(
+                    "event_type_prefix exceeds {} bytes",
+                    AUDIT_LIST_MAX_PREFIX_LEN
+                )),
+            );
+        }
+    }
+
+    let paths = match crate::config::AppConfig::paths() {
+        Ok(p) => p,
+        Err(e) => {
+            return RpcResponse::err(id, RpcError::internal(format!("audit paths: {e}")));
+        }
+    };
+
+    // Move the audit-file read off the daemon's main event loop. The audit
+    // log is bounded at 5 MB by rotation, but a cold-cache read of that on
+    // slow storage can stall other select! arms for tens of milliseconds.
+    let audit_file = paths.audit_file.clone();
+    let before_ts_for_read = before_ts.clone();
+    let prefix_for_read = event_type_prefix.clone();
+    let read_result = tokio::task::spawn_blocking(move || {
+        crate::audit::read_audit_tail(
+            &audit_file,
+            limit,
+            before_ts_for_read.as_deref(),
+            prefix_for_read.as_deref(),
+        )
+    })
+    .await;
+
+    let (events, more) = match read_result {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => {
+            return RpcResponse::err(id, RpcError::internal(format!("audit read: {e}")));
+        }
+        Err(e) => {
+            return RpcResponse::err(id, RpcError::internal(format!("audit spawn: {e}")));
+        }
+    };
+
+    // Audit only the first (initial) page request. Paginated continuations
+    // would otherwise spam the log on rapid scrolling and crowd out real
+    // events under the rotation cap.
+    if before_ts.is_none() {
+        let mut access_event = crate::audit::AuditEvent::new("audit.read");
+        access_event.mobile_device_id = Some(mobile_device_id.to_string());
+        access_event.details = Some(serde_json::json!({
+            "limit": limit,
+            "returned": events.len(),
+            "more": more,
+            "event_type_prefix": event_type_prefix,
+        }));
+        if let Err(e) = crate::audit::write_audit_event_with_store(access_event, store) {
+            // Don't fail the RPC — the mobile already has the data. Surface
+            // the failure to operators so a broken audit pipeline is visible.
+            tracing::warn!("audit.read self-audit write failed: {}", e);
+        }
+    }
+
+    let result = serde_json::json!({
+        "events": events,
+        "more": more,
     });
     RpcResponse::ok(id, result)
 }

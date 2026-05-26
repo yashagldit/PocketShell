@@ -175,6 +175,86 @@ fn harden_audit_file(_path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Read the tail of the current `audit.log`, newest-first, filtered and paginated.
+///
+/// - `limit`: maximum number of events to return (clamp by caller).
+/// - `before_ts`: if set, only events with `at` strictly chronologically less
+///   than this RFC3339 timestamp are returned. Used by the mobile client to
+///   paginate older pages.
+/// - `event_type_prefix`: if set, only events whose `event_type` starts with
+///   this prefix are returned (e.g. `"file."` to filter to file actions).
+///
+/// Returns `(events, more)` where `more=true` indicates the caller can fetch
+/// an older page by setting `before_ts` to the `at` of the last (oldest)
+/// returned event. Malformed JSONL lines and events whose `at` doesn't parse
+/// as RFC3339 are skipped silently — the audit writer is the only producer,
+/// so this only happens after disk corruption or a writer-format change.
+///
+/// Rotated archives (`audit.log.1` …) are NOT consulted. 5 MB of current log
+/// covers many thousands of events which is plenty for the mobile viewer.
+pub fn read_audit_tail(
+    path: &Path,
+    limit: usize,
+    before_ts: Option<&str>,
+    event_type_prefix: Option<&str>,
+) -> std::io::Result<(Vec<serde_json::Value>, bool)> {
+    let contents = match fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((Vec::new(), false)),
+        Err(e) => return Err(e),
+    };
+
+    // Parse the boundary once up front so we compare chronologically rather
+    // than lexically — chrono::Utc::now().to_rfc3339() output is consistent
+    // today, but a writer change that trims subseconds (or a future chrono
+    // version) would silently break a lex compare at pagination boundaries.
+    let before_dt: Option<chrono::DateTime<chrono::FixedOffset>> = match before_ts {
+        Some(s) => match chrono::DateTime::parse_from_rfc3339(s) {
+            Ok(dt) => Some(dt),
+            // Caller-validated input; if it reached here malformed, return an
+            // empty page deterministically rather than crashing or returning
+            // unfiltered data.
+            Err(_) => return Ok((Vec::new(), false)),
+        },
+        None => None,
+    };
+
+    let mut matched: Vec<serde_json::Value> = Vec::new();
+    for line in contents.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(ev) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if let Some(prefix) = event_type_prefix {
+            let et = ev
+                .get("event_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if !et.starts_with(prefix) {
+                continue;
+            }
+        }
+        if let Some(before) = before_dt {
+            let at_str = ev.get("at").and_then(|v| v.as_str()).unwrap_or("");
+            let Ok(at_dt) = chrono::DateTime::parse_from_rfc3339(at_str) else {
+                continue;
+            };
+            if at_dt >= before {
+                continue;
+            }
+        }
+        matched.push(ev);
+    }
+
+    // File is append-only oldest-first; reverse to newest-first.
+    matched.reverse();
+    let more = matched.len() > limit;
+    matched.truncate(limit);
+    Ok((matched, more))
+}
+
 /// Rotate `audit.log` -> `audit.log.1`, shifting older archives up by one and
 /// dropping the oldest beyond `AUDIT_MAX_ARCHIVES`. Each archived file is
 /// re-chmod 0o600 in case rotation crossed a filesystem.
@@ -381,5 +461,156 @@ mod tests {
         assert!(archive.exists(), "audit.log.1 should exist after rotation");
         let archive_meta = std::fs::metadata(&archive).unwrap();
         assert!(archive_meta.len() as usize >= blob.len() - 1);
+    }
+
+    #[test]
+    fn read_audit_tail_returns_newest_first() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("audit.log");
+        // Three lines, oldest first (as on disk).
+        let lines = [
+            r#"{"event_type":"a","at":"2024-01-01T00:00:00+00:00","outcome":"success"}"#,
+            r#"{"event_type":"b","at":"2024-01-02T00:00:00+00:00","outcome":"success"}"#,
+            r#"{"event_type":"c","at":"2024-01-03T00:00:00+00:00","outcome":"success"}"#,
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+
+        let (events, more) = read_audit_tail(&path, 10, None, None).unwrap();
+        assert_eq!(events.len(), 3);
+        assert!(!more);
+        // Newest first.
+        assert_eq!(events[0]["event_type"], "c");
+        assert_eq!(events[1]["event_type"], "b");
+        assert_eq!(events[2]["event_type"], "a");
+    }
+
+    #[test]
+    fn read_audit_tail_limit_and_more_flag() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("audit.log");
+        let mut s = String::new();
+        for i in 0..5 {
+            s.push_str(&format!(
+                r#"{{"event_type":"e{i}","at":"2024-01-0{}T00:00:00+00:00","outcome":"success"}}"#,
+                i + 1
+            ));
+            s.push('\n');
+        }
+        std::fs::write(&path, &s).unwrap();
+
+        let (events, more) = read_audit_tail(&path, 2, None, None).unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(more, "more should be true when limit truncates the result");
+        assert_eq!(events[0]["event_type"], "e4");
+        assert_eq!(events[1]["event_type"], "e3");
+    }
+
+    #[test]
+    fn read_audit_tail_before_ts_paginates_older() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("audit.log");
+        let lines = [
+            r#"{"event_type":"a","at":"2024-01-01T00:00:00+00:00","outcome":"success"}"#,
+            r#"{"event_type":"b","at":"2024-01-02T00:00:00+00:00","outcome":"success"}"#,
+            r#"{"event_type":"c","at":"2024-01-03T00:00:00+00:00","outcome":"success"}"#,
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+
+        // before_ts=c → returns b, a; before_ts=b → returns a only.
+        let (events, _) =
+            read_audit_tail(&path, 10, Some("2024-01-03T00:00:00+00:00"), None).unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0]["event_type"], "b");
+        assert_eq!(events[1]["event_type"], "a");
+
+        let (events, _) =
+            read_audit_tail(&path, 10, Some("2024-01-02T00:00:00+00:00"), None).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["event_type"], "a");
+    }
+
+    #[test]
+    fn read_audit_tail_prefix_filter() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("audit.log");
+        let lines = [
+            r#"{"event_type":"files.write","at":"2024-01-01T00:00:00+00:00","outcome":"success"}"#,
+            r#"{"event_type":"process.killed","at":"2024-01-02T00:00:00+00:00","outcome":"success"}"#,
+            r#"{"event_type":"files.delete","at":"2024-01-03T00:00:00+00:00","outcome":"success"}"#,
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+
+        let (events, _) = read_audit_tail(&path, 10, None, Some("files.")).unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0]["event_type"], "files.delete");
+        assert_eq!(events[1]["event_type"], "files.write");
+    }
+
+    #[test]
+    fn read_audit_tail_skips_malformed_lines() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("audit.log");
+        let lines = [
+            r#"{"event_type":"a","at":"2024-01-01T00:00:00+00:00","outcome":"success"}"#,
+            r#"not json at all"#,
+            r#"{"event_type":"b","at":"2024-01-02T00:00:00+00:00","outcome":"success"}"#,
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+
+        let (events, _) = read_audit_tail(&path, 10, None, None).unwrap();
+        assert_eq!(events.len(), 2);
+    }
+
+    #[test]
+    fn read_audit_tail_missing_file_returns_empty() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("nope.log");
+        let (events, more) = read_audit_tail(&path, 10, None, None).unwrap();
+        assert!(events.is_empty());
+        assert!(!more);
+    }
+
+    #[test]
+    fn read_audit_tail_compares_timestamps_chronologically_not_lexically() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("audit.log");
+        // Boundary at 2024-01-01T10:00:00+05:30 == 2024-01-01T04:30:00 UTC.
+        // "before": 2024-01-01T03:00:00+00:00 == 03:00 UTC, chronologically
+        //   AND lexically older than the boundary — included by both compares.
+        // "after":  2024-01-01T05:00:00+00:00 == 05:00 UTC, chronologically
+        //   AFTER the boundary (so must be excluded) but the raw string
+        //   `2024-01-01T05:00:00+00:00` sorts LEXICALLY before
+        //   `2024-01-01T10:00:00+05:30` (position 11: '0' < '1'). A naïve
+        //   lex compare would wrongly include it.
+        let lines = [
+            r#"{"event_type":"before","at":"2024-01-01T03:00:00+00:00","outcome":"success"}"#,
+            r#"{"event_type":"after","at":"2024-01-01T05:00:00+00:00","outcome":"success"}"#,
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+
+        let (events, _) =
+            read_audit_tail(&path, 10, Some("2024-01-01T10:00:00+05:30"), None).unwrap();
+        assert_eq!(events.len(), 1, "only 'before' should pass the boundary");
+        assert_eq!(events[0]["event_type"], "before");
+    }
+
+    #[test]
+    fn read_audit_tail_skips_events_with_unparseable_at_under_before_ts() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("audit.log");
+        let lines = [
+            r#"{"event_type":"a","at":"2024-01-01T00:00:00+00:00","outcome":"success"}"#,
+            r#"{"event_type":"junk","at":"not a timestamp","outcome":"success"}"#,
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        // With a before_ts filter, the junk-at event is dropped (it can't be
+        // compared). Without one, both come back.
+        let (filtered, _) =
+            read_audit_tail(&path, 10, Some("2024-12-31T00:00:00+00:00"), None).unwrap();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0]["event_type"], "a");
+
+        let (all, _) = read_audit_tail(&path, 10, None, None).unwrap();
+        assert_eq!(all.len(), 2);
     }
 }
