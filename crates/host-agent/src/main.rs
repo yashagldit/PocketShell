@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
 use host_core::api::BackendClient;
-use host_core::audit::{write_audit_event, AuditEvent};
+use host_core::audit::{write_audit_event, write_audit_event_with_store, AuditEvent};
 use host_core::auth::safe_refresh_if_needed;
 use host_core::config::AppConfig;
 use host_core::daemon;
@@ -366,11 +366,7 @@ async fn pair(config: AppConfig, code: Option<String>, reset: bool) -> Result<()
         println!("new mobile device approved on this host");
         println!("the device can now connect to this host");
 
-        let _ = write_audit_event(AuditEvent {
-            event_type: "device_approved".to_string(),
-            host_id: Some(response.host.id.clone()),
-            ..AuditEvent::new("device_approved")
-        });
+        let _ = write_audit_event_with_store(AuditEvent::new("device_approved"), &store);
     } else {
         // New-host flow OR reconnect (state lost, keypair recovered): save
         // host identity and tokens.
@@ -386,11 +382,7 @@ async fn pair(config: AppConfig, code: Option<String>, reset: bool) -> Result<()
         });
         store.save().context("persisting local state")?;
 
-        let _ = write_audit_event(AuditEvent {
-            event_type: "login_success".to_string(),
-            host_id: Some(response.host.id.clone()),
-            ..AuditEvent::new("login_success")
-        });
+        let _ = write_audit_event_with_store(AuditEvent::new("login_success"), &store);
 
         if was_reconnect {
             println!(
@@ -685,11 +677,7 @@ async fn pair_qr_new_host(config: AppConfig, mut store: StateStore) -> Result<()
     });
     store.save().context("persisting local state")?;
 
-    let _ = write_audit_event(AuditEvent {
-        event_type: "login_success".to_string(),
-        host_id: Some(host.id.clone()),
-        ..AuditEvent::new("login_success")
-    });
+    let _ = write_audit_event_with_store(AuditEvent::new("login_success"), &store);
 
     let host_id = host.id.clone();
     persist_paired_device(
@@ -899,12 +887,13 @@ async fn pair_qr_device_add(config: AppConfig, mut store: StateStore) -> Result<
     )
     .await?;
 
-    let _ = write_audit_event(AuditEvent {
-        event_type: "device_approved".to_string(),
-        mobile_device_id: Some(mobile_device_id.clone()),
-        host_id: Some(host.host_id.clone()),
-        ..AuditEvent::new("device_approved")
-    });
+    let _ = write_audit_event_with_store(
+        AuditEvent {
+            mobile_device_id: Some(mobile_device_id.clone()),
+            ..AuditEvent::new("device_approved")
+        },
+        &store,
+    );
 
     println!("device added: {mobile_device_id}");
 
@@ -927,6 +916,11 @@ async fn pair_qr_device_add(config: AppConfig, mut store: StateStore) -> Result<
 
 async fn logout(reset: bool) -> Result<()> {
     let mut store = StateStore::load().context("loading local state")?;
+
+    // Capture identity BEFORE we wipe state so the audit record can name the
+    // host that just logged out.
+    let host_id = store.state.host.as_ref().map(|h| h.host_id.clone());
+    let user_id = store.state.host.as_ref().map(|h| h.user_id.clone());
 
     // Best-effort server-side revocation BEFORE we wipe local state.
     // Without this the host's 365-day refresh token would remain valid
@@ -989,11 +983,11 @@ async fn logout(reset: bool) -> Result<()> {
 
     store.save().context("persisting state")?;
 
-    let _ = write_audit_event(AuditEvent::new(if reset {
-        "logout_reset"
-    } else {
-        "logout"
-    }));
+    let _ = write_audit_event(AuditEvent {
+        host_id,
+        user_id,
+        ..AuditEvent::new(if reset { "logout_reset" } else { "logout" })
+    });
 
     println!("logged out");
     Ok(())
@@ -1085,6 +1079,17 @@ async fn uninstall_cmd(yes: bool, keep_data: bool, keep_binary: bool) -> Result<
     // teardown path, so it must keep going and clear secrets directly.
     let loaded = load_state_for_uninstall();
 
+    // Capture identity BEFORE the state-wipe blocks below so the audit record
+    // can name what's being uninstalled.
+    let uninstall_host_id = loaded
+        .as_ref()
+        .and_then(|s| s.state.host.as_ref())
+        .map(|h| h.host_id.clone());
+    let uninstall_user_id = loaded
+        .as_ref()
+        .and_then(|s| s.state.host.as_ref())
+        .map(|h| h.user_id.clone());
+
     // Best-effort server-side revocation before wiping local refresh token —
     // otherwise the 365-day refresh would remain valid on the backend.
     let refresh = refresh_token_for_uninstall(loaded.as_ref());
@@ -1142,7 +1147,15 @@ async fn uninstall_cmd(yes: bool, keep_data: bool, keep_binary: bool) -> Result<
     // Write the audit event before removing the state dir. Skipped when
     // !keep_data — the log file is about to be deleted anyway.
     if keep_data {
-        let _ = write_audit_event(AuditEvent::new("uninstall"));
+        let _ = write_audit_event(AuditEvent {
+            host_id: uninstall_host_id,
+            user_id: uninstall_user_id,
+            details: Some(serde_json::json!({
+                "keep_data": keep_data,
+                "keep_binary": keep_binary,
+            })),
+            ..AuditEvent::new("uninstall")
+        });
     }
 
     if !keep_data {
@@ -1328,12 +1341,13 @@ async fn devices(config: AppConfig, command: DeviceCommands) -> Result<()> {
             store.remove_trusted_device(&revoked.mobile_device_id);
             store.save().context("saving state")?;
 
-            let _ = write_audit_event(AuditEvent {
-                event_type: "device_revoked".to_string(),
-                mobile_device_id: Some(revoked.mobile_device_id.clone()),
-                host_id: Some(host_id.clone()),
-                ..AuditEvent::new("device_revoked")
-            });
+            let _ = write_audit_event_with_store(
+                AuditEvent {
+                    mobile_device_id: Some(revoked.mobile_device_id.clone()),
+                    ..AuditEvent::new("device_revoked")
+                },
+                &store,
+            );
 
             println!("revoked device {}", revoked.mobile_device_id);
         }
@@ -1370,21 +1384,21 @@ fn daemon_start() -> Result<()> {
     // install_and_start tries service manager first, falls back to background process
     match host_core::service::install_and_start() {
         Ok(host_core::service::ServiceStatus::Installed) => {
-            let _ = write_audit_event(AuditEvent::new("daemon_start_command"));
+            cli_audit(AuditEvent::new("daemon_start_command"));
             println!("daemon started via system service (auto-starts on boot)");
         }
         Ok(host_core::service::ServiceStatus::InstalledSystem) => {
-            let _ = write_audit_event(AuditEvent::new("daemon_start_command"));
+            cli_audit(AuditEvent::new("daemon_start_command"));
             println!("daemon installed as a boot service and started");
             println!("it will auto-start on boot and restart on crash");
         }
         Ok(host_core::service::ServiceStatus::InstalledWithoutBootPersistence) => {
-            let _ = write_audit_event(AuditEvent::new("daemon_start_command"));
+            cli_audit(AuditEvent::new("daemon_start_command"));
             println!("daemon started via systemd user service");
             print_boot_persistence_warning();
         }
         Ok(host_core::service::ServiceStatus::InstalledButStartedDaemon) => {
-            let _ = write_audit_event(AuditEvent::new("daemon_start_command"));
+            cli_audit(AuditEvent::new("daemon_start_command"));
             println!("daemon service installed and enabled");
             println!("daemon started in background because the systemd user bus is unavailable");
             print_boot_persistence_warning();
@@ -1393,7 +1407,7 @@ fn daemon_start() -> Result<()> {
             println!("daemon is already running via system service");
         }
         Ok(host_core::service::ServiceStatus::StartedDaemon) => {
-            let _ = write_audit_event(AuditEvent::new("daemon_start_command"));
+            cli_audit(AuditEvent::new("daemon_start_command"));
             println!("daemon started in background");
         }
         Err(e) => {
@@ -1430,7 +1444,7 @@ fn daemon_stop() -> Result<()> {
     }
 
     if stopped {
-        let _ = write_audit_event(AuditEvent::new("daemon_stop_command"));
+        cli_audit(AuditEvent::new("daemon_stop_command"));
         println!("daemon stopped");
     } else {
         println!("daemon not running");
@@ -1476,7 +1490,7 @@ fn daemon_restart() -> Result<()> {
     let status =
         host_core::service::restart().map_err(|e| anyhow!("failed to restart daemon: {e}"))?;
 
-    let _ = write_audit_event(AuditEvent::new("daemon_restart_command"));
+    cli_audit(AuditEvent::new("daemon_restart_command"));
 
     match status {
         RestartStatus::RestartedService => println!("daemon restarted via system service"),
@@ -1498,9 +1512,23 @@ async fn update_cmd(
 
     print!("checking for updates ({base_url})...");
     let _ = io::stdout().flush();
-    let info = update::check(&base_url, current_version, version.as_deref())
-        .await
-        .context("checking for update")?;
+    let info = match update::check(&base_url, current_version, version.as_deref()).await {
+        Ok(info) => info,
+        Err(e) => {
+            // Failed update checks are security-relevant: a sustained pattern
+            // can indicate a malicious mirror redirect or an attacker blocking
+            // legit upgrades. Audit before propagating the error.
+            cli_audit(AuditEvent {
+                details: Some(serde_json::json!({
+                    "stage": "check",
+                    "base_url": base_url,
+                    "current_version": current_version,
+                })),
+                ..AuditEvent::new("self_update").failed(e.to_string())
+            });
+            return Err(anyhow::Error::new(e).context("checking for update"));
+        }
+    };
     println!(" done");
 
     println!(
@@ -1530,16 +1558,45 @@ async fn update_cmd(
     }
 
     println!("downloading and installing...");
-    let installed = update::download_and_install_with(
+    let installed = match update::download_and_install_with(
         &info,
         &update::InstallOptions {
             skip_cosign: insecure_skip_verify,
         },
     )
     .await
-    .context("installing update")?;
+    {
+        Ok(p) => p,
+        Err(e) => {
+            // Install failures (cosign rejection, sha256 mismatch, download
+            // error, write error) are the single most security-relevant point
+            // in the update path. Without auditing them, a supply-chain probe
+            // that gets cosign-rejected leaves no trace — only a successful
+            // compromise would be visible.
+            cli_audit(AuditEvent {
+                details: Some(serde_json::json!({
+                    "stage": "install",
+                    "from_version": info.current_version,
+                    "to_version": info.target_version,
+                    "target_triple": info.target_triple,
+                    "skip_cosign": insecure_skip_verify,
+                })),
+                ..AuditEvent::new("self_update").failed(e.to_string())
+            });
+            return Err(anyhow::Error::new(e).context("installing update"));
+        }
+    };
 
-    let _ = write_audit_event(AuditEvent::new("self_update"));
+    cli_audit(AuditEvent {
+        target: Some(installed.display().to_string()),
+        details: Some(serde_json::json!({
+            "from_version": info.current_version,
+            "to_version": info.target_version,
+            "target_triple": info.target_triple,
+            "skip_cosign": insecure_skip_verify,
+        })),
+        ..AuditEvent::new("self_update")
+    });
 
     println!(
         "✓ installed {} → {}",
@@ -2320,6 +2377,49 @@ fn generate_keypair() -> (String, String) {
 fn read_pid(path: &PathBuf) -> Option<i32> {
     let raw = fs::read_to_string(path).ok()?;
     raw.trim().parse::<i32>().ok()
+}
+
+/// Best-effort host identity for CLI-side audit events. Returns
+/// `(host_id, user_id)`; both are `None` when state hasn't been written yet
+/// (pre-pair) or state.json is unreadable.
+///
+/// **Reads state.json directly** via fs::read + serde_json — does NOT call
+/// `StateStore::load()`. The full load() path calls `std::process::exit(2)`
+/// on parse failure (to protect the daemon from identity loss) and consults
+/// the OS keyring for missing secrets. Neither is appropriate for an audit
+/// breadcrumb: a corrupt state.json or a hung keyring must not kill or
+/// stall a `pocketshell daemon stop` whose only remaining work is the
+/// audit write.
+fn cli_audit_identity() -> (Option<String>, Option<String>) {
+    let paths = match AppConfig::paths() {
+        Ok(p) => p,
+        Err(_) => return (None, None),
+    };
+    let raw = match fs::read_to_string(&paths.state_file) {
+        Ok(s) if !s.trim().is_empty() => s,
+        _ => return (None, None),
+    };
+    let state: AgentState = match serde_json::from_str(&raw) {
+        Ok(s) => s,
+        Err(_) => return (None, None),
+    };
+    let host = state.host.as_ref();
+    (
+        host.map(|h| h.host_id.clone()),
+        host.map(|h| h.user_id.clone()),
+    )
+}
+
+/// Emit a CLI audit event with host_id/user_id auto-filled from state.json.
+fn cli_audit(mut event: AuditEvent) {
+    let (host_id, user_id) = cli_audit_identity();
+    if event.host_id.is_none() {
+        event.host_id = host_id;
+    }
+    if event.user_id.is_none() {
+        event.user_id = user_id;
+    }
+    let _ = write_audit_event(event);
 }
 
 fn pid_running(pid: i32) -> bool {

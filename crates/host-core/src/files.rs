@@ -40,6 +40,13 @@ const DENIED_HOME_FILES: &[&str] = &[
     ".netrc",
 ];
 
+/// Home-relative directories that are ALWAYS allowed, even when they
+/// would otherwise be caught by the absolute denylist (e.g. `/root` for
+/// a root-installed daemon). Used so coding-agent session history under
+/// `~/.claude/projects/...` and `~/.codex/sessions/...` is readable
+/// regardless of where HOME resolves.
+const ALLOWED_HOME_PREFIXES: &[&str] = &[".claude", ".codex"];
+
 /// System-wide directories that the file channel must NEVER expose,
 /// independently of where `$HOME` points. Protects against a daemon that
 /// somehow ends up running with elevated privileges — `geteuid` should
@@ -87,6 +94,7 @@ struct DeniedPaths {
     prefixes: Vec<PathBuf>,
     files: Vec<PathBuf>,
     absolute_prefixes: Vec<PathBuf>,
+    allowed_prefixes: Vec<PathBuf>,
 }
 
 fn build_denied_paths(home: &Path) -> DeniedPaths {
@@ -94,10 +102,16 @@ fn build_denied_paths(home: &Path) -> DeniedPaths {
         prefixes: DENIED_HOME_PREFIXES.iter().map(|p| home.join(p)).collect(),
         files: DENIED_HOME_FILES.iter().map(|f| home.join(f)).collect(),
         absolute_prefixes: DENIED_ABSOLUTE_PREFIXES.iter().map(PathBuf::from).collect(),
+        allowed_prefixes: ALLOWED_HOME_PREFIXES.iter().map(|p| home.join(p)).collect(),
     }
 }
 
 fn is_path_denied_against(path: &Path, denied: &DeniedPaths) -> bool {
+    // Explicit allowlist (~/.claude, ~/.codex) overrides every deny rule so
+    // root-installed daemons can still serve coding-agent session history.
+    if denied.allowed_prefixes.iter().any(|p| path.starts_with(p)) {
+        return false;
+    }
     denied.prefixes.iter().any(|p| path.starts_with(p))
         || denied.files.iter().any(|f| path == f)
         || denied.absolute_prefixes.iter().any(|p| path.starts_with(p))
@@ -224,9 +238,28 @@ struct FileEntry {
 }
 
 /// Top-level dispatcher for file channel actions.
+/// Context for auditing a file operation. The audit log records who touched
+/// what (AU-3) so every dispatch carries the requesting device plus the host
+/// identity. Empty strings stand for "unattributed" (e.g. local CLI use of
+/// `handle_files_action`).
+#[derive(Debug, Clone, Default)]
+pub struct FileActionContext {
+    pub mobile_device_id: String,
+    pub host_id: String,
+    pub user_id: String,
+}
+
 pub async fn handle_files_action(
     payload: &serde_json::Value,
     agent_router: &crate::agent_session::AgentRouter,
+) -> Result<serde_json::Value> {
+    handle_files_action_with_context(payload, agent_router, &FileActionContext::default()).await
+}
+
+pub async fn handle_files_action_with_context(
+    payload: &serde_json::Value,
+    agent_router: &crate::agent_session::AgentRouter,
+    ctx: &FileActionContext,
 ) -> Result<serde_json::Value> {
     let action = payload
         .get("action")
@@ -254,105 +287,250 @@ pub async fn handle_files_action(
         .to_string();
 
     let payload = payload.clone();
+    let ctx = ctx.clone();
 
-    tokio::task::spawn_blocking(move || match action.as_str() {
-        "list_dir" => {
-            let offset = payload.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-            let limit = payload
-                .get("limit")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(MAX_LIST_DIR_PAGE_SIZE as u64) as usize;
-            let include_hidden = payload
-                .get("include_hidden")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true);
-            list_dir(&path_str, offset, limit, include_hidden)
-        }
-        "read_file" => {
-            let offset = payload.get("offset").and_then(|v| v.as_u64()).unwrap_or(0);
-            let limit = payload
-                .get("limit")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(MAX_READ_SIZE);
-            read_file(&path_str, offset, limit)
-        }
-        "stat" => stat_path(&path_str),
-        "mkdir" => mkdir(&path_str),
-        "delete" => delete_path(&path_str),
-        "rename" => {
-            let new_path = payload
-                .get("new_path")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            rename_path(&path_str, new_path)
-        }
-        "copy" => {
-            let destination = payload
-                .get("destination")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let overwrite = payload
-                .get("overwrite")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            copy_path(&path_str, destination, overwrite)
-        }
-        "move" => {
-            let destination = payload
-                .get("destination")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let overwrite = payload
-                .get("overwrite")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            move_path(&path_str, destination, overwrite)
-        }
-        "write_file" => {
-            let data_b64 = payload
-                .get("data_b64")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let append = payload
-                .get("append")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            write_file(&path_str, data_b64, append)
-        }
-        "download" => download_file(&path_str),
-        "search" => {
-            let query = payload.get("query").and_then(|v| v.as_str()).unwrap_or("");
-            let max_results = payload
-                .get("max_results")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(200) as usize;
-            let max_depth = payload
-                .get("max_depth")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(10) as usize;
-            let files_only = payload
-                .get("files_only")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let include_hidden = payload
-                .get("include_hidden")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true);
-            search_files(
-                &path_str,
-                query,
-                max_results,
-                max_depth,
-                files_only,
-                include_hidden,
-            )
-        }
-        _ => Err(HostError::Backend(format!(
-            "unknown files action: {action}"
-        ))),
+    tokio::task::spawn_blocking(move || {
+        // Run the operation, then emit an audit event for MUTATIONS only.
+        // Reads (list_dir / read_file / stat / search) are intentionally not
+        // audited — industry consensus is that they are noise (Teleport, AWS
+        // SSM, CyberArk all omit them unless the data is regulated).
+        let result = match action.as_str() {
+            "list_dir" => {
+                let offset = payload.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                let limit = payload
+                    .get("limit")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(MAX_LIST_DIR_PAGE_SIZE as u64) as usize;
+                let include_hidden = payload
+                    .get("include_hidden")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                list_dir(&path_str, offset, limit, include_hidden)
+            }
+            "read_file" => {
+                let offset = payload.get("offset").and_then(|v| v.as_u64()).unwrap_or(0);
+                let limit = payload
+                    .get("limit")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(MAX_READ_SIZE);
+                read_file(&path_str, offset, limit)
+            }
+            "stat" => stat_path(&path_str),
+            "mkdir" => audit_mutation(&ctx, "file.mkdir", &path_str, None, None, mkdir(&path_str)),
+            "delete" => {
+                // Capture recursive flag before the operation so the audit record
+                // reflects what was actually destroyed even after the path is gone.
+                let recursive_details = resolve_path(&path_str)
+                    .ok()
+                    .and_then(|p| fs::metadata(&p).ok())
+                    .map(|m| serde_json::json!({ "recursive": m.is_dir() }));
+                audit_mutation(&ctx, "file.delete", &path_str, None, recursive_details, delete_path(&path_str))
+            }
+            "rename" => {
+                let new_path = payload
+                    .get("new_path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                audit_mutation(
+                    &ctx,
+                    "file.rename",
+                    &path_str,
+                    Some(new_path),
+                    None,
+                    rename_path(&path_str, new_path),
+                )
+            }
+            "copy" => {
+                let destination = payload
+                    .get("destination")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let overwrite = payload
+                    .get("overwrite")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                audit_mutation(
+                    &ctx,
+                    "file.copy",
+                    &path_str,
+                    Some(destination),
+                    None,
+                    copy_path(&path_str, destination, overwrite),
+                )
+            }
+            "move" => {
+                let destination = payload
+                    .get("destination")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let overwrite = payload
+                    .get("overwrite")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                audit_mutation(
+                    &ctx,
+                    "file.move",
+                    &path_str,
+                    Some(destination),
+                    None,
+                    move_path(&path_str, destination, overwrite),
+                )
+            }
+            "write_file" => {
+                let data_b64 = payload
+                    .get("data_b64")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let append = payload
+                    .get("append")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                audit_mutation(
+                    &ctx,
+                    if append { "file.append" } else { "file.write" },
+                    &path_str,
+                    None,
+                    None,
+                    write_file(&path_str, data_b64, append),
+                )
+            }
+            "download" => audit_mutation(&ctx, "file.download", &path_str, None, None, download_file(&path_str)),
+            "search" => {
+                let query = payload.get("query").and_then(|v| v.as_str()).unwrap_or("");
+                let max_results = payload
+                    .get("max_results")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(200) as usize;
+                let max_depth = payload
+                    .get("max_depth")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(10) as usize;
+                let files_only = payload
+                    .get("files_only")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let include_hidden = payload
+                    .get("include_hidden")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                search_files(
+                    &path_str,
+                    query,
+                    max_results,
+                    max_depth,
+                    files_only,
+                    include_hidden,
+                )
+            }
+            _ => {
+                // Unknown actions are audit-worthy: a device probing the file
+                // channel with junk operation names is exactly the kind of
+                // signal AU-2 anomaly detection wants.
+                emit_files_audit(
+                    &ctx,
+                    "file.unknown_action",
+                    &path_str,
+                    None,
+                    Some(serde_json::json!({ "action": action })),
+                    crate::audit::Outcome::Denied,
+                    Some("unknown_action".to_string()),
+                );
+                Err(HostError::Backend(format!(
+                    "unknown files action: {action}"
+                )))
+            }
+        };
+        result
     })
     .await
     .map_err(|e| HostError::Backend(format!("file operation panicked: {e}")))?
+}
+
+/// Classify a HostError into a short, stable reason code for audit. Raw
+/// `e.to_string()` can leak absolute paths and locale-dependent OS strings;
+/// codes give SOC dashboards a finite, queryable vocabulary.
+fn classify_file_error(err: &HostError) -> (crate::audit::Outcome, String) {
+    use crate::audit::Outcome;
+    let msg = err.to_string();
+    // Protected-path denylist hits (DENIED_HOME_PREFIXES / DENIED_HOME_FILES)
+    // are policy decisions, not I/O failures. Map them to outcome=denied.
+    if msg.contains("PROTECTED_PATH") || msg.contains("protected path") {
+        (Outcome::Denied, "protected_path".to_string())
+    } else if msg.contains("payload too large") || msg.contains("base64 bytes exceeds limit") {
+        (Outcome::Denied, "payload_too_large".to_string())
+    } else if msg.contains("path not found") || msg.contains("No such file") {
+        (Outcome::Failed, "not_found".to_string())
+    } else if msg.contains("permission denied") || msg.contains("Permission denied") {
+        (Outcome::Failed, "io_permission_denied".to_string())
+    } else if msg.contains("invalid base64") {
+        (Outcome::Denied, "invalid_payload".to_string())
+    } else {
+        (Outcome::Failed, "io_error".to_string())
+    }
+}
+
+/// Emit a `file.*` audit event for a mutation, then pass the result through
+/// unchanged. Failed/denied paths are classified into stable reason codes
+/// rather than pasting raw error messages.
+fn audit_mutation(
+    ctx: &FileActionContext,
+    event_type: &str,
+    path: &str,
+    destination: Option<&str>,
+    extra_details: Option<serde_json::Value>,
+    result: Result<serde_json::Value>,
+) -> Result<serde_json::Value> {
+    use crate::audit::Outcome;
+    let (outcome, reason) = match &result {
+        Ok(_) => (Outcome::Success, None),
+        Err(e) => {
+            let (oc, code) = classify_file_error(e);
+            (oc, Some(code))
+        }
+    };
+    let mut details = extra_details.unwrap_or(serde_json::Value::Null);
+    if let Some(d) = destination {
+        if details.is_null() {
+            details = serde_json::json!({ "destination": d });
+        } else if let Some(obj) = details.as_object_mut() {
+            obj.insert("destination".to_string(), serde_json::json!(d));
+        }
+    }
+    let details_field = if details.is_null() { None } else { Some(details) };
+    emit_files_audit(ctx, event_type, path, None, details_field, outcome, reason);
+    result
+}
+
+/// Shared writer for file-channel audit events. Carries host_id and user_id
+/// from the context (vs. the bare write_audit_event helper) so file events
+/// match the AU-3 attribution of every other event in the audit log.
+fn emit_files_audit(
+    ctx: &FileActionContext,
+    event_type: &str,
+    path: &str,
+    _session_id: Option<&str>,
+    details: Option<serde_json::Value>,
+    outcome: crate::audit::Outcome,
+    reason: Option<String>,
+) {
+    use crate::audit::{write_audit_event, AuditEvent};
+    let nonempty = |s: &str| -> Option<String> {
+        if s.is_empty() {
+            None
+        } else {
+            Some(s.to_string())
+        }
+    };
+    let _ = write_audit_event(AuditEvent {
+        outcome,
+        reason,
+        host_id: nonempty(&ctx.host_id),
+        user_id: nonempty(&ctx.user_id),
+        mobile_device_id: nonempty(&ctx.mobile_device_id),
+        target: Some(path.to_string()),
+        details,
+        ..AuditEvent::new(event_type)
+    });
 }
 
 fn resolve_path(raw: &str) -> Result<PathBuf> {
@@ -913,16 +1091,8 @@ fn write_file(path_str: &str, data_b64: &str, append: bool) -> Result<serde_json
     // before the decoded-length check below could fire.
     let max_b64_len = (MAX_FILE_SIZE as usize).saturating_mul(4) / 3 + 4;
     if data_b64.len() > max_b64_len {
-        let _ = crate::audit::write_audit_event(crate::audit::AuditEvent {
-            event_type: "file_write_rejected_oversize".to_string(),
-            details: Some(serde_json::json!({
-                "path": path_str,
-                "b64_len": data_b64.len(),
-                "max_b64_len": max_b64_len,
-                "max_file_size": MAX_FILE_SIZE,
-            })),
-            ..crate::audit::AuditEvent::new("file_write_rejected_oversize")
-        });
+        // Audit is handled by the outer audit_mutation wrapper, which sees
+        // this Err and classifies it as outcome=denied reason=payload_too_large.
         return Err(HostError::Backend(format!(
             "file payload too large: {} base64 bytes exceeds limit of {} (max file size {} bytes)",
             data_b64.len(),
@@ -1296,6 +1466,46 @@ mod tests {
         assert!(is_glob("*.rs"));
         assert!(!is_glob("plain"));
         assert!(!is_glob(""));
+    }
+
+    #[test]
+    fn classify_file_error_protected_path_is_denied() {
+        use crate::audit::Outcome;
+        let err = HostError::Backend("PROTECTED_PATH: access denied for /home/u/.ssh".into());
+        let (oc, code) = classify_file_error(&err);
+        assert_eq!(oc, Outcome::Denied);
+        assert_eq!(code, "protected_path");
+    }
+
+    #[test]
+    fn classify_file_error_oversize_is_denied() {
+        use crate::audit::Outcome;
+        let err = HostError::Backend(
+            "file payload too large: 999 base64 bytes exceeds limit of 100".into(),
+        );
+        let (oc, code) = classify_file_error(&err);
+        assert_eq!(oc, Outcome::Denied);
+        assert_eq!(code, "payload_too_large");
+    }
+
+    #[test]
+    fn classify_file_error_not_found_is_failed() {
+        use crate::audit::Outcome;
+        let err = HostError::Backend("path not found: /missing: No such file".into());
+        let (oc, code) = classify_file_error(&err);
+        assert_eq!(oc, Outcome::Failed);
+        // "path not found" branch wins before "No such file" — same outcome,
+        // first match by classification order.
+        assert_eq!(code, "not_found");
+    }
+
+    #[test]
+    fn classify_file_error_generic_io_is_failed() {
+        use crate::audit::Outcome;
+        let err = HostError::Backend("disk full or whatever".into());
+        let (oc, code) = classify_file_error(&err);
+        assert_eq!(oc, Outcome::Failed);
+        assert_eq!(code, "io_error");
     }
 
     #[test]
@@ -1960,5 +2170,81 @@ mod tests {
         assert!(!is_path_denied_against(Path::new("/various/file.txt"), &d));
         // `/var/log` is denied but `/var/loghub` is a different dir.
         assert!(!is_path_denied_against(Path::new("/var/loghub/file"), &d));
+    }
+
+    #[test]
+    fn allowlist_overrides_root_absolute_deny_for_coding_agents() {
+        // Root-installed daemons keep coding-agent session history at
+        // /root/.claude/projects/... and /root/.codex/sessions/...; the
+        // allowlist must override the absolute /root deny.
+        let home = PathBuf::from("/root");
+        let d = build_denied_paths(&home);
+
+        assert!(!is_path_denied_against(
+            Path::new("/root/.claude/projects/proj/abc.jsonl"),
+            &d
+        ));
+        assert!(!is_path_denied_against(
+            Path::new("/root/.codex/sessions/2026-05-26/history.jsonl"),
+            &d
+        ));
+        // The whole agent dir is allowlisted (per product decision), so
+        // credential files inside it are reachable too.
+        assert!(!is_path_denied_against(
+            Path::new("/root/.claude/.credentials.json"),
+            &d
+        ));
+
+        // The allowlist must NOT punch holes elsewhere under /root —
+        // ~/.ssh, ~/.aws, the rest of /root all stay blocked.
+        assert!(is_path_denied_against(Path::new("/root/.ssh/id_rsa"), &d));
+        assert!(is_path_denied_against(
+            Path::new("/root/.aws/credentials"),
+            &d
+        ));
+        assert!(is_path_denied_against(Path::new("/root/secrets.txt"), &d));
+    }
+
+    #[test]
+    fn allowlist_works_for_regular_home() {
+        // Same allow rule applies when home is a normal user dir — even
+        // though .claude isn't in the deny list today, the allowlist makes
+        // the contract explicit and future-proof.
+        let home = PathBuf::from("/home/alice");
+        let d = build_denied_paths(&home);
+
+        assert!(!is_path_denied_against(
+            Path::new("/home/alice/.claude/projects/foo/bar.jsonl"),
+            &d
+        ));
+        assert!(!is_path_denied_against(
+            Path::new("/home/alice/.codex/sessions/log"),
+            &d
+        ));
+        // Sibling that merely starts with `.claude` is not under the
+        // allowed prefix — the deny chain still applies.
+        assert!(!is_path_denied_against(
+            Path::new("/home/alice/.claudette/notes.txt"),
+            &d
+        ));
+    }
+
+    #[test]
+    fn allowlist_does_not_apply_when_path_outside_home() {
+        // A `.claude` dir somewhere weird (not the resolved HOME) is NOT
+        // allowed — the allowlist is anchored to the daemon's home.
+        let home = PathBuf::from("/home/alice");
+        let d = build_denied_paths(&home);
+
+        // /etc is absolute-denied; a stray .claude under it isn't excused.
+        assert!(is_path_denied_against(
+            Path::new("/etc/.claude/leak.txt"),
+            &d
+        ));
+        // /var/lib likewise.
+        assert!(is_path_denied_against(
+            Path::new("/var/lib/.codex/leak.txt"),
+            &d
+        ));
     }
 }

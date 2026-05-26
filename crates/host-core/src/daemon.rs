@@ -3,7 +3,7 @@ use crate::agent_session::{
     SpawnConfig as AgentSpawnConfig,
 };
 use crate::api::BackendClient;
-use crate::audit::{write_audit_event, AuditEvent};
+use crate::audit::{write_audit_event_with_store, AuditEvent};
 use crate::auth::{refresh_token_jwt_expired, safe_refresh_if_needed};
 use crate::config::AppConfig;
 use crate::discovery::SessionDiscovery;
@@ -136,6 +136,150 @@ fn jittered(base: Duration) -> Duration {
     let delta = rand::thread_rng().gen_range(-spread..=spread);
     let final_ms = (base_ms + delta).max(0) as u64;
     Duration::from_millis(final_ms)
+}
+
+/// Build a `FileActionContext` populated with the current host identity so
+/// file.* audit events carry host_id and user_id (AU-3 attribution) in
+/// addition to the requesting mobile_device_id.
+fn build_file_action_context(
+    store: &StateStore,
+    mobile_device_id: &str,
+) -> crate::files::FileActionContext {
+    let host = store.state.host.as_ref();
+    crate::files::FileActionContext {
+        mobile_device_id: mobile_device_id.to_string(),
+        host_id: host.map(|h| h.host_id.clone()).unwrap_or_default(),
+        user_id: host.map(|h| h.user_id.clone()).unwrap_or_default(),
+    }
+}
+
+/// Classify a `verify_ws_message_auth` error string into a precise event type.
+/// verify_ws_message_auth returns a fixed set of strings; matching by exact
+/// prefix (not substring) avoids labelling structural errors like
+/// "missing payload_hash" or "missing signature" as cryptographic failures.
+fn classify_ws_auth_failure(reason: &str) -> &'static str {
+    // Cryptographic failures: signature verification, hash mismatch, replay.
+    if reason == "replayed nonce" {
+        return "crypto.replay_detected";
+    }
+    if reason == "payload hash mismatch"
+        || reason.starts_with("ed25519 signature did not verify")
+        || reason.starts_with("invalid ed25519 signature")
+        || reason.starts_with("invalid signature base64")
+        || reason.starts_with("invalid ed25519 public key")
+        || reason.starts_with("invalid public key base64")
+        || reason == "public key must be 32 bytes"
+    {
+        return "crypto.signature_failed";
+    }
+    // Trust/policy and structural failures (missing fields, version mismatch,
+    // host_id mismatch, no pinned key, timestamp skew) — all authz failures
+    // from the perspective of the protocol: the request did not authenticate.
+    "authz.denied"
+}
+
+/// Emit a channel.authenticated / channel.auth_failed / authz.denied audit
+/// event for a WebRTC data-channel auth handshake (terminal session, control,
+/// stats, files, agent).
+///
+/// The combined "verify_device_auth → device_permission_result" check can fail
+/// for two distinct reasons that callers must NOT conflate: cryptographic
+/// signature failure (real attack signal) and post-auth permission denial
+/// (routine policy). This helper inspects the error string and emits:
+///   - `channel.authenticated` on success
+///   - `authz.denied` (operation=channel_kind, reason=permission_denied:*)
+///     when the crypto check passed but the permission check failed
+///   - `channel.auth_failed` for cryptographic / structural failures
+///
+/// `channel_target` is the channel-specific id (session_id for terminal,
+/// agent_id for agent, None for control/stats/files).
+fn audit_channel_auth(
+    store: &StateStore,
+    channel_kind: &str,
+    mobile_device_id: &str,
+    channel_target: Option<String>,
+    result: std::result::Result<(), String>,
+) {
+    let session_id = if channel_kind == "terminal" {
+        channel_target.clone()
+    } else {
+        None
+    };
+    match result {
+        Ok(()) => {
+            let _ = write_audit_event_with_store(
+                AuditEvent {
+                    mobile_device_id: Some(mobile_device_id.to_string()),
+                    session_id,
+                    target: channel_target,
+                    details: Some(serde_json::json!({ "channel": channel_kind })),
+                    ..AuditEvent::new("channel.authenticated")
+                },
+                store,
+            );
+        }
+        Err(reason) if reason.starts_with("permission_denied:") => {
+            // Crypto auth succeeded; policy denied. Route to authz.denied so
+            // SOC dashboards don't misread it as a cryptographic failure.
+            let _ = write_audit_event_with_store(
+                AuditEvent {
+                    mobile_device_id: Some(mobile_device_id.to_string()),
+                    session_id,
+                    target: channel_target,
+                    details: Some(serde_json::json!({ "channel": channel_kind })),
+                    ..AuditEvent::new("authz.denied").denied(reason)
+                },
+                store,
+            );
+        }
+        Err(reason) => {
+            let _ = write_audit_event_with_store(
+                AuditEvent {
+                    mobile_device_id: Some(mobile_device_id.to_string()),
+                    session_id,
+                    target: channel_target,
+                    details: Some(serde_json::json!({ "channel": channel_kind })),
+                    ..AuditEvent::new("channel.auth_failed").denied(reason)
+                },
+                store,
+            );
+        }
+    }
+}
+
+/// Sentinel `mobile_device_id` for audit records where the requesting device
+/// did not supply one (or supplied an empty string). Writing a literal value
+/// instead of omitting the field lets SIEMs correlate anonymous probes —
+/// `SELECT count(*) FROM audit GROUP BY mobile_device_id` will surface a
+/// spike of `"(anonymous)"` entries when an attacker is enumerating without
+/// presenting a device id.
+const AUDIT_ANONYMOUS_DEVICE: &str = "(anonymous)";
+
+/// Emit an `authz.denied` audit event. Use at every rejection path where a
+/// mobile device was refused — untrusted, no permission, bad signature, etc.
+/// `operation` is what the device was trying to do (the message_type, action,
+/// or channel kind); `reason` is a short machine-readable cause.
+fn audit_authz_denied(
+    store: &StateStore,
+    mobile_device_id: &str,
+    operation: &str,
+    reason: &str,
+    session_id: Option<String>,
+) {
+    let mdi = if mobile_device_id.is_empty() {
+        AUDIT_ANONYMOUS_DEVICE.to_string()
+    } else {
+        mobile_device_id.to_string()
+    };
+    let _ = write_audit_event_with_store(
+        AuditEvent {
+            mobile_device_id: Some(mdi),
+            session_id,
+            target: Some(operation.to_string()),
+            ..AuditEvent::new("authz.denied").denied(reason)
+        },
+        store,
+    );
 }
 
 /// Resolve `kill` to an absolute path so a poisoned PATH (e.g. attacker code
@@ -1702,11 +1846,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
     };
 
     info!("daemon starting for host_id={}", host_id);
-    let _ = write_audit_event(AuditEvent {
-        event_type: "daemon_started".to_string(),
-        host_id: Some(host_id.clone()),
-        ..AuditEvent::new("daemon_started")
-    });
+    let _ = write_audit_event_with_store(AuditEvent::new("daemon_started"), &store);
 
     let mut backoff_secs = 1_u64;
 
@@ -2037,11 +2177,10 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                 warn!(
                                     "all trusted devices revoked on backend — host abandoned, stopping daemon"
                                 );
-                                let _ = write_audit_event(AuditEvent {
-                                    event_type: "host_abandoned".to_string(),
-                                    host_id: Some(host_id.clone()),
-                                    ..AuditEvent::new("host_abandoned")
-                                });
+                                let _ = write_audit_event_with_store(
+                                    AuditEvent::new("host_abandoned"),
+                                    &store,
+                                );
                                 let _ = tokio::time::timeout(
                                     Duration::from_secs(3),
                                     backend.mark_offline(&token, &host_id),
@@ -2070,11 +2209,10 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                             warn!(
                                 "host record removed on backend — wiping local state and stopping daemon (run `pocketshell pair` to re-add — scan QR with mobile app)"
                             );
-                            let _ = write_audit_event(AuditEvent {
-                                event_type: "host_deleted_by_user".to_string(),
-                                host_id: Some(host_id.clone()),
-                                ..AuditEvent::new("host_deleted_by_user")
-                            });
+                            let _ = write_audit_event_with_store(
+                                AuditEvent::new("host_deleted_by_user"),
+                                &store,
+                            );
                             sessions.close_all();
                             webrtc_mgr.close_all().await;
                             store.state = crate::models::AgentState::default();
@@ -2631,12 +2769,20 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                                 "reason": result.as_ref().err(),
                                             }));
                                             webrtc_mgr.send_output(&session_id, &response).await;
+                                            let result_for_audit = result.as_ref().map(|_| ()).map_err(|e| e.to_string());
                                             if result.is_ok() {
                                                 authenticated_channels.insert(session_id.clone());
                                                 info!("device {} authenticated for session {}", mobile_device_id, session_id);
                                             } else {
                                                 warn!("auth failed for device {} session {}: {:?}", mobile_device_id, session_id, result.err());
                                             }
+                                            audit_channel_auth(
+                                                &store,
+                                                "terminal",
+                                                &mobile_device_id,
+                                                Some(session_id.clone()),
+                                                result_for_audit,
+                                            );
                                         }
                                     }
                                 }
@@ -2823,6 +2969,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                             if let Err(err) = channel.send(&bytes::Bytes::from(response)).await {
                                                 warn!("files auth result send failed for mobile {}: {}", mobile_device_id, err);
                                             }
+                                            let result_for_audit = result.as_ref().map(|_| ()).map_err(|e| e.to_string());
                                             if result.is_ok() {
                                                 authenticated_channels.insert(files_channel_key.clone());
                                                 info!("device {} authenticated for files channel", mobile_device_id);
@@ -2844,6 +2991,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                             } else {
                                                 warn!("files auth failed for device {}: {:?}", mobile_device_id, result.err());
                                             }
+                                            audit_channel_auth(&store, "files", &mobile_device_id, None, result_for_audit);
                                         }
                                     }
                                 }
@@ -3549,9 +3697,10 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                     let action_clone = action.clone();
                                     let req_id_clone = request_id.clone();
                                     let router = agent_router.clone();
+                                    let ctx = build_file_action_context(&store, &mobile_device_id);
                                     tokio::spawn(async move {
                                         let start = std::time::Instant::now();
-                                        let result = crate::files::handle_files_action(&payload, &router).await;
+                                        let result = crate::files::handle_files_action_with_context(&payload, &router, &ctx).await;
                                         let elapsed = start.elapsed();
 
                                         let (response, status) = match result {
@@ -3612,12 +3761,14 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                             if let Err(err) = channel.send(&bytes::Bytes::from(response)).await {
                                                 warn!("stats auth result send failed for device {}: {}", mobile_device_id, err);
                                             }
+                                            let result_for_audit = result.as_ref().map(|_| ()).map_err(|e| e.to_string());
                                             if result.is_ok() {
                                                 authenticated_channels.insert(stats_channel_key.clone());
                                                 info!("device {} authenticated for stats channel", mobile_device_id);
                                             } else {
                                                 warn!("stats auth failed for device {}: {:?}", mobile_device_id, result.err());
                                             }
+                                            audit_channel_auth(&store, "stats", &mobile_device_id, None, result_for_audit);
                                         }
                                     }
                                 }
@@ -3633,40 +3784,69 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                         let pid = val.get("pid").and_then(|v| v.as_i64());
                                         let signal = val.get("signal").and_then(|v| v.as_str()).unwrap_or("TERM");
                                         if let Some(pid) = pid {
+                                            let sig_num_for_audit = match signal {
+                                                "KILL" | "9" => "9",
+                                                _ => "15",
+                                            };
+                                            // Record the device's RAW requested signal too — `signal`
+                                            // is coerced to TERM/KILL above and a forensic reader
+                                            // shouldn't be misled into thinking HUP/USR1/etc. were
+                                            // never requested.
+                                            let requested_signal = signal.to_string();
+                                            let audit_kill = |outcome: AuditEvent| {
+                                                let _ = write_audit_event_with_store(
+                                                    AuditEvent {
+                                                        mobile_device_id: Some(mobile_device_id.clone()),
+                                                        target: Some(pid.to_string()),
+                                                        details: Some(serde_json::json!({
+                                                            "pid": pid,
+                                                            "signal_sent": sig_num_for_audit,
+                                                            "signal_requested": requested_signal,
+                                                        })),
+                                                        ..outcome
+                                                    },
+                                                    &store,
+                                                );
+                                            };
                                             if pid <= 0 {
                                                 warn!("kill_process rejected: invalid pid {} (non-positive PIDs target process groups)", pid);
+                                                // Refused attempts use a separate event_type so the
+                                                // name does not imply the process was actually killed.
+                                                audit_kill(AuditEvent::new("process.kill_rejected").denied("invalid_pid"));
                                             } else if pid == 1 {
                                                 warn!("kill_process rejected: refusing to signal pid 1 (init/systemd)");
+                                                audit_kill(AuditEvent::new("process.kill_rejected").denied("refused_init"));
                                             } else if !pid_is_in_daemon_pgrp(pid as i32) {
                                                 warn!(
                                                     "kill_process rejected: pid {} not in daemon process group (refusing cross-pgrp kill)",
                                                     pid
                                                 );
+                                                audit_kill(AuditEvent::new("process.kill_rejected").denied("cross_pgrp"));
                                             } else {
-                                                let sig_num = match signal {
-                                                    "KILL" | "9" => "9",
-                                                    _ => "15",
-                                                };
                                                 let kill_bin = resolve_kill_binary();
                                                 info!(
                                                     "kill_process request: pid={} signal={} via {}",
                                                     pid,
-                                                    sig_num,
+                                                    sig_num_for_audit,
                                                     kill_bin.display()
                                                 );
                                                 match std::process::Command::new(&kill_bin)
-                                                    .arg(format!("-{}", sig_num))
+                                                    .arg(format!("-{}", sig_num_for_audit))
                                                     .arg(pid.to_string())
                                                     .output()
                                                 {
                                                     Ok(output) => {
-                                                        if !output.status.success() {
+                                                        if output.status.success() {
+                                                            audit_kill(AuditEvent::new("process.killed"));
+                                                        } else {
                                                             let stderr = String::from_utf8_lossy(&output.stderr);
                                                             warn!("kill_process failed for pid {}: {}", pid, stderr.trim());
+                                                            audit_kill(AuditEvent::new("process.killed").failed(stderr.trim().to_string()));
                                                         }
                                                     }
                                                     Err(e) => {
                                                         warn!("kill_process command failed: {}", e);
+                                                        audit_kill(AuditEvent::new("process.killed").failed(e.to_string()));
                                                     }
                                                 }
                                             }
@@ -3678,8 +3858,27 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                             continue;
                                         }
                                         info!("reboot request received from mobile");
-                                        if let Err((code, msg)) = crate::rpc::try_reboot() {
-                                            warn!("reboot failed ({}): {}", code, msg);
+                                        match crate::rpc::try_reboot() {
+                                            Ok(_) => {
+                                                let _ = write_audit_event_with_store(
+                                                    AuditEvent {
+                                                        mobile_device_id: Some(mobile_device_id.clone()),
+                                                        ..AuditEvent::new("host.rebooted")
+                                                    },
+                                                    &store,
+                                                );
+                                            }
+                                            Err((code, msg)) => {
+                                                warn!("reboot failed ({}): {}", code, msg);
+                                                let _ = write_audit_event_with_store(
+                                                    AuditEvent {
+                                                        mobile_device_id: Some(mobile_device_id.clone()),
+                                                        details: Some(serde_json::json!({ "code": code })),
+                                                        ..AuditEvent::new("host.rebooted").failed(msg)
+                                                    },
+                                                    &store,
+                                                );
+                                            }
                                         }
                                     }
                                 }
@@ -3732,6 +3931,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                             if let Err(err) = channel.send(&bytes::Bytes::from(response)).await {
                                                 warn!("control auth result send failed for device {}: {}", mobile_device_id, err);
                                             }
+                                            let result_for_audit = result.as_ref().map(|_| ()).map_err(|e| e.to_string());
                                             if result.is_ok() {
                                                 authenticated_channels.insert(control_channel_key.clone());
                                                 info!("device {} authenticated for control channel", mobile_device_id);
@@ -3751,6 +3951,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                             } else {
                                                 warn!("control auth failed for device {}: {:?}", mobile_device_id, result.err());
                                             }
+                                            audit_channel_auth(&store, "control", &mobile_device_id, None, result_for_audit);
                                         }
                                     }
                                 }
@@ -3856,6 +4057,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                 if let Err(err) = channel.send(&bytes::Bytes::from(response)).await {
                                     warn!("agent auth result send failed agent={}: {}", agent_id, err);
                                 }
+                                let result_for_audit = result.as_ref().map(|_| ()).map_err(|e| e.to_string());
                                 if result.is_ok() {
                                     authenticated_channels.insert(key);
                                     info!("device {} authenticated for agent {}", mobile_device_id, agent_id);
@@ -3863,6 +4065,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                     warn!("agent auth failed agent={} mobile={}: {:?}",
                                         agent_id, mobile_device_id, result.err());
                                 }
+                                audit_channel_auth(&store, "agent", &mobile_device_id, Some(agent_id.clone()), result_for_audit);
                                 continue;
                             }
                             if !authenticated_channels.contains(&key) {
@@ -4176,12 +4379,13 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                 }
                                 drop(local_clients);
                                 let _ = std::fs::remove_file(&local_sock_path);
-                                let _ = write_audit_event(AuditEvent {
-                                    event_type: "daemon_stopped".to_string(),
-                                    host_id: Some(host_id.clone()),
-                                    details: Some(serde_json::json!({ "reason": reason })),
-                                    ..AuditEvent::new("daemon_stopped")
-                                });
+                                let _ = write_audit_event_with_store(
+                                    AuditEvent {
+                                        reason: Some(reason.to_string()),
+                                        ..AuditEvent::new("daemon_stopped")
+                                    },
+                                    &store,
+                                );
                                 store.save()?;
                                 return Ok(());
                             } else if msg.message_type == "summary_subscribe" {
@@ -4274,12 +4478,13 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                     drop(local_clients);
                     let _ = std::fs::remove_file(&local_sock_path);
                     let reason = if sig == "SIGTERM" { "sigterm" } else { "sigint" };
-                    let _ = write_audit_event(AuditEvent {
-                        event_type: "daemon_stopped".to_string(),
-                        host_id: Some(host_id.clone()),
-                        details: Some(serde_json::json!({ "reason": reason })),
-                        ..AuditEvent::new("daemon_stopped")
-                    });
+                    let _ = write_audit_event_with_store(
+                        AuditEvent {
+                            reason: Some(reason.to_string()),
+                            ..AuditEvent::new("daemon_stopped")
+                        },
+                        &store,
+                    );
                     store.save()?;
                     return Ok(());
                 }
@@ -4737,12 +4942,34 @@ async fn handle_signal(
                 "{} rejected: missing mobile_device_id for signed WS auth",
                 msg.message_type
             );
+            audit_authz_denied(
+                store,
+                "",
+                &msg.message_type,
+                "missing_mobile_device_id",
+                msg.session_id.clone(),
+            );
             return Ok(());
         }
         if let Err(reason) = verify_ws_message_auth(&msg, store, mobile_device_id, ws_auth_nonces) {
             warn!(
                 "{} rejected: invalid signed WS auth for device {}: {}",
                 msg.message_type, mobile_device_id, reason
+            );
+            // Classify the failure precisely. verify_ws_message_auth returns
+            // a finite set of strings (see its match arms); we map each to one
+            // of three event types. Substring matches on "signature"/"hash"
+            // would mis-classify structural "missing payload_hash" errors as
+            // crypto failures, so we use exact-match prefixes here.
+            let event_type = classify_ws_auth_failure(&reason);
+            let _ = write_audit_event_with_store(
+                AuditEvent {
+                    mobile_device_id: Some(mobile_device_id.to_string()),
+                    session_id: msg.session_id.clone(),
+                    target: Some(msg.message_type.clone()),
+                    ..AuditEvent::new(event_type).denied(reason)
+                },
+                store,
             );
             return Ok(());
         }
@@ -4765,6 +4992,13 @@ async fn handle_signal(
                 return Ok(());
             };
             if mobile_device_id.is_empty() || !store.is_trusted(&mobile_device_id) {
+                audit_authz_denied(
+                    store,
+                    &mobile_device_id,
+                    "host_transfer_request",
+                    "device_not_trusted",
+                    None,
+                );
                 let _ = direct_transfer_event_tx.send(DirectHostTransferEvent::Result {
                     transfer_id: payload
                         .get("transfer_id")
@@ -5026,6 +5260,13 @@ async fn handle_signal(
                 return Ok(());
             }
             if mobile_device_id.is_empty() || !store.is_trusted(&mobile_device_id) {
+                audit_authz_denied(
+                    store,
+                    &mobile_device_id,
+                    "host_transfer_offer",
+                    "device_not_trusted",
+                    None,
+                );
                 let mut extra = std::collections::HashMap::new();
                 extra.insert(
                     "target_mobile_device_id".to_string(),
@@ -5057,6 +5298,19 @@ async fn handle_signal(
                     warn!(
                         "host_transfer_offer rejected: invalid mobile attestation (transfer_id={}): {}",
                         transfer_id, err
+                    );
+                    let _ = write_audit_event_with_store(
+                        AuditEvent {
+                            mobile_device_id: Some(mobile_device_id.clone()),
+                            target: Some(transfer_id.clone()),
+                            details: Some(serde_json::json!({
+                                "operation": "host_transfer_offer",
+                                "stage": "mobile_attestation",
+                            })),
+                            ..AuditEvent::new("crypto.signature_failed")
+                                .failed(err.to_string())
+                        },
+                        store,
                     );
                     let mut extra = std::collections::HashMap::new();
                     extra.insert(
@@ -5092,6 +5346,19 @@ async fn handle_signal(
                     "host_transfer_offer rejected: mobile attestation does not match transfer {}",
                     transfer_id
                 );
+                let _ = write_audit_event_with_store(
+                    AuditEvent {
+                        mobile_device_id: Some(mobile_device_id.clone()),
+                        target: Some(transfer_id.clone()),
+                        details: Some(serde_json::json!({
+                            "operation": "host_transfer_offer",
+                            "stage": "attestation_mismatch",
+                        })),
+                        ..AuditEvent::new("crypto.signature_failed")
+                            .failed("attestation_mismatch")
+                    },
+                    store,
+                );
                 let mut extra = std::collections::HashMap::new();
                 extra.insert(
                     "mobile_device_id".to_string(),
@@ -5122,6 +5389,20 @@ async fn handle_signal(
                 warn!(
                     "host_transfer_offer rejected: SDP signature failed for source host {}: {}",
                     source_host_id, err
+                );
+                let _ = write_audit_event_with_store(
+                    AuditEvent {
+                        mobile_device_id: Some(mobile_device_id.clone()),
+                        target: Some(transfer_id.clone()),
+                        details: Some(serde_json::json!({
+                            "operation": "host_transfer_offer",
+                            "stage": "sdp_signature",
+                            "source_host_id": source_host_id,
+                        })),
+                        ..AuditEvent::new("crypto.signature_failed")
+                            .failed(err.to_string())
+                    },
+                    store,
                 );
                 let mut extra = std::collections::HashMap::new();
                 extra.insert(
@@ -5246,6 +5527,20 @@ async fn handle_signal(
                         "host_transfer_answer rejected: SDP signature failed for target host {}: {}",
                         transfer.target_host_id, err
                     );
+                    let _ = write_audit_event_with_store(
+                        AuditEvent {
+                            mobile_device_id: Some(transfer.mobile_device_id.clone()),
+                            target: Some(transfer_id.clone()),
+                            details: Some(serde_json::json!({
+                                "operation": "host_transfer_answer",
+                                "stage": "sdp_signature",
+                                "target_host_id": transfer.target_host_id,
+                            })),
+                            ..AuditEvent::new("crypto.signature_failed")
+                                .failed(err.to_string())
+                        },
+                        store,
+                    );
                     return Ok(());
                 }
                 transfer.peer.apply_answer(&answer_sdp).await?;
@@ -5353,6 +5648,13 @@ async fn handle_signal(
             let is_passthrough_purpose = is_agent_purpose || is_utility_purpose;
 
             if !store.is_trusted(&mobile_device_id) {
+                audit_authz_denied(
+                    store,
+                    &mobile_device_id,
+                    "session_request",
+                    "device_not_trusted",
+                    Some(session_id.clone()),
+                );
                 let mut extra = std::collections::HashMap::new();
                 extra.insert(
                     "target_mobile_device_id".to_string(),
@@ -5376,6 +5678,13 @@ async fn handle_signal(
                 "shell"
             };
             if !store.device_has_permission(&mobile_device_id, required_permission) {
+                audit_authz_denied(
+                    store,
+                    &mobile_device_id,
+                    "session_request",
+                    &format!("permission_denied:{required_permission}"),
+                    Some(session_id.clone()),
+                );
                 let mut extra = std::collections::HashMap::new();
                 extra.insert(
                     "target_mobile_device_id".to_string(),
@@ -5477,12 +5786,18 @@ async fn handle_signal(
                     .transition_session(&token, &session_id, SessionState::Connected, None)
                     .await?;
 
-                let _ = write_audit_event(AuditEvent {
-                    event_type: "session_started".to_string(),
-                    mobile_device_id: Some(mobile_device_id),
-                    session_id: Some(session_id),
-                    ..AuditEvent::new("session_started")
-                });
+                let _ = write_audit_event_with_store(
+                    AuditEvent {
+                        mobile_device_id: Some(mobile_device_id),
+                        session_id: Some(session_id),
+                        details: Some(serde_json::json!({
+                            "purpose": purpose,
+                            "persistent": false,
+                        })),
+                        ..AuditEvent::new("session_started")
+                    },
+                    store,
+                );
                 store.save()?;
                 return Ok(());
             }
@@ -5607,12 +5922,18 @@ async fn handle_signal(
                     .transition_session(&token, &session_id, SessionState::Connected, None)
                     .await?;
 
-                let _ = write_audit_event(AuditEvent {
-                    event_type: "session_started".to_string(),
-                    mobile_device_id: Some(mobile_device_id),
-                    session_id: Some(session_id),
-                    ..AuditEvent::new("session_started")
-                });
+                let _ = write_audit_event_with_store(
+                    AuditEvent {
+                        mobile_device_id: Some(mobile_device_id),
+                        session_id: Some(session_id),
+                        details: Some(serde_json::json!({
+                            "purpose": purpose,
+                            "persistent": is_persistent,
+                        })),
+                        ..AuditEvent::new("session_started")
+                    },
+                    store,
+                );
             } else {
                 let _ = backend
                     .transition_session(&token, &session_id, SessionState::Failed, None)
@@ -5648,6 +5969,13 @@ async fn handle_signal(
                 warn!(
                     "agent_init rejected: device {} not trusted",
                     mobile_device_id
+                );
+                audit_authz_denied(
+                    store,
+                    &mobile_device_id,
+                    "agent_init",
+                    "device_not_trusted",
+                    None,
                 );
                 return Ok(());
             }
@@ -5815,6 +6143,15 @@ async fn handle_signal(
                 .unwrap_or_default()
                 .to_string();
             if agent_id.is_empty() || !store.is_trusted(&mobile_device_id) {
+                if !mobile_device_id.is_empty() && !store.is_trusted(&mobile_device_id) {
+                    audit_authz_denied(
+                        store,
+                        &mobile_device_id,
+                        "agent_input",
+                        "device_not_trusted",
+                        None,
+                    );
+                }
                 return Ok(());
             }
             let line = payload
@@ -5843,6 +6180,15 @@ async fn handle_signal(
                 .unwrap_or_default()
                 .to_string();
             if agent_id.is_empty() || !store.is_trusted(&mobile_device_id) {
+                if !mobile_device_id.is_empty() && !store.is_trusted(&mobile_device_id) {
+                    audit_authz_denied(
+                        store,
+                        &mobile_device_id,
+                        "agent_close",
+                        "device_not_trusted",
+                        None,
+                    );
+                }
                 return Ok(());
             }
             if let Some(handle) = agent_ws_pumps.remove(&agent_id) {
@@ -5866,6 +6212,13 @@ async fn handle_signal(
                 warn!(
                     "host_control rejected: mobile_device_id missing or not trusted ({})",
                     mobile_device_id
+                );
+                audit_authz_denied(
+                    store,
+                    &mobile_device_id,
+                    "host_control",
+                    "device_not_trusted",
+                    None,
                 );
                 return Ok(());
             }
@@ -5942,6 +6295,13 @@ async fn handle_signal(
                     "signal rejected: device {} is not trusted",
                     mobile_device_id
                 );
+                audit_authz_denied(
+                    store,
+                    &mobile_device_id,
+                    "signal",
+                    "device_not_trusted",
+                    Some(session_id.clone()),
+                );
                 return Ok(());
             }
             // Require device key — devices without a pinned key (not paired via
@@ -5950,6 +6310,13 @@ async fn handle_signal(
                 warn!(
                     "signal rejected: device {} has no pinned public key",
                     mobile_device_id
+                );
+                audit_authz_denied(
+                    store,
+                    &mobile_device_id,
+                    "signal",
+                    "no_pinned_public_key",
+                    Some(session_id.clone()),
                 );
                 return Ok(());
             }
@@ -6105,11 +6472,20 @@ async fn handle_signal(
                                         None,
                                     )
                                     .await;
-                                let _ = write_audit_event(AuditEvent {
-                                    event_type: "session_detached".to_string(),
-                                    session_id: Some(session_id),
-                                    ..AuditEvent::new("session_detached")
-                                });
+                                let detached_device = store
+                                    .state
+                                    .sessions
+                                    .iter()
+                                    .find(|s| s.session_id == session_id)
+                                    .map(|s| s.mobile_device_id.clone());
+                                let _ = write_audit_event_with_store(
+                                    AuditEvent {
+                                        mobile_device_id: detached_device,
+                                        session_id: Some(session_id),
+                                        ..AuditEvent::new("session_detached")
+                                    },
+                                    store,
+                                );
                             } else {
                                 // Non-persistent session — detach acts as close
                                 peer_session_routes.retain(|_, sid| sid != &session_id);
@@ -6157,11 +6533,20 @@ async fn handle_signal(
                             let _ = backend
                                 .transition_session(&token, &session_id, SessionState::Ended, None)
                                 .await;
-                            let _ = write_audit_event(AuditEvent {
-                                event_type: "session_ended".to_string(),
-                                session_id: Some(session_id),
-                                ..AuditEvent::new("session_ended")
-                            });
+                            let ended_device = store
+                                .state
+                                .sessions
+                                .iter()
+                                .find(|s| s.session_id == session_id)
+                                .map(|s| s.mobile_device_id.clone());
+                            let _ = write_audit_event_with_store(
+                                AuditEvent {
+                                    mobile_device_id: ended_device,
+                                    session_id: Some(session_id),
+                                    ..AuditEvent::new("session_ended")
+                                },
+                                store,
+                            );
                         }
                         _ => {}
                     }
@@ -6207,9 +6592,13 @@ async fn handle_signal(
                     let action_clone = action.clone();
                     let req_id_clone = request_id.clone();
                     let router = agent_router.clone();
+                    let ctx = build_file_action_context(
+                        store,
+                        target_mobile_device_id.as_deref().unwrap_or(""),
+                    );
                     tokio::spawn(async move {
                         let start = std::time::Instant::now();
-                        let result = crate::files::handle_files_action(&payload, &router).await;
+                        let result = crate::files::handle_files_action_with_context(&payload, &router, &ctx).await;
                         let elapsed = start.elapsed();
 
                         let response_payload = match result {
@@ -6279,6 +6668,13 @@ async fn handle_signal(
             let rows = msg.extra.get("rows").and_then(|v| v.as_u64()).unwrap_or(30) as u16;
 
             if !store.is_trusted(&mobile_device_id) {
+                audit_authz_denied(
+                    store,
+                    &mobile_device_id,
+                    "session_join",
+                    "device_not_trusted",
+                    Some(session_id.clone()),
+                );
                 let mut extra = std::collections::HashMap::new();
                 extra.insert(
                     "target_mobile_device_id".to_string(),
@@ -6381,6 +6777,22 @@ async fn handle_signal(
                 let _ = backend
                     .transition_session(&token, &session_id, SessionState::Connected, None)
                     .await;
+
+                // PCI-DSS 10.2.5 / NIST AU-2 require auditing every successful
+                // session establishment, including reconnects to long-lived
+                // tmux sessions. session_request emits session_started on
+                // first connect; session_join emits session_resumed here.
+                let _ = write_audit_event_with_store(
+                    AuditEvent {
+                        mobile_device_id: Some(mobile_device_id.clone()),
+                        session_id: Some(session_id.clone()),
+                        details: Some(serde_json::json!({
+                            "reconnected": needs_reconnect,
+                        })),
+                        ..AuditEvent::new("session_resumed")
+                    },
+                    store,
+                );
             }
         }
         "session_event" => {
@@ -6415,6 +6827,13 @@ async fn handle_signal(
                 warn!(
                     "session_offer rejected: device {} is not trusted for session {}",
                     mobile_device_id, sid
+                );
+                audit_authz_denied(
+                    store,
+                    &mobile_device_id,
+                    "session_offer",
+                    "device_not_trusted",
+                    Some(sid.to_string()),
                 );
                 return Ok(());
             }
@@ -6487,6 +6906,13 @@ async fn handle_signal(
                     "ice_candidate rejected: device {} is not trusted for session {}",
                     mobile_device_id, sid
                 );
+                audit_authz_denied(
+                    store,
+                    &mobile_device_id,
+                    "ice_candidate",
+                    "device_not_trusted",
+                    Some(sid.to_string()),
+                );
                 return Ok(());
             }
             peer_session_routes.insert(mobile_device_id.clone(), sid.to_string());
@@ -6518,6 +6944,13 @@ async fn handle_signal(
                 warn!(
                     "stats_offer rejected: device {} is not trusted",
                     mobile_device_id
+                );
+                audit_authz_denied(
+                    store,
+                    &mobile_device_id,
+                    "stats_offer",
+                    "device_not_trusted",
+                    None,
                 );
                 return Ok(());
             }
@@ -6591,6 +7024,13 @@ async fn handle_signal(
                 warn!(
                     "files_offer rejected: device {} is not trusted",
                     mobile_device_id
+                );
+                audit_authz_denied(
+                    store,
+                    &mobile_device_id,
+                    "files_offer",
+                    "device_not_trusted",
+                    None,
                 );
                 return Ok(());
             }
@@ -6675,6 +7115,13 @@ async fn handle_signal(
                     "agent_offer rejected: device {} is not trusted",
                     mobile_device_id
                 );
+                audit_authz_denied(
+                    store,
+                    &mobile_device_id,
+                    "agent_offer",
+                    "device_not_trusted",
+                    None,
+                );
                 return Ok(());
             }
 
@@ -6752,6 +7199,13 @@ async fn handle_signal(
                     "agent_ice_candidate rejected: device {} is not trusted",
                     mobile_device_id
                 );
+                audit_authz_denied(
+                    store,
+                    &mobile_device_id,
+                    "agent_ice_candidate",
+                    "device_not_trusted",
+                    None,
+                );
                 return Ok(());
             }
 
@@ -6779,6 +7233,13 @@ async fn handle_signal(
                 warn!(
                     "files_ice_candidate rejected: device {} is not trusted",
                     mobile_device_id
+                );
+                audit_authz_denied(
+                    store,
+                    &mobile_device_id,
+                    "files_ice_candidate",
+                    "device_not_trusted",
+                    None,
                 );
                 return Ok(());
             }
@@ -6808,6 +7269,13 @@ async fn handle_signal(
                     "stats_ice_candidate rejected: device {} is not trusted",
                     mobile_device_id
                 );
+                audit_authz_denied(
+                    store,
+                    &mobile_device_id,
+                    "stats_ice_candidate",
+                    "device_not_trusted",
+                    None,
+                );
                 return Ok(());
             }
 
@@ -6835,6 +7303,13 @@ async fn handle_signal(
                 warn!(
                     "encrypted_file_payload rejected: device {} is not trusted",
                     mobile_device_id
+                );
+                audit_authz_denied(
+                    store,
+                    &mobile_device_id,
+                    "encrypted_file_payload",
+                    "device_not_trusted",
+                    None,
                 );
                 return Ok(());
             }
@@ -6974,9 +7449,10 @@ async fn handle_signal(
             let action_clone = action.clone();
             let req_id_clone = request_id.clone();
             let router = agent_router.clone();
+            let ctx = build_file_action_context(store, &mobile_device_id);
             tokio::spawn(async move {
                 let start = std::time::Instant::now();
-                let result = crate::files::handle_files_action(&file_payload, &router).await;
+                let result = crate::files::handle_files_action_with_context(&file_payload, &router, &ctx).await;
                 let elapsed = start.elapsed();
 
                 let response_json = match result {
@@ -7067,6 +7543,13 @@ async fn handle_signal(
                 warn!(
                     "x25519_public_key rejected: device {} is not trusted",
                     mobile_device_id
+                );
+                audit_authz_denied(
+                    store,
+                    &mobile_device_id,
+                    "x25519_public_key",
+                    "device_not_trusted",
+                    None,
                 );
                 return Ok(());
             }
@@ -7437,6 +7920,15 @@ fn require_device_permission(
                 "{} rejected: device {} lacks {} permission",
                 context, mobile_device_id, permission
             );
+            let _ = write_audit_event_with_store(
+                AuditEvent {
+                    mobile_device_id: Some(mobile_device_id.to_string()),
+                    target: Some(context.to_string()),
+                    details: Some(serde_json::json!({ "permission": permission })),
+                    ..AuditEvent::new("authz.denied").denied("permission_denied")
+                },
+                store,
+            );
             false
         }
     }
@@ -7728,6 +8220,52 @@ mod tests {
         // "abc" parses to 0 per the impl — treat as missing component.
         assert!(version_gte("1.0.0", "1.0.abc"));
         assert!(version_gte("1.0.abc", "1.0.0"));
+    }
+
+    #[test]
+    fn classify_ws_auth_failure_replay_is_crypto_replay() {
+        assert_eq!(classify_ws_auth_failure("replayed nonce"), "crypto.replay_detected");
+    }
+
+    #[test]
+    fn classify_ws_auth_failure_signature_paths_are_crypto() {
+        assert_eq!(classify_ws_auth_failure("payload hash mismatch"), "crypto.signature_failed");
+        assert_eq!(
+            classify_ws_auth_failure("ed25519 signature did not verify: bad sig"),
+            "crypto.signature_failed"
+        );
+        assert_eq!(
+            classify_ws_auth_failure("invalid ed25519 signature: short"),
+            "crypto.signature_failed"
+        );
+        assert_eq!(
+            classify_ws_auth_failure("invalid ed25519 public key: bad encoding"),
+            "crypto.signature_failed"
+        );
+    }
+
+    #[test]
+    fn classify_ws_auth_failure_structural_errors_are_authz() {
+        // The bug this guards: substring matching on "signature"/"hash"
+        // mis-labels these structural problems as crypto failures.
+        assert_eq!(classify_ws_auth_failure("missing signature"), "authz.denied");
+        assert_eq!(classify_ws_auth_failure("missing payload_hash"), "authz.denied");
+        assert_eq!(classify_ws_auth_failure("missing nonce"), "authz.denied");
+        assert_eq!(classify_ws_auth_failure("missing ts"), "authz.denied");
+        assert_eq!(classify_ws_auth_failure("missing ws_auth"), "authz.denied");
+        assert_eq!(
+            classify_ws_auth_failure("unsupported ws_auth version 2"),
+            "authz.denied"
+        );
+        assert_eq!(classify_ws_auth_failure("host_id mismatch"), "authz.denied");
+        assert_eq!(
+            classify_ws_auth_failure("no device public key stored"),
+            "authz.denied"
+        );
+        assert_eq!(
+            classify_ws_auth_failure("timestamp out of range (|delta|=300s)"),
+            "authz.denied"
+        );
     }
 
     #[test]

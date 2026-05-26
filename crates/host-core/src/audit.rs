@@ -6,13 +6,41 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::Path;
 
+/// Outcome of an audited operation. Aligns with NIST SP 800-53 AU-3 which
+/// requires every record to carry success/failure status.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Outcome {
+    Success,
+    Denied,
+    Failed,
+}
+
+impl Default for Outcome {
+    fn default() -> Self {
+        Outcome::Success
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct AuditEvent {
     pub event_type: String,
     pub at: String,
+    pub outcome: Outcome,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub host_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub mobile_device_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// Resource acted on (path, pid, agent_id, transfer_id, session_id, …).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub details: Option<serde_json::Value>,
 }
 
@@ -21,12 +49,47 @@ impl AuditEvent {
         Self {
             event_type: event_type.into(),
             at: Utc::now().to_rfc3339(),
+            outcome: Outcome::Success,
+            reason: None,
+            user_id: None,
             host_id: None,
             mobile_device_id: None,
             session_id: None,
+            target: None,
             details: None,
         }
     }
+
+    /// Mark this event as a denial (permission/trust check failed).
+    pub fn denied(mut self, reason: impl Into<String>) -> Self {
+        self.outcome = Outcome::Denied;
+        self.reason = Some(reason.into());
+        self
+    }
+
+    /// Mark this event as a failure (operation attempted but errored).
+    pub fn failed(mut self, reason: impl Into<String>) -> Self {
+        self.outcome = Outcome::Failed;
+        self.reason = Some(reason.into());
+        self
+    }
+}
+
+/// Helper that auto-fills `host_id` and `user_id` from the state store before
+/// writing. Use this from any code path that has a `StateStore` handy — every
+/// event then carries the "where" and "who" fields without each call site
+/// remembering to set them.
+pub fn write_audit_event_with_store(
+    mut event: AuditEvent,
+    store: &crate::store::StateStore,
+) -> Result<()> {
+    if event.host_id.is_none() {
+        event.host_id = store.state.host.as_ref().map(|h| h.host_id.clone());
+    }
+    if event.user_id.is_none() {
+        event.user_id = store.state.host.as_ref().map(|h| h.user_id.clone());
+    }
+    write_audit_event(event)
 }
 
 /// Maximum size of `audit.log` before rotation kicks in.
@@ -173,6 +236,44 @@ mod tests {
         let s = serde_json::to_string(&ev).unwrap();
         assert!(s.contains("\"event_type\":\"x\""));
         assert!(s.contains("\"at\":\""));
+    }
+
+    #[test]
+    fn default_outcome_is_success() {
+        let ev = AuditEvent::new("x");
+        assert_eq!(ev.outcome, Outcome::Success);
+    }
+
+    #[test]
+    fn denied_builder_sets_outcome_and_reason() {
+        let ev = AuditEvent::new("authz.denied").denied("device_not_trusted");
+        assert_eq!(ev.outcome, Outcome::Denied);
+        assert_eq!(ev.reason.as_deref(), Some("device_not_trusted"));
+    }
+
+    #[test]
+    fn failed_builder_sets_outcome_and_reason() {
+        let ev = AuditEvent::new("file.write").failed("disk full");
+        assert_eq!(ev.outcome, Outcome::Failed);
+        assert_eq!(ev.reason.as_deref(), Some("disk full"));
+    }
+
+    #[test]
+    fn empty_optional_fields_skip_serialization() {
+        // skip_serializing_if means a barebones event should NOT include
+        // host_id/mobile_device_id/session_id/target/details/reason —
+        // keeps the JSON file readable when most events lack attribution.
+        let ev = AuditEvent::new("ping");
+        let s = serde_json::to_string(&ev).unwrap();
+        assert!(!s.contains("host_id"));
+        assert!(!s.contains("mobile_device_id"));
+        assert!(!s.contains("session_id"));
+        assert!(!s.contains("target"));
+        assert!(!s.contains("details"));
+        assert!(!s.contains("reason"));
+        // outcome always present (success) — needed for compliance: every
+        // record must indicate success/failure.
+        assert!(s.contains("\"outcome\":\"success\""));
     }
 
     #[test]
