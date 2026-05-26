@@ -94,18 +94,25 @@ pocketshell --version
 
 ## Pair and run
 
-```bash
-# 1. open the PocketShell app, tap "Pair host" — you get a 9-character code
-pocketshell pair 7H2-9K4-PXM
+Pairing is QR-based — run `pocketshell pair` on the host, scan the QR from the mobile app.
 
-# 2. start the daemon (runs as your user, not root)
+```bash
+# 1. on the host, generate a pairing QR (prints to the terminal)
+pocketshell pair
+
+# 2. in the PocketShell app: Hosts → Add host → "Scan Host QR"
+#    point the camera at the QR shown in step 1
+
+# 3. start the daemon (runs as your user, not root)
 pocketshell daemon start
 
-# 3. status & logs
+# 4. status & logs
 pocketshell daemon status
 journalctl --user -fu pocketshell-host-agent      # linux
 log stream --predicate 'process == "pocketshell"' # macOS
 ```
+
+The QR carries a short-lived claim plus the host's public key, so the mobile app pins the host identity at pair time rather than trusting a backend-relayed field. To re-pair an existing host onto a different account, run `pocketshell pair --reset` — this wipes the local identity before generating a fresh QR.
 
 The daemon connects out to the signaling backend over WSS and waits for a peer offer. When your phone wants a session, the backend signals; the data channel is end-to-end encrypted between phone and host.
 
