@@ -1707,6 +1707,13 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
     let mut store = StateStore::load()?;
     store.require_logged_in()?;
 
+    // Clear ephemeral entries from the dev-server allowlist. `pocketshell
+    // expose 3000 --ephemeral` is supposed to vanish on the next daemon
+    // restart so `npm run dev` users don't have to remember to unexpose.
+    if let Err(e) = crate::exposed_ports::ExposedPortsStore::purge_ephemeral() {
+        warn!("failed to purge ephemeral exposed ports on startup: {e}");
+    }
+
     // A fresh daemon process can never have an active peer connection, so any
     // session record left in state.json from a previous run is dead by
     // definition. They'd otherwise show up in the mobile "Persistent Sessions"
@@ -1770,6 +1777,12 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
         HashMap::new();
     // Active JSONL tailers, keyed by (mobile_device_id, subscription_id).
     let mut files_watchers: HashMap<(String, String), tokio::task::JoinHandle<()>> = HashMap::new();
+
+    // HTTP-forward sessions: one per open `http-{hostId}` data channel,
+    // keyed by mobile_device_id. Owns the partial-request buffers for that
+    // channel; cleared on HttpChannelClosed.
+    let mut http_forward_sessions: HashMap<String, crate::http_forward::HttpForwardSession> =
+        HashMap::new();
 
     // Challenge-response auth state for WebRTC channels
     let mut authenticated_channels: HashSet<String> = HashSet::new();
@@ -4232,6 +4245,212 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                 .await;
                             });
                             agent_pumps.insert(agent_id, handle);
+                        }
+                        WebRtcEvent::HttpChannelOpened { mobile_device_id, channel } => {
+                            info!("http-forward channel opened for mobile {}", mobile_device_id);
+                            // If a session already exists for this device
+                            // (e.g. mobile reconnected its http channel
+                            // before the prior Close event was processed),
+                            // we drop its partial-request buffers explicitly
+                            // and log a warning. Replacing silently would
+                            // hang any in-flight POST whose body chunks
+                            // were arriving against the previous session.
+                            if let Some(mut prior) = http_forward_sessions.remove(&mobile_device_id) {
+                                warn!(
+                                    "http-forward: replacing existing session for mobile {} (channel reopened before close); discarding buffered requests",
+                                    mobile_device_id
+                                );
+                                prior.shutdown();
+                            }
+                            http_forward_sessions.insert(
+                                mobile_device_id.clone(),
+                                crate::http_forward::HttpForwardSession::new(),
+                            );
+                            let http_channel_key = format!("http:{mobile_device_id}");
+                            let mut nonce_bytes = [0u8; 32];
+                            rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
+                            let nonce_b64 = base64::engine::general_purpose::STANDARD.encode(&nonce_bytes);
+                            pending_auth.insert(http_channel_key, (nonce_b64.clone(), mobile_device_id.clone()));
+                            let challenge = build_auth_message(&serde_json::json!({
+                                "type": "auth_challenge",
+                                "nonce": nonce_b64,
+                            }));
+                            if let Err(err) = channel.send(&bytes::Bytes::from(challenge)).await {
+                                warn!("http-forward auth challenge send failed for mobile {}: {}", mobile_device_id, err);
+                            } else {
+                                info!("sent http-forward auth challenge for mobile {}", mobile_device_id);
+                            }
+                        }
+                        WebRtcEvent::HttpChannelClosed { mobile_device_id } => {
+                            info!("http-forward channel closed for mobile {}", mobile_device_id);
+                            if let Some(mut sess) = http_forward_sessions.remove(&mobile_device_id) {
+                                sess.shutdown();
+                            }
+                            let http_channel_key = format!("http:{mobile_device_id}");
+                            authenticated_channels.remove(&http_channel_key);
+                            pending_auth.remove(&http_channel_key);
+                            webrtc_mgr.prune_http_channels();
+                        }
+                        WebRtcEvent::HttpForwardMessage { mobile_device_id, data, channel } => {
+                            let http_channel_key = format!("http:{mobile_device_id}");
+                            if data.len() > 5 && data[0] == 0x00 && &data[1..5] == b"PSAU" {
+                                if let Ok(json_str) = std::str::from_utf8(&data[5..]) {
+                                    if let Ok(msg) = serde_json::from_str::<serde_json::Value>(json_str) {
+                                        let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                                        if msg_type == "auth_response" {
+                                            let result = verify_device_auth(
+                                                &msg,
+                                                &http_channel_key,
+                                                &mobile_device_id,
+                                                &mut pending_auth,
+                                                &store,
+                                            )
+                                            .and_then(|_| {
+                                                device_permission_result(&store, &mobile_device_id, "shell")
+                                            });
+                                            let response = build_auth_message(&serde_json::json!({
+                                                "type": "auth_result",
+                                                "ok": result.is_ok(),
+                                                "reason": result.as_ref().err(),
+                                            }));
+                                            if let Err(err) = channel.send(&bytes::Bytes::from(response)).await {
+                                                warn!("http-forward auth result send failed for mobile {}: {}", mobile_device_id, err);
+                                            }
+                                            let result_for_audit = result.as_ref().map(|_| ()).map_err(|e| e.to_string());
+                                            if result.is_ok() {
+                                                authenticated_channels.insert(http_channel_key.clone());
+                                                info!("device {} authenticated for http-forward channel", mobile_device_id);
+                                            } else {
+                                                warn!("http-forward auth failed for device {}: {:?}", mobile_device_id, result.err());
+                                            }
+                                            audit_channel_auth(&store, "http", &mobile_device_id, None, result_for_audit);
+                                        }
+                                    }
+                                }
+                                continue;
+                            } else if !authenticated_channels.contains(&http_channel_key) {
+                                warn!("dropping unauthenticated http-forward message from device {}", mobile_device_id);
+                                continue;
+                            }
+                            let frame = match crate::http_forward::decode(&data) {
+                                Ok(f) => f,
+                                Err(e) => {
+                                    warn!(
+                                        "http-forward decode failed mobile={}: {}",
+                                        mobile_device_id, e
+                                    );
+                                    continue;
+                                }
+                            };
+                            let session = match http_forward_sessions.get_mut(&mobile_device_id) {
+                                Some(s) => s,
+                                None => {
+                                    // Frame arrived after the channel was
+                                    // torn down — usually a tail message
+                                    // racing close. Drop silently.
+                                    continue;
+                                }
+                            };
+                            match session.ingest(frame) {
+                                crate::http_forward::Ingest::Nothing => {}
+                                crate::http_forward::Ingest::SendBack(out_frame) => {
+                                    let bytes = crate::http_forward::encode(&out_frame);
+                                    let ch = Arc::clone(&channel);
+                                    tokio::spawn(async move {
+                                        let _ = ch.send(&bytes::Bytes::from(bytes)).await;
+                                    });
+                                }
+                                crate::http_forward::Ingest::ReadyRequest(req) => {
+                                    // Audit every forward attempt — gives the
+                                    // user a paper trail of what the paired
+                                    // mobile asked us to fetch, before the
+                                    // allowlist gate decides. Path is
+                                    // truncated; query strings can carry
+                                    // tokens.
+                                    let port = req.head.port;
+                                    let method = req.head.method.clone();
+                                    let path_audit = {
+                                        let mut p = req.head.path.clone();
+                                        if let Some(q) = p.find('?') {
+                                            p.truncate(q);
+                                            p.push_str("?…");
+                                        }
+                                        // String::truncate panics if the
+                                        // byte index falls inside a multi-
+                                        // byte UTF-8 codepoint. Find the
+                                        // last char boundary at or below
+                                        // 125 bytes so a path like
+                                        // `/搜索/…` doesn't crash the daemon.
+                                        if p.len() > 128 {
+                                            let mut cut = 125;
+                                            while cut > 0 && !p.is_char_boundary(cut) {
+                                                cut -= 1;
+                                            }
+                                            p.truncate(cut);
+                                            p.push_str("…");
+                                        }
+                                        p
+                                    };
+                                    let mut ev = crate::audit::AuditEvent::new(
+                                        "ports.forward.requested",
+                                    );
+                                    ev.mobile_device_id = Some(mobile_device_id.clone());
+                                    ev.target = Some(format!("{}{}", port, &path_audit));
+                                    ev.details = Some(serde_json::json!({
+                                        "port": port,
+                                        "method": method,
+                                        "path": path_audit,
+                                    }));
+                                    let _ = crate::audit::write_audit_event_with_store(ev, &store);
+
+                                    let id = req.id;
+                                    let ch = Arc::clone(&channel);
+                                    let mobile_for_audit = mobile_device_id.clone();
+                                    let store_host_id = store.state.host.as_ref().map(|h| h.host_id.clone());
+                                    let store_user_id = store.state.host.as_ref().map(|h| h.user_id.clone());
+                                    tokio::spawn(async move {
+                                        let outcome = crate::http_forward::forward_request(req).await;
+                                        // Send head frame (RespHead or RespError).
+                                        let is_denial = matches!(
+                                            outcome.head,
+                                            crate::http_forward::Frame::RespError {
+                                                code: crate::http_forward::ErrorCode::PortNotExposed,
+                                                ..
+                                            }
+                                        );
+                                        let head_bytes = crate::http_forward::encode(&outcome.head);
+                                        if let Err(e) = ch.send(&bytes::Bytes::from(head_bytes)).await {
+                                            warn!("http-forward head send failed: {}", e);
+                                            return;
+                                        }
+                                        if is_denial {
+                                            // Allowlist rejected. Surface the
+                                            // denial in the audit log so even
+                                            // a compromised phone's probing
+                                            // shows up in the trail.
+                                            let mut ev = crate::audit::AuditEvent::new(
+                                                "ports.forward.denied",
+                                            )
+                                            .denied("port_not_exposed");
+                                            ev.mobile_device_id = Some(mobile_for_audit);
+                                            ev.target = Some(format!("{port}"));
+                                            ev.host_id = store_host_id;
+                                            ev.user_id = store_user_id;
+                                            let _ = crate::audit::write_audit_event(ev);
+                                            return;
+                                        }
+                                        // Drain body chunks.
+                                        let mut body_rx = outcome.body;
+                                        while let Some(frame) = body_rx.recv().await {
+                                            let bytes = crate::http_forward::encode(&frame);
+                                            if let Err(e) = ch.send(&bytes::Bytes::from(bytes)).await {
+                                                warn!("http-forward body send failed id={}: {}", id, e);
+                                                return;
+                                            }
+                                        }
+                                    });
+                                }
+                            }
                         }
                         WebRtcEvent::IceCandidate { peer_key, mobile_device_id, candidate_json } => {
                             if let Ok(candidate_value) = serde_json::from_str::<serde_json::Value>(&candidate_json) {

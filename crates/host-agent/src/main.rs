@@ -6,6 +6,7 @@ use host_core::auth::safe_refresh_if_needed;
 use host_core::config::AppConfig;
 use host_core::daemon;
 use host_core::discovery::SessionDiscovery;
+use host_core::exposed_ports::ExposedPortsStore;
 use host_core::models::{AgentState, AuthState, HostIdentity, HostInitiatedPollOutcome};
 // PAIRING CODE DISABLED 2026-05-24 — typed-code flow quarantined; QR remains.
 // `PairingValidateRequest` and `sign_pair_attestation` are only used by the
@@ -138,6 +139,27 @@ enum Commands {
         #[arg(long, short)]
         remove: bool,
     },
+    /// Allow the paired mobile to tunnel HTTP requests to a local dev server
+    /// on this host (e.g. `npm run dev` on port 3000). Without an explicit
+    /// `expose`, the daemon refuses to open `127.0.0.1:<port>` even though
+    /// the paired user has sudo via the terminal — so a stolen phone can't
+    /// silently start probing local services.
+    Expose {
+        /// TCP port the dev server is listening on (1–65535).
+        port: u16,
+        /// Drop this exposure on the next daemon restart. Recommended for
+        /// `npm run dev` and similar short-lived servers.
+        #[arg(long)]
+        ephemeral: bool,
+    },
+    /// Remove a port from the dev-server allowlist. The next forward attempt
+    /// from mobile will be rejected with PORT_NOT_EXPOSED.
+    Unexpose {
+        /// TCP port to remove from the allowlist.
+        port: u16,
+    },
+    /// List ports currently allowed to be tunneled from mobile.
+    Exposed,
 }
 
 #[derive(Subcommand, Debug)]
@@ -227,6 +249,9 @@ async fn main() -> Result<()> {
             list,
             remove,
         }) => remote_cmd(name, detached, list, remove),
+        Some(Commands::Expose { port, ephemeral }) => expose_cmd(port, ephemeral),
+        Some(Commands::Unexpose { port }) => unexpose_cmd(port),
+        Some(Commands::Exposed) => exposed_cmd(),
     }
 }
 
@@ -1954,6 +1979,88 @@ fn remote_cmd(name: String, _detached: bool, list: bool, remove: bool) -> Result
     SessionDiscovery::unregister_exposed(&name)?;
     println!("stopped sharing session '{}'.", name);
 
+    Ok(())
+}
+
+fn expose_cmd(port: u16, ephemeral: bool) -> Result<()> {
+    let entry = ExposedPortsStore::add(port, ephemeral)
+        .map_err(|e| anyhow!("could not add port {} to allowlist: {}", port, e))?;
+    let suffix = if entry.ephemeral {
+        " (ephemeral — clears on daemon restart)"
+    } else {
+        ""
+    };
+    println!("exposed port {}{}", port, suffix);
+    println!(
+        "mobile can now reach http://127.0.0.1:{} via the HTTP-forward channel.",
+        port
+    );
+
+    // Best-effort attribution: load state if possible so the audit event
+    // carries host_id / user_id. First-run users (no pairing yet) still get
+    // the event, just without attribution.
+    let mut ev = AuditEvent::new("ports.exposed");
+    ev.target = Some(port.to_string());
+    ev.details = Some(serde_json::json!({
+        "port": port,
+        "ephemeral": entry.ephemeral,
+        "source": "cli",
+    }));
+    match StateStore::load() {
+        Ok(store) => {
+            let _ = write_audit_event_with_store(ev, &store);
+        }
+        Err(_) => {
+            let _ = write_audit_event(ev);
+        }
+    }
+
+    Ok(())
+}
+
+fn unexpose_cmd(port: u16) -> Result<()> {
+    let removed = ExposedPortsStore::remove(port)
+        .map_err(|e| anyhow!("could not remove port {} from allowlist: {}", port, e))?;
+    if removed {
+        println!("unexposed port {}", port);
+    } else {
+        println!("port {} was not in the allowlist", port);
+    }
+
+    if removed {
+        let mut ev = AuditEvent::new("ports.unexposed");
+        ev.target = Some(port.to_string());
+        ev.details = Some(serde_json::json!({ "port": port, "source": "cli" }));
+        match StateStore::load() {
+            Ok(store) => {
+                let _ = write_audit_event_with_store(ev, &store);
+            }
+            Err(_) => {
+                let _ = write_audit_event(ev);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn exposed_cmd() -> Result<()> {
+    let ports = ExposedPortsStore::list()
+        .map_err(|e| anyhow!("could not read allowlist: {}", e))?;
+    if ports.is_empty() {
+        println!("no ports are currently exposed.");
+        println!("run `pocketshell expose <port>` to allow mobile HTTP forwarding to a dev server.");
+        return Ok(());
+    }
+    println!("{:<8} {:<10} {}", "PORT", "EPHEMERAL", "ADDED");
+    for p in &ports {
+        println!(
+            "{:<8} {:<10} {}",
+            p.port,
+            if p.ephemeral { "yes" } else { "no" },
+            p.added_at,
+        );
+    }
     Ok(())
 }
 
