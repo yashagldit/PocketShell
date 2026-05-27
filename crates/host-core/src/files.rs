@@ -324,7 +324,14 @@ pub async fn handle_files_action_with_context(
                     .ok()
                     .and_then(|p| fs::metadata(&p).ok())
                     .map(|m| serde_json::json!({ "recursive": m.is_dir() }));
-                audit_mutation(&ctx, "file.delete", &path_str, None, recursive_details, delete_path(&path_str))
+                audit_mutation(
+                    &ctx,
+                    "file.delete",
+                    &path_str,
+                    None,
+                    recursive_details,
+                    delete_path(&path_str),
+                )
             }
             "rename" => {
                 let new_path = payload
@@ -394,7 +401,14 @@ pub async fn handle_files_action_with_context(
                     write_file(&path_str, data_b64, append),
                 )
             }
-            "download" => audit_mutation(&ctx, "file.download", &path_str, None, None, download_file(&path_str)),
+            "download" => audit_mutation(
+                &ctx,
+                "file.download",
+                &path_str,
+                None,
+                None,
+                download_file(&path_str),
+            ),
             "search" => {
                 let query = payload.get("query").and_then(|v| v.as_str()).unwrap_or("");
                 let max_results = payload
@@ -496,7 +510,11 @@ fn audit_mutation(
             obj.insert("destination".to_string(), serde_json::json!(d));
         }
     }
-    let details_field = if details.is_null() { None } else { Some(details) };
+    let details_field = if details.is_null() {
+        None
+    } else {
+        Some(details)
+    };
     emit_files_audit(ctx, event_type, path, None, details_field, outcome, reason);
     result
 }

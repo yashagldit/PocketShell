@@ -275,7 +275,9 @@ fn init_logging() {
 // the only supported path.
 #[allow(dead_code)]
 async fn pair(_config: AppConfig, _code: Option<String>, _reset: bool) -> Result<()> {
-    Err(anyhow!("typed pair-code flow is disabled — use QR (`pocketshell pair`)"))
+    Err(anyhow!(
+        "typed pair-code flow is disabled — use QR (`pocketshell pair`)"
+    ))
 }
 /*
 async fn pair(config: AppConfig, code: Option<String>, reset: bool) -> Result<()> {
@@ -493,7 +495,8 @@ async fn pair(config: AppConfig, code: Option<String>, reset: bool) -> Result<()
 
     Ok(())
 }
-*/ // end PAIRING CODE DISABLED 2026-05-24
+*/
+ // end PAIRING CODE DISABLED 2026-05-24
 
 /// Add only the mobile device from this pairing to the local trust store.
 /// The daemon's periodic backend sync never adds devices; it only revokes or
@@ -1353,9 +1356,7 @@ async fn devices(config: AppConfig, command: DeviceCommands) -> Result<()> {
             // The approve command is kept for backward compatibility but now instructs the user.
             // PAIRING CODE DISABLED 2026-05-24 — message updated to point at QR.
             println!("device approval is now done via `pocketshell pair` (QR flow)");
-            println!(
-                "run `pocketshell pair` on this host and scan the QR from the mobile app"
-            );
+            println!("run `pocketshell pair` on this host and scan the QR from the mobile app");
         }
         DeviceCommands::Revoke { device_id } => {
             let revoked = backend
@@ -1992,7 +1993,7 @@ fn expose_cmd(port: u16, ephemeral: bool) -> Result<()> {
     };
     println!("exposed port {}{}", port, suffix);
     println!(
-        "mobile can now reach http://127.0.0.1:{} via the HTTP-forward channel.",
+        "mobile can now reach http://localhost:{} via the HTTP-forward channel.",
         port
     );
 
@@ -2045,11 +2046,13 @@ fn unexpose_cmd(port: u16) -> Result<()> {
 }
 
 fn exposed_cmd() -> Result<()> {
-    let ports = ExposedPortsStore::list()
-        .map_err(|e| anyhow!("could not read allowlist: {}", e))?;
+    let ports =
+        ExposedPortsStore::list().map_err(|e| anyhow!("could not read allowlist: {}", e))?;
     if ports.is_empty() {
         println!("no ports are currently exposed.");
-        println!("run `pocketshell expose <port>` to allow mobile HTTP forwarding to a dev server.");
+        println!(
+            "run `pocketshell expose <port>` to allow mobile HTTP forwarding to a dev server."
+        );
         return Ok(());
     }
     println!("{:<8} {:<10} {}", "PORT", "EPHEMERAL", "ADDED");
@@ -2070,6 +2073,7 @@ enum MenuAction {
     TrustedDevices,
     PendingDevices,
     Sessions,
+    ExposedPorts,
     Status,
     DaemonStart,
     DaemonStop,
@@ -2087,6 +2091,7 @@ impl MenuAction {
             Self::TrustedDevices => "Trusted devices",
             Self::PendingDevices => "Pending devices",
             Self::Sessions => "Active terminal sessions",
+            Self::ExposedPorts => "Exposed dev ports",
             Self::Status => "Show status",
             Self::DaemonStart => "Daemon: start",
             Self::DaemonStop => "Daemon: stop",
@@ -2128,6 +2133,7 @@ async fn interactive_menu(config: AppConfig) -> Result<()> {
                 MenuAction::TrustedDevices,
                 MenuAction::PendingDevices,
                 MenuAction::Sessions,
+                MenuAction::ExposedPorts,
                 MenuAction::Status,
                 MenuAction::DaemonStart,
                 MenuAction::DaemonStop,
@@ -2173,6 +2179,7 @@ async fn interactive_menu(config: AppConfig) -> Result<()> {
                 devices(config.clone(), DeviceCommands::ListPending).await
             }
             MenuAction::Sessions => menu_sessions(&theme, &config, &store).await,
+            MenuAction::ExposedPorts => menu_exposed_ports(&theme),
             MenuAction::Status => status(config.clone()).await,
             MenuAction::DaemonStart => daemon_start(),
             MenuAction::DaemonStop => daemon_stop(),
@@ -2361,6 +2368,94 @@ async fn menu_sessions(
         return Ok(());
     };
     sessions_attach(attachable[idx].name.clone()).await
+}
+
+/// Manage the dev-server port allowlist. Lists currently exposed ports,
+/// lets the user allow a new one (with an optional `ephemeral` flag) or deny
+/// (remove) an existing entry. Wraps the same `expose_cmd` / `unexpose_cmd`
+/// the subcommand path uses, so auditing and ephemeral semantics are identical.
+fn menu_exposed_ports(theme: &dialoguer::theme::ColorfulTheme) -> Result<()> {
+    use console::style;
+    use dialoguer::{Confirm, Input};
+
+    loop {
+        let ports =
+            ExposedPortsStore::list().map_err(|e| anyhow!("could not read allowlist: {}", e))?;
+
+        if ports.is_empty() {
+            println!("{}", style("no ports are currently exposed.").dim());
+            println!(
+                "{}",
+                style("mobile HTTP forwarding will be rejected until you allow a port.").dim()
+            );
+        } else {
+            println!("{}", style("Currently exposed:").bold());
+            for p in &ports {
+                let tag = if p.ephemeral {
+                    style("[ephemeral]").yellow()
+                } else {
+                    style("[persistent]").green()
+                };
+                println!(
+                    "  {}  {}  {}",
+                    style(format!("{:>5}", p.port)).cyan().bold(),
+                    tag,
+                    style(format!("added {}", p.added_at)).dim(),
+                );
+            }
+        }
+        println!();
+
+        // Build menu: one "Deny" row per existing port, then an "Allow" row.
+        // Indices < ports.len() map back to the port being denied.
+        let mut items: Vec<String> = ports
+            .iter()
+            .map(|p| {
+                let suffix = if p.ephemeral { " (ephemeral)" } else { "" };
+                format!("Deny port {}{}", p.port, suffix)
+            })
+            .collect();
+        items.push(style("+ Allow a new port").green().to_string());
+
+        let Some(idx) = select_with_back(theme, "Manage exposed dev ports", &items)? else {
+            return Ok(());
+        };
+
+        if idx == ports.len() {
+            let port_input: String = Input::with_theme(theme)
+                .with_prompt("Port (1-65535)")
+                .interact_text()
+                .map_err(|e| anyhow!("input error: {e}"))?;
+            let port: u16 = match port_input.trim().parse() {
+                Ok(p) if p > 0 => p,
+                _ => {
+                    eprintln!("{}", style("not a valid port number (1-65535)").red());
+                    continue;
+                }
+            };
+            let ephemeral = Confirm::with_theme(theme)
+                .with_prompt("Ephemeral? (drops on next daemon restart — recommended for `npm run dev`)")
+                .default(true)
+                .interact_opt()
+                .map_err(|e| anyhow!("confirm error: {e}"))?
+                .unwrap_or(false);
+            expose_cmd(port, ephemeral)?;
+        } else {
+            let port = ports[idx].port;
+            let confirm = Confirm::with_theme(theme)
+                .with_prompt(format!(
+                    "Deny port {port}? Mobile will be rejected on next forward."
+                ))
+                .default(false)
+                .interact_opt()
+                .map_err(|e| anyhow!("confirm error: {e}"))?
+                .unwrap_or(false);
+            if confirm {
+                unexpose_cmd(port)?;
+            }
+        }
+        println!();
+    }
 }
 
 async fn menu_update(theme: &dialoguer::theme::ColorfulTheme) -> Result<()> {

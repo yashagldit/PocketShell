@@ -294,7 +294,11 @@ pub async fn download_and_install_with(
              https://github.com/sigstore/cosign/releases) to re-enable signature \
              verification on future updates.",
             info.archive_name,
-            if cfg!(target_os = "macos") { " and Apple codesign" } else { "" }
+            if cfg!(target_os = "macos") {
+                " and Apple codesign"
+            } else {
+                ""
+            }
         );
     } else {
         let bundle_path = staging.join(format!("{}.cosign-bundle.json", info.archive_name));

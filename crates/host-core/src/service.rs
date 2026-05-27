@@ -776,7 +776,9 @@ pub fn restart() -> Result<RestartStatus> {
         Ok(ServiceStatus::StartedDaemon) => Ok(RestartStatus::StartedDaemon),
         Ok(_) => Ok(RestartStatus::RestartedService),
         Err(e) => {
-            warn!("install_and_start during restart failed: {e} — falling back to background spawn");
+            warn!(
+                "install_and_start during restart failed: {e} — falling back to background spawn"
+            );
             start_daemon_process()?;
             Ok(RestartStatus::StartedDaemon)
         }

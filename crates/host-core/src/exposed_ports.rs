@@ -240,7 +240,10 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
             ExposedPortsStore::purge_ephemeral().unwrap();
             let after = std::fs::metadata(&p).unwrap().modified().unwrap();
-            assert_eq!(before, after, "purge with no ephemeral entries must not rewrite");
+            assert_eq!(
+                before, after,
+                "purge with no ephemeral entries must not rewrite"
+            );
         });
     }
 

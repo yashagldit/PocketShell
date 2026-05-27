@@ -228,7 +228,11 @@ pub async fn handle_audit_list(
         .params
         .get("limit")
         .and_then(|v| v.as_u64())
-        .map(|n| usize::try_from(n).unwrap_or(usize::MAX).clamp(1, AUDIT_LIST_MAX_LIMIT))
+        .map(|n| {
+            usize::try_from(n)
+                .unwrap_or(usize::MAX)
+                .clamp(1, AUDIT_LIST_MAX_LIMIT)
+        })
         .unwrap_or(AUDIT_LIST_DEFAULT_LIMIT);
     let before_ts = req
         .params
@@ -239,9 +243,7 @@ pub async fn handle_audit_list(
         if chrono::DateTime::parse_from_rfc3339(b).is_err() {
             return RpcResponse::err(
                 id,
-                RpcError::invalid_params(
-                    "before_ts must be an RFC3339 timestamp with timezone",
-                ),
+                RpcError::invalid_params("before_ts must be an RFC3339 timestamp with timezone"),
             );
         }
     }

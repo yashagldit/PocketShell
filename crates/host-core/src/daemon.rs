@@ -247,6 +247,26 @@ fn audit_channel_auth(
     }
 }
 
+fn data_channel_auth_key(
+    kind: &str,
+    mobile_device_id: &str,
+    channel: &Arc<RTCDataChannel>,
+) -> String {
+    format!("{kind}:{mobile_device_id}:{:p}", Arc::as_ptr(channel))
+}
+
+fn clear_data_channel_auth(
+    authenticated_channels: &mut HashSet<String>,
+    pending_auth: &mut HashMap<String, (String, String)>,
+    kind: &str,
+    mobile_device_id: &str,
+) {
+    let legacy_key = format!("{kind}:{mobile_device_id}");
+    let scoped_prefix = format!("{legacy_key}:");
+    authenticated_channels.retain(|key| key != &legacy_key && !key.starts_with(&scoped_prefix));
+    pending_auth.retain(|key, _| key != &legacy_key && !key.starts_with(&scoped_prefix));
+}
+
 /// Sentinel `mobile_device_id` for audit records where the requesting device
 /// did not supply one (or supplied an empty string). Writing a literal value
 /// instead of omitting the field lets SIEMs correlate anonymous probes —
@@ -4248,6 +4268,17 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                         }
                         WebRtcEvent::HttpChannelOpened { mobile_device_id, channel } => {
                             info!("http-forward channel opened for mobile {}", mobile_device_id);
+                            // Auth is scoped to the concrete data-channel instance,
+                            // not just the mobile device. A reconnect can open a
+                            // fresh `http-*` channel before the old Close event is
+                            // delivered; clearing stale keys here prevents the new
+                            // channel from inheriting the old channel's auth state.
+                            clear_data_channel_auth(
+                                &mut authenticated_channels,
+                                &mut pending_auth,
+                                "http",
+                                &mobile_device_id,
+                            );
                             // If a session already exists for this device
                             // (e.g. mobile reconnected its http channel
                             // before the prior Close event was processed),
@@ -4266,14 +4297,16 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                 mobile_device_id.clone(),
                                 crate::http_forward::HttpForwardSession::new(),
                             );
-                            let http_channel_key = format!("http:{mobile_device_id}");
+                            let http_channel_key =
+                                data_channel_auth_key("http", &mobile_device_id, &channel);
                             let mut nonce_bytes = [0u8; 32];
                             rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
                             let nonce_b64 = base64::engine::general_purpose::STANDARD.encode(&nonce_bytes);
-                            pending_auth.insert(http_channel_key, (nonce_b64.clone(), mobile_device_id.clone()));
+                            pending_auth.insert(http_channel_key.clone(), (nonce_b64.clone(), mobile_device_id.clone()));
                             let challenge = build_auth_message(&serde_json::json!({
                                 "type": "auth_challenge",
                                 "nonce": nonce_b64,
+                                "channel_key": http_channel_key,
                             }));
                             if let Err(err) = channel.send(&bytes::Bytes::from(challenge)).await {
                                 warn!("http-forward auth challenge send failed for mobile {}: {}", mobile_device_id, err);
@@ -4286,13 +4319,17 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                             if let Some(mut sess) = http_forward_sessions.remove(&mobile_device_id) {
                                 sess.shutdown();
                             }
-                            let http_channel_key = format!("http:{mobile_device_id}");
-                            authenticated_channels.remove(&http_channel_key);
-                            pending_auth.remove(&http_channel_key);
+                            clear_data_channel_auth(
+                                &mut authenticated_channels,
+                                &mut pending_auth,
+                                "http",
+                                &mobile_device_id,
+                            );
                             webrtc_mgr.prune_http_channels();
                         }
                         WebRtcEvent::HttpForwardMessage { mobile_device_id, data, channel } => {
-                            let http_channel_key = format!("http:{mobile_device_id}");
+                            let http_channel_key =
+                                data_channel_auth_key("http", &mobile_device_id, &channel);
                             if data.len() > 5 && data[0] == 0x00 && &data[1..5] == b"PSAU" {
                                 if let Ok(json_str) = std::str::from_utf8(&data[5..]) {
                                     if let Ok(msg) = serde_json::from_str::<serde_json::Value>(json_str) {
@@ -5558,8 +5595,7 @@ async fn handle_signal(
                                 "operation": "host_transfer_offer",
                                 "stage": "mobile_attestation",
                             })),
-                            ..AuditEvent::new("crypto.signature_failed")
-                                .failed(err.to_string())
+                            ..AuditEvent::new("crypto.signature_failed").failed(err.to_string())
                         },
                         store,
                     );
@@ -5605,8 +5641,7 @@ async fn handle_signal(
                             "operation": "host_transfer_offer",
                             "stage": "attestation_mismatch",
                         })),
-                        ..AuditEvent::new("crypto.signature_failed")
-                            .failed("attestation_mismatch")
+                        ..AuditEvent::new("crypto.signature_failed").failed("attestation_mismatch")
                     },
                     store,
                 );
@@ -5650,8 +5685,7 @@ async fn handle_signal(
                             "stage": "sdp_signature",
                             "source_host_id": source_host_id,
                         })),
-                        ..AuditEvent::new("crypto.signature_failed")
-                            .failed(err.to_string())
+                        ..AuditEvent::new("crypto.signature_failed").failed(err.to_string())
                     },
                     store,
                 );
@@ -5787,8 +5821,7 @@ async fn handle_signal(
                                 "stage": "sdp_signature",
                                 "target_host_id": transfer.target_host_id,
                             })),
-                            ..AuditEvent::new("crypto.signature_failed")
-                                .failed(err.to_string())
+                            ..AuditEvent::new("crypto.signature_failed").failed(err.to_string())
                         },
                         store,
                     );
@@ -6849,7 +6882,9 @@ async fn handle_signal(
                     );
                     tokio::spawn(async move {
                         let start = std::time::Instant::now();
-                        let result = crate::files::handle_files_action_with_context(&payload, &router, &ctx).await;
+                        let result =
+                            crate::files::handle_files_action_with_context(&payload, &router, &ctx)
+                                .await;
                         let elapsed = start.elapsed();
 
                         let response_payload = match result {
@@ -7703,7 +7738,9 @@ async fn handle_signal(
             let ctx = build_file_action_context(store, &mobile_device_id);
             tokio::spawn(async move {
                 let start = std::time::Instant::now();
-                let result = crate::files::handle_files_action_with_context(&file_payload, &router, &ctx).await;
+                let result =
+                    crate::files::handle_files_action_with_context(&file_payload, &router, &ctx)
+                        .await;
                 let elapsed = start.elapsed();
 
                 let response_json = match result {
@@ -8475,12 +8512,18 @@ mod tests {
 
     #[test]
     fn classify_ws_auth_failure_replay_is_crypto_replay() {
-        assert_eq!(classify_ws_auth_failure("replayed nonce"), "crypto.replay_detected");
+        assert_eq!(
+            classify_ws_auth_failure("replayed nonce"),
+            "crypto.replay_detected"
+        );
     }
 
     #[test]
     fn classify_ws_auth_failure_signature_paths_are_crypto() {
-        assert_eq!(classify_ws_auth_failure("payload hash mismatch"), "crypto.signature_failed");
+        assert_eq!(
+            classify_ws_auth_failure("payload hash mismatch"),
+            "crypto.signature_failed"
+        );
         assert_eq!(
             classify_ws_auth_failure("ed25519 signature did not verify: bad sig"),
             "crypto.signature_failed"
@@ -8499,8 +8542,14 @@ mod tests {
     fn classify_ws_auth_failure_structural_errors_are_authz() {
         // The bug this guards: substring matching on "signature"/"hash"
         // mis-labels these structural problems as crypto failures.
-        assert_eq!(classify_ws_auth_failure("missing signature"), "authz.denied");
-        assert_eq!(classify_ws_auth_failure("missing payload_hash"), "authz.denied");
+        assert_eq!(
+            classify_ws_auth_failure("missing signature"),
+            "authz.denied"
+        );
+        assert_eq!(
+            classify_ws_auth_failure("missing payload_hash"),
+            "authz.denied"
+        );
         assert_eq!(classify_ws_auth_failure("missing nonce"), "authz.denied");
         assert_eq!(classify_ws_auth_failure("missing ts"), "authz.denied");
         assert_eq!(classify_ws_auth_failure("missing ws_auth"), "authz.denied");

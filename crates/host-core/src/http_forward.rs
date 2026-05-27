@@ -131,14 +131,36 @@ pub struct ResponseHead {
 
 #[derive(Debug, Clone)]
 pub enum Frame {
-    ReqHead { id: u32, head: RequestHead },
-    ReqBody { id: u32, data: Bytes },
-    ReqEnd { id: u32 },
-    ReqCancel { id: u32 },
-    RespHead { id: u32, head: ResponseHead },
-    RespBody { id: u32, data: Bytes },
-    RespEnd { id: u32 },
-    RespError { id: u32, code: ErrorCode, message: String },
+    ReqHead {
+        id: u32,
+        head: RequestHead,
+    },
+    ReqBody {
+        id: u32,
+        data: Bytes,
+    },
+    ReqEnd {
+        id: u32,
+    },
+    ReqCancel {
+        id: u32,
+    },
+    RespHead {
+        id: u32,
+        head: ResponseHead,
+    },
+    RespBody {
+        id: u32,
+        data: Bytes,
+    },
+    RespEnd {
+        id: u32,
+    },
+    RespError {
+        id: u32,
+        code: ErrorCode,
+        message: String,
+    },
 }
 
 impl Frame {
@@ -363,10 +385,7 @@ impl<'a> Cursor<'a> {
         String::from_utf8(bytes.to_vec()).map_err(|_| CodecError::BadUtf8 { field })
     }
 
-    fn read_long_string(
-        &mut self,
-        field: &'static str,
-    ) -> std::result::Result<String, CodecError> {
+    fn read_long_string(&mut self, field: &'static str) -> std::result::Result<String, CodecError> {
         let len = self.read_u16()? as usize;
         let bytes = self.take(len)?;
         String::from_utf8(bytes.to_vec()).map_err(|_| CodecError::BadUtf8 { field })
@@ -472,10 +491,7 @@ impl HttpForwardSession {
                     return Ingest::SendBack(Frame::RespError {
                         id,
                         code: ErrorCode::BodyTooLarge,
-                        message: format!(
-                            "request body exceeded {} bytes",
-                            REQ_BODY_MAX_BYTES
-                        ),
+                        message: format!("request body exceeded {} bytes", REQ_BODY_MAX_BYTES),
                     });
                 }
                 entry.body.extend_from_slice(&data);
@@ -639,6 +655,12 @@ pub async fn forward_request(req: ReadyRequest) -> ForwardOutcome {
         }
     };
     if !allowed {
+        tracing::info!(
+            port = req.head.port,
+            method = %req.head.method,
+            path = %log_path(&req.head.path),
+            "http-forward denied: port not in allowlist"
+        );
         // Send a single error frame; no head. We send via `head` field so
         // the daemon writes it in the order: error (alone). The body
         // receiver immediately closes.
@@ -652,7 +674,21 @@ pub async fn forward_request(req: ReadyRequest) -> ForwardOutcome {
 
     // Build the upstream request. Pass through `Host:` as `localhost:<port>`
     // so Vite/Webpack's DNS-rebinding guard doesn't reject the request.
-    let url = format!("http://127.0.0.1:{}{}", req.head.port, req.head.path);
+    //
+    // Use `localhost` (not `127.0.0.1`) so the OS resolver returns whatever
+    // family the host's `getaddrinfo` says first. Node 17+ defaults
+    // `dns.lookup` to `verbatim` order, and macOS returns `::1` first — so
+    // Vite et al. bound to `localhost` end up listening on `[::1]:<port>`
+    // only, with no IPv4 socket. Hardcoding `127.0.0.1` here would
+    // refuse-connect against any such dev server.
+    //
+    // Note: reqwest's default `hyper-util` connector iterates resolved
+    // addresses sequentially (no Happy Eyeballs by default). For most
+    // dev setups `/etc/hosts` returns the single working family first;
+    // if a host has both `127.0.0.1` and `::1` in `/etc/hosts` but no
+    // IPv6 connectivity, the first connect will block until kernel
+    // timeout. Revisit with a Happy-Eyeballs resolver if that comes up.
+    let url = format!("http://localhost:{}{}", req.head.port, req.head.path);
     let mut builder = reqwest::Client::builder()
         .timeout(UPSTREAM_TIMEOUT)
         // No keepalive — dev servers come and go.
@@ -765,6 +801,13 @@ pub async fn forward_request(req: ReadyRequest) -> ForwardOutcome {
     };
 
     let status = resp.status().as_u16();
+    tracing::info!(
+        port = req.head.port,
+        method = %req.head.method,
+        path = %log_path(&req.head.path),
+        status,
+        "http-forward completed"
+    );
     let mut headers: Vec<(String, String)> = Vec::with_capacity(resp.headers().len());
     for (name, value) in resp.headers() {
         // HTTP header values are ISO-8859-1 (RFC 7230 §3.2.4), not
@@ -856,6 +899,19 @@ pub async fn forward_request(req: ReadyRequest) -> ForwardOutcome {
     }
 }
 
+/// Render a forwarded request's path for operator logs without leaking
+/// sensitive query string content (OAuth `code=`, session tokens, etc.)
+/// and without unbounded growth from long deep links. Strips everything
+/// from the first `?` and truncates the result at 128 bytes.
+fn log_path(path: &str) -> String {
+    let stripped = path.split('?').next().unwrap_or("");
+    if stripped.len() <= 128 {
+        stripped.to_string()
+    } else {
+        format!("{}…", &stripped[..128])
+    }
+}
+
 fn header_is_hop_by_hop(name: &str) -> bool {
     matches!(
         name.to_ascii_lowercase().as_str(),
@@ -904,6 +960,25 @@ mod tests {
                 ("User-Agent".into(), "pocketshell-mobile/1.0".into()),
             ],
         }
+    }
+
+    #[test]
+    fn log_path_strips_query_and_truncates() {
+        // No query: pass through.
+        assert_eq!(log_path("/api/users"), "/api/users");
+        // Query stripped — tokens never reach the log file.
+        assert_eq!(
+            log_path("/oauth/callback?code=secret_token_abc&state=xyz"),
+            "/oauth/callback"
+        );
+        // Long path truncated with ellipsis so 128-char cap holds.
+        let long = format!("/{}", "a".repeat(200));
+        let out = log_path(&long);
+        assert!(out.ends_with('…'));
+        assert!(out.chars().count() <= 129);
+        // Empty input is fine.
+        assert_eq!(log_path(""), "");
+        assert_eq!(log_path("?key=val"), "");
     }
 
     #[test]
