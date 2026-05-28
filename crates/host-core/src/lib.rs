@@ -6,6 +6,7 @@ pub mod auth;
 pub mod coding_sessions;
 pub mod config;
 pub mod daemon;
+pub mod dev_ports;
 pub mod discovery;
 pub mod error;
 pub mod exposed_ports;

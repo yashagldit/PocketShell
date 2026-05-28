@@ -57,6 +57,21 @@ pub const RESP_BODY_CHUNK_BYTES: usize = 60 * 1024;
 /// to OOM the daemon if mobile decides to ship a 4 GB blob.
 pub const REQ_BODY_MAX_BYTES: usize = 64 * 1024 * 1024;
 
+/// Upper bound on a single response body the forwarder will stream back
+/// before aborting with [`ErrorCode::BodyTooLarge`]. Mirrors the mobile
+/// hook's `RESPONSE_BODY_MAX_BYTES` (32 MB): without a host-side cap a dev
+/// server returning a 200 MB asset would be streamed all the way to the
+/// phone only to be rejected there, wasting the WebRTC channel (shared with
+/// the terminal) on bytes that get thrown away.
+pub const RESP_BODY_MAX_BYTES: usize = 32 * 1024 * 1024;
+
+/// Maximum number of forwards a single channel may have in flight at once.
+/// A SPA fires dozens of subresource requests in parallel, so this is set
+/// well above a typical first-paint fan-out — its job is to shed a runaway
+/// (a fetch loop, an abusive page) before it spawns unbounded tasks and
+/// starves the terminal/file channels multiplexed onto the same peer.
+pub const MAX_CONCURRENT_REQUESTS: usize = 64;
+
 /// How long we'll wait for the upstream dev server to send headers. Dev
 /// servers cold-start slowly (Vite first-request, Next.js compile-on-demand)
 /// but 30 s is plenty in practice.
@@ -100,6 +115,10 @@ pub enum ErrorCode {
     UpstreamTimeout = 4,
     BodyTooLarge = 5,
     InternalError = 6,
+    /// The channel already has [`MAX_CONCURRENT_REQUESTS`] forwards in
+    /// flight; this one is shed rather than queued so a misbehaving page
+    /// can't starve the terminal/file channels that share the WebRTC peer.
+    TooManyRequests = 7,
 }
 
 impl ErrorCode {
@@ -110,6 +129,7 @@ impl ErrorCode {
             3 => Self::MalformedFrame,
             4 => Self::UpstreamTimeout,
             5 => Self::BodyTooLarge,
+            7 => Self::TooManyRequests,
             _ => Self::InternalError,
         }
     }
@@ -504,6 +524,23 @@ impl HttpForwardSession {
                 if entry.aborted {
                     return Ingest::Nothing; // error already sent on the overflow
                 }
+                // Shed load past the concurrency cap. `reap_completed_in_flight`
+                // ran at the top of `ingest`, so `in_flight` only counts
+                // forwards whose spawned task hasn't dropped its cancel
+                // receiver yet. Refuse rather than queue: a queued request
+                // would still hold buffered body bytes and the mobile WebView
+                // surfaces the error as a failed subresource, which is the
+                // honest outcome when a page tries to open more sockets than
+                // we're willing to multiplex onto the shared peer.
+                if self.in_flight.len() >= MAX_CONCURRENT_REQUESTS {
+                    return Ingest::SendBack(Frame::RespError {
+                        id,
+                        code: ErrorCode::TooManyRequests,
+                        message: format!(
+                            "too many concurrent forwards (cap {MAX_CONCURRENT_REQUESTS}); retry shortly"
+                        ),
+                    });
+                }
                 // Create a oneshot cancellation channel for this request.
                 // The Sender stays in `in_flight` so a later `ReqCancel`
                 // can signal the spawned forward task; the Receiver is
@@ -839,6 +876,7 @@ pub async fn forward_request(req: ReadyRequest) -> ForwardOutcome {
     tokio::spawn(async move {
         let mut resp = resp;
         let mut cancel = cancel;
+        let mut sent_bytes: usize = 0;
         loop {
             let chunk_outcome = tokio::select! {
                 biased;
@@ -856,6 +894,23 @@ pub async fn forward_request(req: ReadyRequest) -> ForwardOutcome {
             };
             match chunk_outcome {
                 Ok(Some(chunk)) => {
+                    // Abort once the cumulative body crosses the cap. The
+                    // mobile hook enforces the same 32 MB limit, so without
+                    // this we'd stream tens of MB the phone is just going to
+                    // discard — wasted bytes on a channel the terminal shares.
+                    if sent_bytes.saturating_add(chunk.len()) > RESP_BODY_MAX_BYTES {
+                        let _ = tx
+                            .send(Frame::RespError {
+                                id,
+                                code: ErrorCode::BodyTooLarge,
+                                message: format!(
+                                    "response body exceeded {RESP_BODY_MAX_BYTES} bytes"
+                                ),
+                            })
+                            .await;
+                        return;
+                    }
+                    sent_bytes += chunk.len();
                     // Split into RESP_BODY_CHUNK_BYTES pieces to stay
                     // under the SCTP message ceiling.
                     for slice in chunk.chunks(RESP_BODY_CHUNK_BYTES) {
@@ -1216,6 +1271,70 @@ mod tests {
         // ReqEnd after abort is a no-op (no ReadyRequest emitted).
         let end = s.ingest(Frame::ReqEnd { id: 1 });
         assert!(matches!(end, Ingest::Nothing));
+    }
+
+    #[test]
+    fn session_sheds_load_past_concurrency_cap() {
+        let mut s = HttpForwardSession::new();
+        // Promote MAX_CONCURRENT_REQUESTS requests and hold their cancel
+        // receivers so `reap_completed_in_flight` can't prune them — this
+        // simulates that many forwards genuinely in flight.
+        let mut held = Vec::new();
+        for id in 0..MAX_CONCURRENT_REQUESTS as u32 {
+            let _ = s.ingest(Frame::ReqHead {
+                id,
+                head: sample_req_head(),
+            });
+            match s.ingest(Frame::ReqEnd { id }) {
+                Ingest::ReadyRequest(r) => held.push(r.cancel),
+                other => panic!("expected ReadyRequest for id {id}, got {other:?}"),
+            }
+        }
+        assert_eq!(s.in_flight_count(), MAX_CONCURRENT_REQUESTS);
+
+        // The next request must be shed with TooManyRequests, not promoted.
+        let over = MAX_CONCURRENT_REQUESTS as u32;
+        let _ = s.ingest(Frame::ReqHead {
+            id: over,
+            head: sample_req_head(),
+        });
+        match s.ingest(Frame::ReqEnd { id: over }) {
+            Ingest::SendBack(Frame::RespError { id, code, .. }) => {
+                assert_eq!(id, over);
+                assert_eq!(code, ErrorCode::TooManyRequests);
+            }
+            other => panic!("expected TooManyRequests, got {other:?}"),
+        }
+        assert_eq!(
+            s.in_flight_count(),
+            MAX_CONCURRENT_REQUESTS,
+            "shed request must not be counted as in flight"
+        );
+
+        // Once an in-flight task finishes (its cancel receiver drops), the
+        // slot frees and a new request is admitted again.
+        held.pop();
+        let _ = s.ingest(Frame::ReqHead {
+            id: over + 1,
+            head: sample_req_head(),
+        });
+        assert!(matches!(
+            s.ingest(Frame::ReqEnd { id: over + 1 }),
+            Ingest::ReadyRequest(_)
+        ));
+    }
+
+    #[test]
+    fn error_code_roundtrips_too_many_requests() {
+        let f = Frame::RespError {
+            id: 3,
+            code: ErrorCode::TooManyRequests,
+            message: "slow down".into(),
+        };
+        match decode(&encode(&f)).unwrap() {
+            Frame::RespError { code, .. } => assert_eq!(code, ErrorCode::TooManyRequests),
+            other => panic!("wrong variant: {other:?}"),
+        }
     }
 
     #[test]

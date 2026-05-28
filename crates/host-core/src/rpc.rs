@@ -110,6 +110,7 @@ pub async fn dispatch(req: RpcRequest) -> RpcResponse {
         "version/info" => Ok(method_version_info()),
         "system/kill_process" => method_kill_process(&req.params),
         "system/reboot" => method_reboot(&req.params),
+        "ports/list_dev" => method_list_dev_ports(&req.params).await,
         m if is_stateful_method(m) => Err(RpcError::internal(format!(
             "stateful method '{m}' must be routed via the daemon event loop"
         ))),
@@ -340,6 +341,37 @@ fn method_version_info() -> Value {
         "host_agent": env!("CARGO_PKG_VERSION"),
         "protocol": CONTROL_PROTOCOL_VERSION,
     })
+}
+
+/// Stateless handler for `ports/list_dev`. Enumerates locally-listening TCP
+/// ports and, by default, probes each to classify it as a dev server and
+/// flag whether it is already exposed for forwarding.
+///
+/// Read-only: this never exposes a port — that still requires a TTY action
+/// (`pocketshell expose <port>`). See [`crate::dev_ports`] for the threat
+/// model rationale.
+///
+/// Params (all optional):
+/// - `probe`: bool (default `true`) — when false, skip the HTTP probe and
+///   return ports without `server_kind`/`is_http` (fast, no sockets opened).
+///
+/// Response: `{ ports: [{ port, pid?, process_name?, is_exposed, is_http,
+/// server_kind?, server_header?, probe_status? }], probed, captured_at_ms }`.
+async fn method_list_dev_ports(params: &Value) -> std::result::Result<Value, RpcError> {
+    let probe = params
+        .get("probe")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let ports = crate::dev_ports::list_dev_ports(probe).await;
+    serde_json::to_value(&ports)
+        .map(|ports| {
+            serde_json::json!({
+                "ports": ports,
+                "probed": probe,
+                "captured_at_ms": now_ms(),
+            })
+        })
+        .map_err(|e| RpcError::internal(format!("serialize dev ports: {e}")))
 }
 
 fn method_kill_process(params: &Value) -> std::result::Result<Value, RpcError> {
@@ -916,6 +948,25 @@ mod tests {
             .unwrap()
             .len();
         assert!(returned <= crate::stats::LIST_PROCESSES_DEFAULT_LIMIT);
+    }
+
+    #[tokio::test]
+    async fn list_dev_ports_returns_array_shape() {
+        // probe:false avoids opening any sockets — we only assert the
+        // response shape and that enumeration doesn't error. The actual port
+        // list depends on the test host, so we don't assert contents.
+        let req = RpcRequest {
+            id: "ports".into(),
+            method: "ports/list_dev".into(),
+            params: serde_json::json!({ "probe": false }),
+        };
+        let resp = dispatch(req).await;
+        assert_eq!(resp.id, "ports");
+        assert!(resp.error.is_none(), "list_dev must not error: {:?}", resp.error);
+        let result = resp.result.unwrap();
+        assert!(result.get("ports").unwrap().is_array());
+        assert_eq!(result.get("probed").and_then(|v| v.as_bool()), Some(false));
+        assert!(result.get("captured_at_ms").and_then(|v| v.as_i64()).is_some());
     }
 
     #[tokio::test]
