@@ -128,13 +128,30 @@ impl AppConfig {
     }
 
     pub fn default_shell() -> String {
-        std::env::var("SHELL").unwrap_or_else(|_| {
-            if cfg!(target_os = "macos") {
-                "/bin/zsh".to_string()
-            } else {
-                "/bin/bash".to_string()
+        // Explicit override wins on every platform.
+        if let Ok(s) = std::env::var("POCKETSHELL_SHELL") {
+            if !s.is_empty() {
+                return s;
             }
-        })
+        }
+
+        #[cfg(windows)]
+        {
+            // PowerShell ships on all supported Windows versions and gives a
+            // far better remote-terminal experience than cmd.exe. `cmd.exe`
+            // remains reachable via POCKETSHELL_SHELL for users who prefer it.
+            "powershell.exe".to_string()
+        }
+        #[cfg(not(windows))]
+        {
+            std::env::var("SHELL").unwrap_or_else(|_| {
+                if cfg!(target_os = "macos") {
+                    "/bin/zsh".to_string()
+                } else {
+                    "/bin/bash".to_string()
+                }
+            })
+        }
     }
 }
 

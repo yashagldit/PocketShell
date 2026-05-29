@@ -36,6 +36,14 @@ impl portable_pty::Child for DummyChild {
     fn process_id(&self) -> Option<u32> {
         None
     }
+    // On Windows the `Child` trait additionally requires exposing the
+    // underlying OS process handle. `DummyChild` owns no real process (the
+    // actual one lives in the `pocketshell rc` relay), so there is no handle —
+    // mirrors `process_id` returning `None`.
+    #[cfg(windows)]
+    fn as_raw_handle(&self) -> Option<std::os::windows::io::RawHandle> {
+        None
+    }
 }
 
 pub struct SessionOutputChunk {
@@ -245,6 +253,13 @@ impl SessionManager {
     }
 
     /// Relay I/O to/from an existing PTY device (used by `pocketshell rc` exposed sessions).
+    ///
+    /// Unix-only: it opens a real `/dev/pts/*` device and verifies it with
+    /// `isatty(3)`. Relaying an externally-owned terminal has no portable
+    /// equivalent on Windows (ConPTY pseudoconsoles aren't filesystem device
+    /// nodes), so on non-Unix hosts this returns an error. Fresh sessions
+    /// spawned by the daemon itself still work everywhere via `portable-pty`.
+    #[cfg(unix)]
     pub fn create_pty_relay_session(&mut self, session_id: String, pty_path: &str) -> Result<()> {
         use std::fs::OpenOptions;
 
@@ -351,6 +366,15 @@ impl SessionManager {
         );
 
         Ok(())
+    }
+
+    /// Non-Unix stub: relaying an existing PTY device isn't supported.
+    #[cfg(not(unix))]
+    pub fn create_pty_relay_session(&mut self, _session_id: String, _pty_path: &str) -> Result<()> {
+        Err(HostError::Pty(
+            "PTY relay (`pocketshell rc` exposed sessions) is not supported on this platform"
+                .to_string(),
+        ))
     }
 
     fn create_session_with_command(
@@ -825,6 +849,8 @@ mod tests {
         assert!(m.create_pty_relay_session("s1".into(), "").is_err());
     }
 
+    #[cfg(unix)]
+    #[cfg(unix)]
     #[test]
     fn create_pty_relay_nonexistent_path_errors() {
         let mut m = SessionManager::new(4);

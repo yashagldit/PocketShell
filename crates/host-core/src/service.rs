@@ -81,6 +81,13 @@ pub fn install_and_start() -> Result<ServiceStatus> {
                 );
             }
         }
+    } else if cfg!(target_os = "windows") {
+        // No SCM/Task Scheduler integration yet — the agent runs as a detached
+        // background process via the fallback below. It does NOT survive logout
+        // or reboot; users who want boot persistence should add a Startup-folder
+        // shortcut or Scheduled Task running `pocketshell daemon run`. A native
+        // Windows Service wrapper is tracked as a follow-up.
+        info!("Windows: starting host agent as a background process (no boot persistence yet)");
     }
 
     // Fallback: start daemon as a detached process (same as `daemon start`)
@@ -441,7 +448,7 @@ fn install_systemd_system_service(exe_path: &str) -> Result<ServiceStatus> {
 }
 
 fn run_privileged(context: &str, args: &[&str]) -> Result<()> {
-    let mut cmd = if nix::unistd::Uid::effective().is_root() {
+    let mut cmd = if crate::platform::is_root() {
         let mut c = Command::new(args[0]);
         c.args(&args[1..]);
         c
@@ -682,11 +689,23 @@ fn start_daemon_process() -> Result<()> {
     let exe =
         std::env::current_exe().map_err(|e| HostError::Config(format!("resolve binary: {e}")))?;
 
-    let child = Command::new(exe)
-        .args(["daemon", "run"])
+    let mut cmd = Command::new(exe);
+    cmd.args(["daemon", "run"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::from(log))
-        .stderr(std::process::Stdio::from(log2))
+        .stderr(std::process::Stdio::from(log2));
+
+    // On Windows the child otherwise inherits the launching console and shows a
+    // window / dies on Ctrl-C. DETACHED_PROCESS (0x8) + CREATE_NO_WINDOW
+    // (0x0800_0000) give us a true background daemon. (On Unix the daemon is
+    // adopted by init once this CLI exits; no flag needed.)
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0000_0008 | 0x0800_0000);
+    }
+
+    let child = cmd
         .spawn()
         .map_err(|e| HostError::Config(format!("spawn daemon: {e}")))?;
 

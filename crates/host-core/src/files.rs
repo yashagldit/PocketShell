@@ -58,6 +58,7 @@ const ALLOWED_HOME_PREFIXES: &[&str] = &[".claude", ".codex"];
 /// `/tmp`, `/usr` (outside `/usr/local/etc`), `/opt`, and `/var/tmp` /
 /// `/var/folders` are intentionally NOT denied — legitimate scratch /
 /// build / install locations.
+#[cfg(not(windows))]
 const DENIED_ABSOLUTE_PREFIXES: &[&str] = &[
     "/etc",
     "/root",
@@ -81,6 +82,21 @@ const DENIED_ABSOLUTE_PREFIXES: &[&str] = &[
     "/private/var/spool",
     "/private/var/root",
     "/private/var/audit",
+];
+
+/// Windows counterpart to the absolute denylist. This is best-effort
+/// defense-in-depth: `Path::starts_with` comparison is case-sensitive and
+/// drive-letter-specific, so it's a backstop layered on top of the per-user
+/// home scoping rather than a hard boundary (the same is true of the Unix
+/// list, which the daemon's non-root requirement already fronts). Most user
+/// data lives under the profile directory, which the home-relative rules
+/// already protect.
+#[cfg(windows)]
+const DENIED_ABSOLUTE_PREFIXES: &[&str] = &[
+    r"C:\Windows",
+    r"C:\Program Files",
+    r"C:\Program Files (x86)",
+    r"C:\ProgramData",
 ];
 
 /// Resolved denylist entries against a specific home dir + the global
@@ -172,7 +188,20 @@ fn default_file_home() -> PathBuf {
         }
     }
 
-    dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"))
+    dirs::home_dir().unwrap_or_else(default_home_fallback)
+}
+
+/// Last-resort home directory when `dirs::home_dir()` yields nothing. On Unix
+/// the root `/` keeps the historical denylist semantics; on Windows there's no
+/// meaningful root, so fall back to the temp directory.
+#[cfg(not(windows))]
+fn default_home_fallback() -> PathBuf {
+    PathBuf::from("/")
+}
+
+#[cfg(windows)]
+fn default_home_fallback() -> PathBuf {
+    std::env::temp_dir()
 }
 
 #[cfg(unix)]

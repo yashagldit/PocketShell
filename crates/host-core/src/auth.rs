@@ -25,12 +25,12 @@ use base64::Engine;
 use chrono::{SecondsFormat, Utc};
 use ed25519_dalek::{Signer, SigningKey};
 use std::fs::{File, OpenOptions};
-use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
 use tracing::{info, warn};
 
-/// RAII guard for the cross-process refresh lock. Releases via `flock(LOCK_UN)`
-/// (implicit when the file descriptor is closed on drop).
+/// RAII guard for the cross-process refresh lock. The advisory lock is
+/// released when the file handle is closed on drop (`flock(LOCK_UN)` on Unix,
+/// `UnlockFile` on Windows — both handled by `fs2`).
 pub struct RefreshLock {
     _file: File,
 }
@@ -54,11 +54,9 @@ pub fn acquire_refresh_lock() -> Result<RefreshLock> {
         .write(true)
         .open(&path)?;
 
-    // SAFETY: `flock` only inspects the fd we pass; `file` outlives the call.
-    let rc = unsafe { nix::libc::flock(file.as_raw_fd(), nix::libc::LOCK_EX) };
-    if rc != 0 {
-        return Err(HostError::Io(std::io::Error::last_os_error()));
-    }
+    // Exclusive advisory lock, blocking until any other process releases it.
+    // Released when `file` drops (held inside the returned guard).
+    crate::platform::lock_exclusive(&file).map_err(HostError::Io)?;
     Ok(RefreshLock { _file: file })
 }
 

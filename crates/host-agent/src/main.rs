@@ -15,8 +15,6 @@ use host_core::models::{AgentState, AuthState, HostIdentity, HostInitiatedPollOu
 use host_core::secure::parse_jwt_exp;
 use host_core::stats::StatsCollector;
 use host_core::store::StateStore;
-use nix::sys::signal::{kill, Signal};
-use nix::unistd::Pid;
 use rand::rngs::OsRng;
 use std::fs;
 use std::io::{self, Write};
@@ -970,7 +968,7 @@ async fn logout(reset: bool) -> Result<()> {
     let paths = AppConfig::paths()?;
     if let Some(pid) = read_pid(&paths.pid_file) {
         if pid_running(pid) {
-            let _ = kill(Pid::from_raw(pid), Signal::SIGTERM);
+            terminate_pid(pid);
             for _ in 0..20 {
                 if !pid_running(pid) {
                     break;
@@ -1125,7 +1123,7 @@ async fn uninstall_cmd(yes: bool, keep_data: bool, keep_binary: bool) -> Result<
     if let Ok(paths) = AppConfig::paths() {
         if let Some(pid) = read_pid(&paths.pid_file) {
             if pid_running(pid) {
-                let _ = kill(Pid::from_raw(pid), Signal::SIGTERM);
+                terminate_pid(pid);
                 for _ in 0..20 {
                     if !pid_running(pid) {
                         break;
@@ -1447,7 +1445,7 @@ fn daemon_stop() -> Result<()> {
     let paths = AppConfig::paths()?;
     if let Some(pid) = read_pid(&paths.pid_file) {
         if pid_running(pid) {
-            let _ = kill(Pid::from_raw(pid), Signal::SIGTERM);
+            terminate_pid(pid);
             for _ in 0..20 {
                 if !pid_running(pid) {
                     break;
@@ -1484,7 +1482,7 @@ fn daemon_restart() -> Result<()> {
     let service_running = host_core::service::is_service_running();
     if let Some(p) = pid {
         if !service_running {
-            let _ = kill(Pid::from_raw(p), Signal::SIGTERM);
+            terminate_pid(p);
             for _ in 0..50 {
                 if !pid_running(p) {
                     break;
@@ -1761,6 +1759,7 @@ fn print_sessions_overview(
     }
 }
 
+#[cfg(unix)]
 async fn sessions_attach(session_id: String) -> Result<()> {
     use host_core::local_attach;
     use nix::sys::termios;
@@ -1915,6 +1914,17 @@ async fn sessions_attach(session_id: String) -> Result<()> {
     result
 }
 
+/// Local attach relies on a Unix-domain socket plus raw-mode termios, neither
+/// of which is wired up on non-Unix hosts yet. Mobile session resume is
+/// unaffected.
+#[cfg(not(unix))]
+async fn sessions_attach(_session_id: String) -> Result<()> {
+    Err(anyhow!(
+        "`pocketshell sessions attach` is not supported on this platform yet; resume the session from the mobile app instead"
+    ))
+}
+
+#[cfg(unix)]
 fn term_size() -> (u16, u16) {
     use nix::libc;
     unsafe {
@@ -2364,8 +2374,7 @@ fn print_boot_persistence_warning() {
 /// If invoked as root (sudo), ask the user whether to continue. Returns true
 /// to proceed, false if the user declined.
 fn confirm_root_install() -> bool {
-    use nix::unistd::Uid;
-    if !Uid::effective().is_root() {
+    if !host_core::platform::is_root() {
         return true;
     }
     eprintln!("warning: you are running PocketShell as root.");
@@ -2438,6 +2447,41 @@ fn cli_audit(mut event: AuditEvent) {
     let _ = write_audit_event(event);
 }
 
+/// Whether a process with `pid` currently exists.
+#[cfg(unix)]
 fn pid_running(pid: i32) -> bool {
+    use nix::sys::signal::kill;
+    use nix::unistd::Pid;
+    // signal 0 probes existence/permission without delivering a signal.
     kill(Pid::from_raw(pid), None).is_ok()
+}
+
+#[cfg(windows)]
+fn pid_running(pid: i32) -> bool {
+    // `tasklist` prints a header-less row for the PID only if it exists.
+    std::process::Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+        .output()
+        .map(|o| {
+            let out = String::from_utf8_lossy(&o.stdout);
+            out.contains(&pid.to_string())
+        })
+        .unwrap_or(false)
+}
+
+/// Ask a process to terminate (SIGTERM on Unix; `taskkill` on Windows).
+#[cfg(unix)]
+fn terminate_pid(pid: i32) {
+    use nix::sys::signal::{kill, Signal};
+    use nix::unistd::Pid;
+    let _ = kill(Pid::from_raw(pid), Signal::SIGTERM);
+}
+
+#[cfg(windows)]
+fn terminate_pid(pid: i32) {
+    // /T also terminates child processes; /F forces it (no graceful signal
+    // exists on Windows). Best-effort, mirroring the ignored SIGTERM result.
+    let _ = std::process::Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .output();
 }

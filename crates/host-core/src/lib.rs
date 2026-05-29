@@ -12,6 +12,7 @@ pub mod files;
 pub mod files_watch;
 pub mod local_attach;
 pub mod models;
+pub mod platform;
 pub mod pty;
 pub mod rpc;
 pub mod secret_store;

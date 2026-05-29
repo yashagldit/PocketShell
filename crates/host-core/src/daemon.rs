@@ -607,9 +607,59 @@ enum LocalClientEvent {
     Disconnected { client_id: u64 },
 }
 
+// Local-attach IPC transport. On Unix this is a Unix-domain socket; on other
+// platforms (Windows) the local CLI-attach feature is not wired up yet, so the
+// listener is always `None` and never accepts. The half types below only need
+// to satisfy the `AsyncRead`/`AsyncWrite` bounds used by the shared daemon
+// loop — on non-Unix they alias throwaway in-memory pipe halves that are never
+// constructed. Mobile sessions over WebRTC are unaffected on every platform.
+#[cfg(unix)]
+type LocalReadHalf = tokio::net::unix::OwnedReadHalf;
+#[cfg(unix)]
+type LocalWriteHalf = tokio::net::unix::OwnedWriteHalf;
+#[cfg(unix)]
+type LocalAttachListener = tokio::net::UnixListener;
+
+#[cfg(not(unix))]
+type LocalReadHalf = tokio::io::ReadHalf<tokio::io::DuplexStream>;
+#[cfg(not(unix))]
+type LocalWriteHalf = tokio::io::WriteHalf<tokio::io::DuplexStream>;
+#[cfg(not(unix))]
+type LocalAttachListener = DisabledLocalListener;
+
+/// Stand-in listener for platforms where local attach is not available.
+#[cfg(not(unix))]
+struct DisabledLocalListener;
+
+/// Wait for the next local-attach client and return its split halves. On
+/// platforms without a listener the returned future never resolves, so the
+/// owning `select!` arm simply stays parked.
+#[cfg(unix)]
+async fn local_accept(
+    listener: Option<&LocalAttachListener>,
+) -> Option<(LocalReadHalf, LocalWriteHalf)> {
+    match listener {
+        Some(l) => match l.accept().await {
+            Ok((stream, _addr)) => Some(stream.into_split()),
+            Err(e) => {
+                warn!("local attach accept failed: {e}");
+                None
+            }
+        },
+        None => std::future::pending().await,
+    }
+}
+
+#[cfg(not(unix))]
+async fn local_accept(
+    _listener: Option<&LocalAttachListener>,
+) -> Option<(LocalReadHalf, LocalWriteHalf)> {
+    std::future::pending().await
+}
+
 /// Tracks write halves of locally attached clients, keyed by session_id.
 struct LocalAttachClients {
-    clients: HashMap<u64, (String, tokio::net::unix::OwnedWriteHalf)>,
+    clients: HashMap<u64, (String, LocalWriteHalf)>,
 }
 
 impl LocalAttachClients {
@@ -623,7 +673,7 @@ impl LocalAttachClients {
         &mut self,
         client_id: u64,
         session_id: String,
-        writer: tokio::net::unix::OwnedWriteHalf,
+        writer: LocalWriteHalf,
     ) {
         self.clients.insert(client_id, (session_id, writer));
     }
@@ -1799,7 +1849,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
     let (local_event_tx, mut local_event_rx) =
         tokio::sync::mpsc::unbounded_channel::<LocalClientEvent>();
     let mut local_clients = LocalAttachClients::new();
-    let mut local_pending_writers: HashMap<u64, tokio::net::unix::OwnedWriteHalf> = HashMap::new();
+    let mut local_pending_writers: HashMap<u64, LocalWriteHalf> = HashMap::new();
     let mut local_client_counter: u64 = 0;
 
     // Singleton flock on pid_file so a second `daemon run` fails fast
@@ -1816,33 +1866,43 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
     };
 
     let local_sock_path = local_attach::socket_path()
-        .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/pocketshell-daemon.sock"));
+        .unwrap_or_else(|_| std::env::temp_dir().join("pocketshell-daemon.sock"));
     // Safe to drop the stale socket: pid_lock above ensures we're the sole owner.
     let _ = std::fs::remove_file(&local_sock_path);
-    let local_listener = match tokio::net::UnixListener::bind(&local_sock_path) {
-        Ok(l) => {
-            info!(
-                "local attach socket listening at {}",
-                local_sock_path.display()
-            );
-            // Make socket accessible only to current user
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(
-                    &local_sock_path,
-                    std::fs::Permissions::from_mode(0o600),
+
+    #[cfg(unix)]
+    let local_listener: Option<LocalAttachListener> =
+        match tokio::net::UnixListener::bind(&local_sock_path) {
+            Ok(l) => {
+                info!(
+                    "local attach socket listening at {}",
+                    local_sock_path.display()
                 );
+                // Make socket accessible only to current user
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(
+                        &local_sock_path,
+                        std::fs::Permissions::from_mode(0o600),
+                    );
+                }
+                Some(l)
             }
-            Some(l)
-        }
-        Err(e) => {
-            warn!(
-                "failed to bind local attach socket: {} — local attach will be unavailable",
-                e
-            );
-            None
-        }
+            Err(e) => {
+                warn!(
+                    "failed to bind local attach socket: {} — local attach will be unavailable",
+                    e
+                );
+                None
+            }
+        };
+    // Local CLI attach over a Unix-domain socket isn't available on non-Unix
+    // platforms yet; the daemon runs normally and mobile WebRTC sessions are
+    // unaffected.
+    #[cfg(not(unix))]
+    let local_listener: Option<LocalAttachListener> = {
+        debug!("local attach socket disabled on this platform");
+        None
     };
 
     info!("daemon starting for host_id={}", host_id);
@@ -2339,18 +2399,12 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                         debug!("sent stats_minute_batch with {} snapshots", batch.len());
                     }
                 }
-                // Accept new local attach connections
-                result = async {
-                    match local_listener.as_ref() {
-                        Some(l) => l.accept().await.map(Some),
-                        None => { std::future::pending::<()>().await; unreachable!() }
-                    }
-                } => {
-                    if let Ok(Some((stream, _addr))) = result {
+                // Accept new local attach connections (Unix only for now)
+                maybe_client = local_accept(local_listener.as_ref()) => {
+                    if let Some((read_half, write_half)) = maybe_client {
                         local_client_counter += 1;
                         let client_id = local_client_counter;
                         let tx = local_event_tx.clone();
-                        let (read_half, write_half) = stream.into_split();
                         tokio::spawn(local_attach_reader(client_id, read_half, tx));
                         local_pending_writers.insert(client_id, write_half);
                     }
@@ -4589,8 +4643,6 @@ impl Drop for DaemonPidLock {
 }
 
 fn acquire_daemon_pid_lock() -> Result<DaemonPidLock> {
-    use std::os::unix::io::AsRawFd;
-
     let paths = AppConfig::paths()?;
     if !paths.state_dir.exists() {
         std::fs::create_dir_all(&paths.state_dir)?;
@@ -4603,10 +4655,10 @@ fn acquire_daemon_pid_lock() -> Result<DaemonPidLock> {
         .truncate(false)
         .open(&pid_path)?;
 
-    // SAFETY: `flock` only inspects the fd we pass; `file` outlives the call.
-    let rc = unsafe { nix::libc::flock(file.as_raw_fd(), nix::libc::LOCK_EX | nix::libc::LOCK_NB) };
-    if rc != 0 {
-        let err = std::io::Error::last_os_error();
+    // Non-blocking exclusive lock; if another daemon already holds it, fail
+    // fast rather than racing on the local-attach socket. Released when the
+    // handle inside the returned guard drops.
+    if let Err(err) = crate::platform::try_lock_exclusive(&file) {
         return Err(HostError::Config(format!(
             "another pocketshell daemon is running (pid file {}): {}",
             pid_path.display(),
@@ -7725,7 +7777,7 @@ async fn handle_signal(
 /// Reads framed messages from a local attach client and sends events to the daemon loop.
 async fn local_attach_reader(
     client_id: u64,
-    mut reader: tokio::net::unix::OwnedReadHalf,
+    mut reader: LocalReadHalf,
     tx: tokio::sync::mpsc::UnboundedSender<LocalClientEvent>,
 ) {
     use tokio::io::AsyncReadExt;
