@@ -11,6 +11,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const MAX_SCROLLBACK_BYTES: usize = 512 * 1024;
+const REMOTE_TERMINAL_ENV: &str = "POCKETSHELL_REMOTE_TERMINAL";
 
 /// Dummy child process for PTY relay sessions (the real process is owned by `pocketshell rc`).
 #[derive(Debug)]
@@ -389,6 +390,7 @@ impl SessionManager {
             cmd.arg(arg);
         }
         cmd.env("TERM", "xterm-256color");
+        cmd.env(REMOTE_TERMINAL_ENV, "1");
 
         let child = pair
             .slave

@@ -25,6 +25,8 @@ use std::time::Duration;
 use tokio::time::sleep;
 use tracing_subscriber::EnvFilter;
 
+const REMOTE_TERMINAL_ENV: &str = "POCKETSHELL_REMOTE_TERMINAL";
+
 #[derive(Parser, Debug)]
 #[command(name = "pocketshell", version)]
 #[command(about = "PocketShell host agent")]
@@ -171,6 +173,7 @@ async fn main() -> Result<()> {
     init_logging();
     let cli = Cli::parse();
     ensure_supported_platform()?;
+    reject_remote_terminal_invocation(&cli.command)?;
     let config = AppConfig::from_env();
 
     match cli.command {
@@ -228,6 +231,19 @@ async fn main() -> Result<()> {
             remove,
         }) => remote_cmd(name, detached, list, remove),
     }
+}
+
+fn reject_remote_terminal_invocation(command: &Option<Commands>) -> Result<()> {
+    if !matches!(std::env::var(REMOTE_TERMINAL_ENV).as_deref(), Ok("1")) {
+        return Ok(());
+    }
+    if matches!(command, Some(Commands::Update { .. })) {
+        return Ok(());
+    }
+
+    Err(anyhow!(
+        "running the pocketshell CLI/TUI from a PocketShell mobile terminal is blocked"
+    ))
 }
 
 fn ensure_supported_platform() -> Result<()> {

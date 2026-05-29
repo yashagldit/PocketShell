@@ -29,16 +29,11 @@ const DENIED_HOME_PREFIXES: &[&str] = &[
     ".pypirc",
 ];
 
-/// Specific files (not just directories) that must be denied. Shell
-/// histories often contain pasted secrets; the rest are credentials.
-const DENIED_HOME_FILES: &[&str] = &[
-    ".bash_history",
-    ".zsh_history",
-    ".python_history",
-    ".node_repl_history",
-    ".lesshst",
-    ".netrc",
-];
+/// Specific files (not just directories) that must be denied.
+/// `.netrc` holds plaintext login credentials. Shell histories are
+/// intentionally NOT in this list — the mobile terminal needs them for
+/// the History tab, and a paired user already has shell access anyway.
+const DENIED_HOME_FILES: &[&str] = &[".netrc"];
 
 /// Home-relative directories that are ALWAYS allowed, even when they
 /// would otherwise be caught by the absolute denylist (e.g. `/root` for
@@ -2036,13 +2031,16 @@ mod tests {
             &home.join(".config/gh/hosts.yml"),
             &d
         ));
-        assert!(is_path_denied_against(&home.join(".bash_history"), &d));
         assert!(is_path_denied_against(&home.join(".netrc"), &d));
         assert!(!is_path_denied_against(
             &home.join("Documents/file.txt"),
             &d
         ));
         assert!(!is_path_denied_against(&home.join(".bashrc"), &d));
+        // Shell histories are intentionally readable so the mobile
+        // terminal's History tab can populate.
+        assert!(!is_path_denied_against(&home.join(".bash_history"), &d));
+        assert!(!is_path_denied_against(&home.join(".zsh_history"), &d));
     }
 
     #[test]
