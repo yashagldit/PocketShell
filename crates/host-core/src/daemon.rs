@@ -2481,16 +2481,26 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                         local_clients.send_output(&chunk.session_id, &chunk.bytes).await;
 
                         // Primary path: deliver to any viewer with a live data channel.
-                        let _ = webrtc_mgr.send_output(&chunk.session_id, &chunk.bytes).await;
+                        // `delivered` is true only if the bytes were actually sent over
+                        // at least one channel (send_output → broadcast returns false on
+                        // empty/failed/timed-out sends and prunes dead channels).
+                        let delivered =
+                            webrtc_mgr.send_output(&chunk.session_id, &chunk.bytes).await;
 
-                        // Skip the WS fallback only when the session has exactly one
-                        // WebRTC channel AND that channel is authenticated. Multi-viewer
-                        // sessions (Vec<RTCDataChannel> per session_id) keep WS flowing
-                        // because `authenticated_channels` is session-keyed and can't
-                        // tell us whether every viewer's channel is auth'd — a second
-                        // viewer in the post-open/pre-auth window would otherwise be
-                        // starved. Single-viewer is the 95% case and gets the win.
-                        if webrtc_mgr.channel_count(&chunk.session_id) == 1
+                        // Skip the WS fallback only when the channel actually took the
+                        // bytes AND the session has exactly one authenticated WebRTC
+                        // channel. Previously the send result was ignored, so when a
+                        // channel send failed or timed out the WS fallback was skipped
+                        // too and the output was lost on every transport. Gating on
+                        // `delivered` keeps WS flowing whenever the channel didn't take
+                        // the bytes — with no duplication, since WS only fires on a
+                        // channel miss. Multi-viewer sessions (Vec<RTCDataChannel> per
+                        // session_id) keep WS flowing because `authenticated_channels` is
+                        // session-keyed and can't tell us whether every viewer's channel
+                        // is auth'd — a second viewer in the post-open/pre-auth window
+                        // would otherwise be starved. Single-viewer is the 95% case.
+                        if delivered
+                            && webrtc_mgr.channel_count(&chunk.session_id) == 1
                             && authenticated_channels.contains(&chunk.session_id)
                         {
                             continue;
