@@ -163,13 +163,28 @@ enum DaemonCommands {
     Stop,
     /// Stop the daemon (if running) and start it again.
     Restart,
-    Run,
+    Run {
+        /// Internal: set by the OS service manager (Windows Scheduled Task)
+        /// when it launches the daemon. Detaches the console so the agent runs
+        /// windowless and redirects logging to the daemon log file.
+        #[arg(long, hide = true)]
+        service: bool,
+    },
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    init_logging();
     let cli = Cli::parse();
+    // `daemon run --service` is launched headless by the OS service manager, so
+    // it logs to a file and (on Windows) detaches its console rather than
+    // writing to a stderr nobody can see.
+    let service_mode = matches!(
+        &cli.command,
+        Some(Commands::Daemon {
+            command: DaemonCommands::Run { service: true },
+        })
+    );
+    init_logging(service_mode);
     ensure_supported_platform()?;
     reject_remote_terminal_invocation(&cli.command)?;
     let config = AppConfig::from_env();
@@ -245,17 +260,62 @@ fn reject_remote_terminal_invocation(command: &Option<Commands>) -> Result<()> {
 }
 
 fn ensure_supported_platform() -> Result<()> {
-    if cfg!(target_os = "linux") || cfg!(target_os = "macos") {
+    if cfg!(target_os = "linux") || cfg!(target_os = "macos") || cfg!(target_os = "windows") {
         return Ok(());
     }
     Err(anyhow!(
-        "unsupported host OS; only linux and macos are supported"
+        "unsupported host OS; only linux, macos, and windows are supported"
     ))
 }
 
-fn init_logging() {
+fn init_logging(service_mode: bool) {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+
+    if service_mode {
+        // On Windows the Scheduled Task launches our console-subsystem binary in
+        // the interactive session, which pops a console window the user could
+        // close (killing the daemon). Detach from it so the agent runs
+        // windowless, like the launchd/systemd services on the other platforms.
+        #[cfg(windows)]
+        detach_console();
+
+        // No console/journal is attached, so write to the same log file the
+        // launchd plist / detached-process fallback use.
+        if let Ok(paths) = AppConfig::paths() {
+            let _ = fs::create_dir_all(&paths.state_dir);
+            if let Ok(file) = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&paths.log_file)
+            {
+                tracing_subscriber::fmt()
+                    .with_env_filter(filter)
+                    .with_ansi(false)
+                    .with_writer(std::sync::Mutex::new(file))
+                    .init();
+                return;
+            }
+        }
+    }
+
     tracing_subscriber::fmt().with_env_filter(filter).init();
+}
+
+/// Detach from the console that Task Scheduler allocates for our
+/// console-subsystem binary so the daemon runs windowless (and can't be killed
+/// by a user closing a stray console window). `kernel32` is implicitly linked
+/// on the MSVC target, so a bare extern declaration resolves without adding a
+/// Windows API crate.
+#[cfg(windows)]
+fn detach_console() {
+    extern "system" {
+        fn FreeConsole() -> i32;
+    }
+    // SAFETY: FreeConsole takes no arguments and only detaches this process from
+    // its console; it is safe to call even when no console is attached.
+    unsafe {
+        FreeConsole();
+    }
 }
 
 // PAIRING CODE DISABLED 2026-05-24 — typed 6-char code flow is quarantined.
@@ -1375,7 +1435,7 @@ async fn daemon_cmd(config: AppConfig, command: DaemonCommands) -> Result<()> {
         DaemonCommands::Start => daemon_start(),
         DaemonCommands::Stop => daemon_stop(),
         DaemonCommands::Restart => daemon_restart(),
-        DaemonCommands::Run => daemon::run_foreground(config)
+        DaemonCommands::Run { service: _ } => daemon::run_foreground(config)
             .await
             .map_err(|e| anyhow!(e.to_string())),
     }
@@ -2458,14 +2518,16 @@ fn pid_running(pid: i32) -> bool {
 
 #[cfg(windows)]
 fn pid_running(pid: i32) -> bool {
-    // `tasklist` prints a header-less row for the PID only if it exists.
+    // CSV output quotes each column, so the PID appears as `"1234"` only in the
+    // PID field — matching the whole quoted token avoids the false positives a
+    // bare substring search hits (e.g. the "12,345 K" Mem-Usage column, or
+    // another process whose PID merely contains these digits). When the filter
+    // matches nothing, tasklist prints a plain "INFO:" line with no CSV row.
+    let needle = format!("\"{pid}\"");
     std::process::Command::new("tasklist")
-        .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+        .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
         .output()
-        .map(|o| {
-            let out = String::from_utf8_lossy(&o.stdout);
-            out.contains(&pid.to_string())
-        })
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains(&needle))
         .unwrap_or(false)
 }
 
@@ -2479,8 +2541,25 @@ fn terminate_pid(pid: i32) {
 
 #[cfg(windows)]
 fn terminate_pid(pid: i32) {
-    // /T also terminates child processes; /F forces it (no graceful signal
-    // exists on Windows). Best-effort, mirroring the ignored SIGTERM result.
+    // Windows has no SIGTERM, so a bare `taskkill /F` would hard-kill the daemon
+    // before it could mark itself offline, emit the `daemon_stopped` audit event,
+    // and flush state. Instead drop a stop-sentinel the daemon polls for (see the
+    // shutdown future in host-core daemon.rs) to let it exit cleanly, and only
+    // force-kill the process tree as a backstop if it doesn't exit in time.
+    if let Ok(paths) = AppConfig::paths() {
+        let sentinel = paths.state_dir.join("daemon.stop");
+        if std::fs::write(&sentinel, b"stop").is_ok() {
+            for _ in 0..30 {
+                if !pid_running(pid) {
+                    let _ = std::fs::remove_file(&sentinel);
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            let _ = std::fs::remove_file(&sentinel);
+        }
+    }
+    // Force-terminate the process and its children as a last resort.
     let _ = std::process::Command::new("taskkill")
         .args(["/PID", &pid.to_string(), "/T", "/F"])
         .output();

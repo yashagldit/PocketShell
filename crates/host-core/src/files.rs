@@ -109,23 +109,89 @@ struct DeniedPaths {
 }
 
 fn build_denied_paths(home: &Path) -> DeniedPaths {
+    // `mut` is only needed on Windows, where the block below pushes
+    // env-resolved system dirs; on Unix the binding is never mutated.
+    #[cfg_attr(not(windows), allow(unused_mut))]
+    let mut absolute_prefixes: Vec<PathBuf> =
+        DENIED_ABSOLUTE_PREFIXES.iter().map(PathBuf::from).collect();
+    // On Windows the real system directories may live on a non-C: drive (or a
+    // relocated ProgramData), so resolve them from the environment instead of
+    // pinning the denylist to a hardcoded `C:\`. Falls back to the static list
+    // above when a variable is unset.
+    #[cfg(windows)]
+    {
+        for var in [
+            "windir",
+            "SystemRoot",
+            "ProgramFiles",
+            "ProgramFiles(x86)",
+            "ProgramW6432",
+            "ProgramData",
+        ] {
+            if let Some(v) = std::env::var_os(var) {
+                let p = PathBuf::from(v);
+                if !p.as_os_str().is_empty() {
+                    absolute_prefixes.push(p);
+                }
+            }
+        }
+    }
     DeniedPaths {
         prefixes: DENIED_HOME_PREFIXES.iter().map(|p| home.join(p)).collect(),
         files: DENIED_HOME_FILES.iter().map(|f| home.join(f)).collect(),
-        absolute_prefixes: DENIED_ABSOLUTE_PREFIXES.iter().map(PathBuf::from).collect(),
+        absolute_prefixes,
         allowed_prefixes: ALLOWED_HOME_PREFIXES.iter().map(|p| home.join(p)).collect(),
     }
+}
+
+/// `Path::starts_with`, but case-insensitive on Windows. Rust's std comparison
+/// is always case-sensitive, so on a case-insensitive NTFS/ReFS volume a
+/// `C:\Windows` denylist entry would otherwise be trivially bypassed with
+/// `c:\windows`. Unix keeps the exact component-wise comparison.
+#[cfg(windows)]
+fn denied_prefix_match(path: &Path, prefix: &Path) -> bool {
+    let norm = |p: &Path| p.to_string_lossy().to_lowercase().replace('/', "\\");
+    let p = norm(path);
+    let pre = norm(prefix);
+    // `==` covers the dir itself; the trailing separator keeps `C:\Windows`
+    // from matching a sibling like `C:\WindowsApps`.
+    p == pre || p.starts_with(&format!("{pre}\\"))
+}
+#[cfg(not(windows))]
+fn denied_prefix_match(path: &Path, prefix: &Path) -> bool {
+    path.starts_with(prefix)
+}
+
+/// Case-insensitive path equality on Windows; exact elsewhere.
+#[cfg(windows)]
+fn denied_path_eq(a: &Path, b: &Path) -> bool {
+    a.to_string_lossy().to_lowercase().replace('/', "\\")
+        == b.to_string_lossy().to_lowercase().replace('/', "\\")
+}
+#[cfg(not(windows))]
+fn denied_path_eq(a: &Path, b: &Path) -> bool {
+    a == b
 }
 
 fn is_path_denied_against(path: &Path, denied: &DeniedPaths) -> bool {
     // Explicit allowlist (~/.claude, ~/.codex) overrides every deny rule so
     // root-installed daemons can still serve coding-agent session history.
-    if denied.allowed_prefixes.iter().any(|p| path.starts_with(p)) {
+    if denied
+        .allowed_prefixes
+        .iter()
+        .any(|p| denied_prefix_match(path, p))
+    {
         return false;
     }
-    denied.prefixes.iter().any(|p| path.starts_with(p))
-        || denied.files.iter().any(|f| path == f)
-        || denied.absolute_prefixes.iter().any(|p| path.starts_with(p))
+    denied
+        .prefixes
+        .iter()
+        .any(|p| denied_prefix_match(path, p))
+        || denied.files.iter().any(|f| denied_path_eq(path, f))
+        || denied
+            .absolute_prefixes
+            .iter()
+            .any(|p| denied_prefix_match(path, p))
 }
 
 /// Check whether `path` (already absolute, ideally canonicalized) lands

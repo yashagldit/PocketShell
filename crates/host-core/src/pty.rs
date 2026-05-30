@@ -850,7 +850,6 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[cfg(unix)]
     #[test]
     fn create_pty_relay_nonexistent_path_errors() {
         let mut m = SessionManager::new(4);

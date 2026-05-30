@@ -8,6 +8,9 @@ use tracing::{info, warn};
 
 const LAUNCHD_LABEL: &str = "com.pocketshell.host-agent";
 const SYSTEMD_SERVICE: &str = "pocketshell-host-agent";
+/// Task Scheduler task name on Windows. Spaces are fine — schtasks quotes the
+/// `/TN` argument for us. Load-bearing for `schtasks /Query|/Run|/End|/Delete`.
+const WINDOWS_TASK_NAME: &str = "PocketShell Host Agent";
 
 /// `launchctl unload` and `systemctl stop` block until the supervised
 /// process exits, so a wedged daemon can pin the syscall indefinitely.
@@ -82,12 +85,18 @@ pub fn install_and_start() -> Result<ServiceStatus> {
             }
         }
     } else if cfg!(target_os = "windows") {
-        // No SCM/Task Scheduler integration yet — the agent runs as a detached
-        // background process via the fallback below. It does NOT survive logout
-        // or reboot; users who want boot persistence should add a Startup-folder
-        // shortcut or Scheduled Task running `pocketshell daemon run`. A native
-        // Windows Service wrapper is tracked as a follow-up.
-        info!("Windows: starting host agent as a background process (no boot persistence yet)");
+        // Register a Task Scheduler task (logon trigger + restart-on-failure).
+        // This is the Windows analogue of the macOS LaunchAgent / systemd
+        // --user unit: per-user, no elevation required, survives reboot.
+        match install_windows_task() {
+            Ok(status) => return Ok(status),
+            Err(e) => {
+                warn!(
+                    "Windows scheduled-task install failed: {} — falling back to a detached process (no boot persistence)",
+                    e
+                );
+            }
+        }
     }
 
     // Fallback: start daemon as a detached process (same as `daemon start`)
@@ -100,6 +109,8 @@ pub fn is_service_running() -> bool {
         is_launchd_running()
     } else if cfg!(target_os = "linux") {
         is_systemd_running()
+    } else if cfg!(target_os = "windows") {
+        is_windows_task_running()
     } else {
         false
     }
@@ -117,6 +128,8 @@ pub fn is_service_installed() -> bool {
             return true;
         }
         systemd_unit_path().exists()
+    } else if cfg!(target_os = "windows") {
+        is_windows_task_installed()
     } else {
         false
     }
@@ -666,6 +679,209 @@ pub fn uninstall_systemd() -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// Windows Task Scheduler (per-user logon task — the LaunchAgent analogue)
+// ---------------------------------------------------------------------------
+
+/// `DOMAIN\User` for the current logon, used as the task's principal and logon
+/// trigger. Falls back to the bare username (sufficient for local accounts).
+fn windows_current_user() -> String {
+    let user = std::env::var("USERNAME").unwrap_or_default();
+    let domain = std::env::var("USERDOMAIN").unwrap_or_default();
+    if domain.is_empty() || user.is_empty() {
+        user
+    } else {
+        format!("{domain}\\{user}")
+    }
+}
+
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+/// schtasks `/XML` wants a UTF-16 file; emit little-endian with a BOM so the
+/// `encoding="UTF-16"` declaration is honoured on every Windows locale.
+fn utf16le_with_bom(s: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(2 + s.len() * 2);
+    out.extend_from_slice(&[0xFF, 0xFE]);
+    for unit in s.encode_utf16() {
+        out.extend_from_slice(&unit.to_le_bytes());
+    }
+    out
+}
+
+/// Task Scheduler XML. Key settings that make this a real daemon supervisor:
+/// `ExecutionTimeLimit=PT0S` (no 72-hour default kill), `RestartOnFailure`
+/// (the `Restart=always` / `KeepAlive` analogue), and `MultipleInstancesPolicy
+/// =IgnoreNew` (a stray second trigger can't spawn a duplicate). The action
+/// passes `--service` so the daemon detaches its console and logs to a file.
+fn windows_task_xml(exe_path: &str, user: &str) -> String {
+    let exe = xml_escape(exe_path);
+    let user = xml_escape(user);
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>PocketShell Host Agent</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <UserId>{user}</UserId>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>{user}</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
+    <RestartOnFailure>
+      <Interval>PT1M</Interval>
+      <Count>999</Count>
+    </RestartOnFailure>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{exe}</Command>
+      <Arguments>daemon run --service</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"#
+    )
+}
+
+/// True while a task instance is executing. `/V` verbose output carries a
+/// "Status:" field that reads "Running" only while an instance is live, so a
+/// substring match is layout-resilient. (The label is localized on non-English
+/// Windows; English covers our installs and CI, and a false negative only
+/// causes a harmless redundant `/Run`, which `IgnoreNew` collapses.)
+fn is_windows_task_running() -> bool {
+    Command::new("schtasks")
+        .args(["/Query", "/TN", WINDOWS_TASK_NAME, "/FO", "LIST", "/V"])
+        .output()
+        .map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).contains("Running"))
+        .unwrap_or(false)
+}
+
+/// True if the task is registered (regardless of whether it's currently
+/// running). `/Query` exits non-zero when the task does not exist, which is
+/// locale-independent.
+fn is_windows_task_installed() -> bool {
+    Command::new("schtasks")
+        .args(["/Query", "/TN", WINDOWS_TASK_NAME])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+fn install_windows_task() -> Result<ServiceStatus> {
+    if is_windows_task_running() {
+        return Ok(ServiceStatus::AlreadyRunning);
+    }
+
+    let exe = std::env::current_exe()
+        .map_err(|e| HostError::Config(format!("cannot resolve binary path: {e}")))?;
+    let exe_path = exe.to_string_lossy();
+
+    let user = windows_current_user();
+    if user.is_empty() {
+        return Err(HostError::Config(
+            "cannot resolve current Windows user (USERNAME unset)".into(),
+        ));
+    }
+
+    let xml = windows_task_xml(&exe_path, &user);
+    let tmp = std::env::temp_dir().join(format!("pocketshell-host-agent-{}.xml", std::process::id()));
+    fs::write(&tmp, utf16le_with_bom(&xml))
+        .map_err(|e| HostError::Config(format!("write task xml: {e}")))?;
+    let _tmp_guard = TempFileGuard(tmp.clone());
+    let tmp_s = tmp.to_string_lossy().to_string();
+
+    let (status, stderr) = command_status_output(
+        "schtasks",
+        &["/Create", "/TN", WINDOWS_TASK_NAME, "/XML", &tmp_s, "/F"],
+    )
+    .map_err(|e| HostError::Config(format!("schtasks create: {e}")))?;
+    if !status.success() {
+        return Err(HostError::Config(format!(
+            "schtasks create failed{}",
+            if stderr.is_empty() {
+                String::new()
+            } else {
+                format!(": {stderr}")
+            }
+        )));
+    }
+    info!("registered Windows scheduled task '{WINDOWS_TASK_NAME}'");
+
+    // The logon trigger only fires at the next sign-in, so start it now.
+    match command_status_output("schtasks", &["/Run", "/TN", WINDOWS_TASK_NAME]) {
+        Ok((run_status, _)) if run_status.success() => {
+            info!("Windows scheduled task started");
+        }
+        Ok((run_status, run_stderr)) => {
+            warn!(
+                "scheduled task registered but immediate start failed (status {run_status}): {run_stderr} — it will start at next logon"
+            );
+        }
+        Err(e) => {
+            warn!("scheduled task registered but immediate start failed: {e} — it will start at next logon");
+        }
+    }
+
+    Ok(ServiceStatus::Installed)
+}
+
+/// Stop the running instance and remove the scheduled task.
+pub fn uninstall_windows_task() -> Result<()> {
+    if !is_windows_task_installed() {
+        return Ok(());
+    }
+    // `/End` stops the live instance; `/Delete` deregisters so it won't run
+    // again (and restart-on-failure can't resurrect the just-killed process).
+    let _ = command_status_output("schtasks", &["/End", "/TN", WINDOWS_TASK_NAME]);
+    let (status, stderr) =
+        command_status_output("schtasks", &["/Delete", "/TN", WINDOWS_TASK_NAME, "/F"])
+            .map_err(|e| HostError::Config(format!("schtasks delete: {e}")))?;
+    if !status.success() {
+        return Err(HostError::Config(format!(
+            "schtasks delete failed{}",
+            if stderr.is_empty() {
+                String::new()
+            } else {
+                format!(": {stderr}")
+            }
+        )));
+    }
+    info!("removed Windows scheduled task '{WINDOWS_TASK_NAME}'");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Fallback: detached process (same as `pocketshell daemon start`)
 // ---------------------------------------------------------------------------
 
@@ -786,6 +1002,24 @@ pub fn restart() -> Result<RestartStatus> {
             info!("systemd user service restarted");
             return Ok(RestartStatus::RestartedService);
         }
+    } else if cfg!(target_os = "windows") && is_windows_task_installed() {
+        // End any live instance, then run a fresh one. Restart-on-failure plus
+        // the pid-file flock guarantee a single daemon even if the kill races.
+        let _ = command_status_output("schtasks", &["/End", "/TN", WINDOWS_TASK_NAME]);
+        let (status, stderr) = command_status_output("schtasks", &["/Run", "/TN", WINDOWS_TASK_NAME])
+            .map_err(|e| HostError::Config(format!("schtasks run: {e}")))?;
+        if !status.success() {
+            return Err(HostError::Config(format!(
+                "schtasks run failed{}",
+                if stderr.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {stderr}")
+                }
+            )));
+        }
+        info!("Windows scheduled task restarted");
+        return Ok(RestartStatus::RestartedService);
     }
 
     // No service unit on disk — self-heal by installing one. Common after a
@@ -841,6 +1075,10 @@ pub fn stop() -> Result<StopStatus> {
             Err(e) => warn!("systemctl stop failed: {e}"),
             _ => {}
         }
+    } else if cfg!(target_os = "windows") {
+        // End the running instance but leave the task registered so it still
+        // starts at the next logon (matching the launchd KeepAlive behaviour).
+        let _ = command_status_output("schtasks", &["/End", "/TN", WINDOWS_TASK_NAME]);
     }
     info!("service stopped");
     Ok(StopStatus::Stopped)
@@ -852,6 +1090,8 @@ pub fn uninstall() -> Result<()> {
         uninstall_launchd()
     } else if cfg!(target_os = "linux") {
         uninstall_systemd()
+    } else if cfg!(target_os = "windows") {
+        uninstall_windows_task()
     } else {
         Ok(())
     }
@@ -867,6 +1107,49 @@ mod tests {
         // load-bearing for `launchctl list` / `systemctl --user` lookups.
         assert_eq!(LAUNCHD_LABEL, "com.pocketshell.host-agent");
         assert_eq!(SYSTEMD_SERVICE, "pocketshell-host-agent");
+        // `schtasks /TN` argument — must stay stable across versions or an
+        // upgraded agent would orphan the old task and register a duplicate.
+        assert_eq!(WINDOWS_TASK_NAME, "PocketShell Host Agent");
+    }
+
+    #[test]
+    fn windows_task_xml_contains_required_settings() {
+        let xml = windows_task_xml(r"C:\Program Files\PocketShell\pocketshell.exe", "WORKGROUP\\alice");
+        // The action launches the daemon in service mode.
+        assert!(xml.contains(
+            r"<Command>C:\Program Files\PocketShell\pocketshell.exe</Command>"
+        ));
+        assert!(xml.contains("<Arguments>daemon run --service</Arguments>"));
+        // Boot persistence + supervision knobs.
+        assert!(xml.contains("<LogonTrigger>"));
+        assert!(xml.contains("<UserId>WORKGROUP\\alice</UserId>"));
+        assert!(xml.contains("<LogonType>InteractiveToken</LogonType>"));
+        assert!(xml.contains("<RunLevel>LeastPrivilege</RunLevel>"));
+        // No 72-hour default kill of the long-lived daemon.
+        assert!(xml.contains("<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>"));
+        // The Restart=always / KeepAlive analogue.
+        assert!(xml.contains("<RestartOnFailure>"));
+        // A stray second trigger can't spawn a duplicate daemon.
+        assert!(xml.contains("<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>"));
+        // Don't stop the agent when a laptop goes on battery.
+        assert!(xml.contains("<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>"));
+    }
+
+    #[test]
+    fn windows_task_xml_escapes_special_chars() {
+        let xml = windows_task_xml(r"C:\dir\a&b<exe>.exe", "DOM&AIN\\u<s>er");
+        assert!(xml.contains(r"<Command>C:\dir\a&amp;b&lt;exe&gt;.exe</Command>"));
+        assert!(xml.contains("<UserId>DOM&amp;AIN\\u&lt;s&gt;er</UserId>"));
+        // No raw, unescaped metacharacters leaked into element text.
+        assert!(!xml.contains("a&b"));
+        assert!(!xml.contains("u<s>er"));
+    }
+
+    #[test]
+    fn utf16le_with_bom_prefixes_bom_and_encodes_le() {
+        let bytes = utf16le_with_bom("AB");
+        // BOM, then 'A' (0x41) and 'B' (0x42) as little-endian u16.
+        assert_eq!(bytes, vec![0xFF, 0xFE, 0x41, 0x00, 0x42, 0x00]);
     }
 
     #[test]

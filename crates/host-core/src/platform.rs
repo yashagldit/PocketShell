@@ -79,9 +79,20 @@ mod tests {
             "expected the second handle to be locked out"
         );
 
-        // Dropping the first handle releases the lock for the second.
+        // Dropping the first handle releases the lock for the second. The OS
+        // may take a brief moment to publish the release (observed on macOS
+        // flock), and that latency is harmless for our cross-process callers,
+        // so retry a few times rather than assuming an instantaneous release.
         drop(f);
-        try_lock_exclusive(&f2).expect("lock should be free after first handle drops");
+        let mut acquired = false;
+        for _ in 0..50 {
+            if try_lock_exclusive(&f2).is_ok() {
+                acquired = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(acquired, "lock should be free after the first handle drops");
     }
 
     #[test]

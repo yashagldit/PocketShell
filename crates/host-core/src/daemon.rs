@@ -1867,11 +1867,14 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
 
     let local_sock_path = local_attach::socket_path()
         .unwrap_or_else(|_| std::env::temp_dir().join("pocketshell-daemon.sock"));
-    // Safe to drop the stale socket: pid_lock above ensures we're the sole owner.
-    let _ = std::fs::remove_file(&local_sock_path);
 
     #[cfg(unix)]
-    let local_listener: Option<LocalAttachListener> =
+    let local_listener: Option<LocalAttachListener> = {
+        // Safe to drop the stale socket: pid_lock above ensures we're the sole
+        // owner. Unix-only — on other platforms nothing is ever bound here, so
+        // removing a file at this path would only risk clobbering an unrelated
+        // one.
+        let _ = std::fs::remove_file(&local_sock_path);
         match tokio::net::UnixListener::bind(&local_sock_path) {
             Ok(l) => {
                 info!(
@@ -1895,15 +1898,26 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                 );
                 None
             }
-        };
+        }
+    };
     // Local CLI attach over a Unix-domain socket isn't available on non-Unix
     // platforms yet; the daemon runs normally and mobile WebRTC sessions are
-    // unaffected.
+    // unaffected. `local_sock_path` is still referenced by the shared cleanup
+    // paths below, but nothing is created or removed at it here.
     #[cfg(not(unix))]
     let local_listener: Option<LocalAttachListener> = {
+        let _ = &local_sock_path;
         debug!("local attach socket disabled on this platform");
         None
     };
+
+    // Clear any stale graceful-stop sentinel from a previous run so it can't
+    // immediately shut down this freshly-started daemon (Windows stop channel;
+    // see the shutdown future below).
+    #[cfg(not(unix))]
+    if let Ok(p) = AppConfig::paths() {
+        let _ = std::fs::remove_file(p.state_dir.join("daemon.stop"));
+    }
 
     info!("daemon starting for host_id={}", host_id);
     let _ = write_audit_event_with_store(AuditEvent::new("daemon_started"), &store);
@@ -2033,8 +2047,22 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
             }
             #[cfg(not(unix))]
             {
-                tokio::signal::ctrl_c().await.ok();
-                "SIGINT"
+                // Windows has no SIGTERM. `pocketshell daemon stop` requests a
+                // graceful shutdown by creating this sentinel file; poll for it
+                // alongside Ctrl-C. Returning "SIGTERM" routes into the same
+                // clean-shutdown arm (mark offline + audit + state save) the
+                // Unix signal path uses.
+                let stop_sentinel = AppConfig::paths().ok().map(|p| p.state_dir.join("daemon.stop"));
+                loop {
+                    tokio::select! {
+                        _ = tokio::signal::ctrl_c() => break "SIGINT",
+                        _ = tokio::time::sleep(Duration::from_millis(250)) => {
+                            if stop_sentinel.as_ref().is_some_and(|s| s.exists()) {
+                                break "SIGTERM";
+                            }
+                        }
+                    }
+                }
             }
         });
 
@@ -4648,7 +4676,10 @@ fn acquire_daemon_pid_lock() -> Result<DaemonPidLock> {
         std::fs::create_dir_all(&paths.state_dir)?;
     }
     let pid_path = paths.pid_file.clone();
-    let file = OpenOptions::new()
+    // Held mutably so the pid stamp below can write through this SAME handle
+    // (avoids a try_clone() that would sit outside the per-handle lock on
+    // Windows, where fs2 uses LockFileEx).
+    let mut file = OpenOptions::new()
         .create(true)
         .read(true)
         .write(true)
@@ -4666,18 +4697,18 @@ fn acquire_daemon_pid_lock() -> Result<DaemonPidLock> {
         )));
     }
 
-    // Stamp our pid so external tools (`daemon stop`, status checks) see the live owner.
+    // Stamp our pid so external tools (`daemon stop`, status checks) see the
+    // live owner. Write through the SAME handle we locked: on Windows fs2 uses
+    // LockFileEx, whose lock is per-handle, so a `try_clone()`d handle's writes
+    // would sit outside the lock. Reusing `file` keeps lock + write on one
+    // handle on every platform.
     let pid = std::process::id().to_string();
     {
-        use std::io::Write as _;
-        let mut writable = file
-            .try_clone()
-            .map_err(|e| HostError::Config(format!("dup pid_file fd: {e}")))?;
-        writable
-            .set_len(0)
+        file.set_len(0)
             .map_err(|e| HostError::Config(format!("truncate pid_file: {e}")))?;
-        writable
-            .write_all(pid.as_bytes())
+        file.seek(SeekFrom::Start(0))
+            .map_err(|e| HostError::Config(format!("seek pid_file: {e}")))?;
+        file.write_all(pid.as_bytes())
             .map_err(|e| HostError::Config(format!("write pid_file: {e}")))?;
     }
 
