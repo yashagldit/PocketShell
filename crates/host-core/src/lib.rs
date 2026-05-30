@@ -10,6 +10,7 @@ pub mod discovery;
 pub mod error;
 pub mod files;
 pub mod files_watch;
+pub mod job_object;
 pub mod local_attach;
 pub mod models;
 pub mod platform;

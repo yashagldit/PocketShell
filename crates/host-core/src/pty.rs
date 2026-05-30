@@ -89,6 +89,17 @@ struct PtySession {
 pub struct SessionManager {
     sessions: HashMap<String, PtySession>,
     limit: usize,
+    /// Windows Job Object that kills every spawned PTY child if the daemon dies
+    /// for any reason — prevents orphaned, CPU-spinning `conhost.exe` backends.
+    /// `None` if the job couldn't be created (the daemon still runs, unguarded).
+    /// No-op on non-Windows targets. Held for the lifetime of the manager (i.e.
+    /// the daemon process) so the kill-on-close guarantee stays armed.
+    ///
+    /// Read only on Windows (the assign-on-spawn block); construct-only
+    /// elsewhere, so the dead-code allow is scoped to non-Windows targets —
+    /// keeping it unconditional would mask a genuine unused field on Windows.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    job: Option<crate::job_object::JobObjectGuard>,
 }
 
 impl SessionManager {
@@ -96,6 +107,7 @@ impl SessionManager {
         Self {
             sessions: HashMap::new(),
             limit,
+            job: crate::job_object::JobObjectGuard::new(),
         }
     }
 
@@ -420,6 +432,16 @@ impl SessionManager {
             .slave
             .spawn_command(cmd)
             .map_err(|e| HostError::Pty(format!("spawn shell failed: {e}")))?;
+
+        // Assign the freshly spawned child to the kill-on-close job object so
+        // an ungraceful daemon death can't leave an orphaned, spinning conhost
+        // behind. Best-effort and Windows-only; a no-op elsewhere.
+        #[cfg(windows)]
+        if let Some(job) = &self.job {
+            if let Some(h) = child.as_raw_handle() {
+                job.assign(h);
+            }
+        }
 
         let child = Arc::new(Mutex::new(child));
         let scrollback = Arc::new(Mutex::new(VecDeque::new()));
