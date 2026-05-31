@@ -669,12 +669,7 @@ impl LocalAttachClients {
         }
     }
 
-    fn add(
-        &mut self,
-        client_id: u64,
-        session_id: String,
-        writer: LocalWriteHalf,
-    ) {
+    fn add(&mut self, client_id: u64, session_id: String, writer: LocalWriteHalf) {
         self.clients.insert(client_id, (session_id, writer));
     }
 
@@ -2052,7 +2047,9 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                 // alongside Ctrl-C. Returning "SIGTERM" routes into the same
                 // clean-shutdown arm (mark offline + audit + state save) the
                 // Unix signal path uses.
-                let stop_sentinel = AppConfig::paths().ok().map(|p| p.state_dir.join("daemon.stop"));
+                let stop_sentinel = AppConfig::paths()
+                    .ok()
+                    .map(|p| p.state_dir.join("daemon.stop"));
                 loop {
                     tokio::select! {
                         _ = tokio::signal::ctrl_c() => break "SIGINT",
@@ -4493,8 +4490,17 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                     .unwrap_or("backend_kill")
                                     .to_string();
                                 info!("backend requested shutdown ({}) — stopping daemon", reason);
-                                sessions.close_all();
-                                webrtc_mgr.close_all().await;
+                                close_all_active_sessions(
+                                    &mut store,
+                                    &backend,
+                                    &mut peer_session_routes,
+                                    &mut session_ciphers,
+                                    &mut sessions,
+                                    &mut webrtc_mgr,
+                                    &mut agent_ws_pumps,
+                                    &agent_router,
+                                )
+                                .await;
                                 if let Ok(token) = store.access_token().map(|s| s.to_string()) {
                                     let _ = tokio::time::timeout(
                                         Duration::from_secs(3),
@@ -4589,8 +4595,17 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                 }
                 sig = &mut shutdown => {
                     info!("shutdown signal received, closing sessions ({})", sig);
-                    sessions.close_all();
-                    webrtc_mgr.close_all().await;
+                    close_all_active_sessions(
+                        &mut store,
+                        &backend,
+                        &mut peer_session_routes,
+                        &mut session_ciphers,
+                        &mut sessions,
+                        &mut webrtc_mgr,
+                        &mut agent_ws_pumps,
+                        &agent_router,
+                    )
+                    .await;
                     if let Ok(token) = store.access_token().map(|s| s.to_string()) {
                         if let Err(e) = tokio::time::timeout(
                             Duration::from_secs(3),
@@ -5432,8 +5447,7 @@ async fn handle_signal(
                                 "operation": "host_transfer_offer",
                                 "stage": "mobile_attestation",
                             })),
-                            ..AuditEvent::new("crypto.signature_failed")
-                                .failed(err.to_string())
+                            ..AuditEvent::new("crypto.signature_failed").failed(err.to_string())
                         },
                         store,
                     );
@@ -5479,8 +5493,7 @@ async fn handle_signal(
                             "operation": "host_transfer_offer",
                             "stage": "attestation_mismatch",
                         })),
-                        ..AuditEvent::new("crypto.signature_failed")
-                            .failed("attestation_mismatch")
+                        ..AuditEvent::new("crypto.signature_failed").failed("attestation_mismatch")
                     },
                     store,
                 );
@@ -5524,8 +5537,7 @@ async fn handle_signal(
                             "stage": "sdp_signature",
                             "source_host_id": source_host_id,
                         })),
-                        ..AuditEvent::new("crypto.signature_failed")
-                            .failed(err.to_string())
+                        ..AuditEvent::new("crypto.signature_failed").failed(err.to_string())
                     },
                     store,
                 );
@@ -5661,8 +5673,7 @@ async fn handle_signal(
                                 "stage": "sdp_signature",
                                 "target_host_id": transfer.target_host_id,
                             })),
-                            ..AuditEvent::new("crypto.signature_failed")
-                                .failed(err.to_string())
+                            ..AuditEvent::new("crypto.signature_failed").failed(err.to_string())
                         },
                         store,
                     );
@@ -6319,7 +6330,7 @@ async fn handle_signal(
             if let Some(handle) = agent_ws_pumps.remove(&agent_id) {
                 handle.abort();
             }
-            agent_router.detach(&agent_id).await;
+            agent_router.close(&agent_id).await;
         }
         "host_control" => {
             // Direct backend-pushed host-management action. The backend
@@ -6723,7 +6734,9 @@ async fn handle_signal(
                     );
                     tokio::spawn(async move {
                         let start = std::time::Instant::now();
-                        let result = crate::files::handle_files_action_with_context(&payload, &router, &ctx).await;
+                        let result =
+                            crate::files::handle_files_action_with_context(&payload, &router, &ctx)
+                                .await;
                         let elapsed = start.elapsed();
 
                         let response_payload = match result {
@@ -7577,7 +7590,9 @@ async fn handle_signal(
             let ctx = build_file_action_context(store, &mobile_device_id);
             tokio::spawn(async move {
                 let start = std::time::Instant::now();
-                let result = crate::files::handle_files_action_with_context(&file_payload, &router, &ctx).await;
+                let result =
+                    crate::files::handle_files_action_with_context(&file_payload, &router, &ctx)
+                        .await;
                 let elapsed = start.elapsed();
 
                 let response_json = match result {
@@ -8349,12 +8364,18 @@ mod tests {
 
     #[test]
     fn classify_ws_auth_failure_replay_is_crypto_replay() {
-        assert_eq!(classify_ws_auth_failure("replayed nonce"), "crypto.replay_detected");
+        assert_eq!(
+            classify_ws_auth_failure("replayed nonce"),
+            "crypto.replay_detected"
+        );
     }
 
     #[test]
     fn classify_ws_auth_failure_signature_paths_are_crypto() {
-        assert_eq!(classify_ws_auth_failure("payload hash mismatch"), "crypto.signature_failed");
+        assert_eq!(
+            classify_ws_auth_failure("payload hash mismatch"),
+            "crypto.signature_failed"
+        );
         assert_eq!(
             classify_ws_auth_failure("ed25519 signature did not verify: bad sig"),
             "crypto.signature_failed"
@@ -8373,8 +8394,14 @@ mod tests {
     fn classify_ws_auth_failure_structural_errors_are_authz() {
         // The bug this guards: substring matching on "signature"/"hash"
         // mis-labels these structural problems as crypto failures.
-        assert_eq!(classify_ws_auth_failure("missing signature"), "authz.denied");
-        assert_eq!(classify_ws_auth_failure("missing payload_hash"), "authz.denied");
+        assert_eq!(
+            classify_ws_auth_failure("missing signature"),
+            "authz.denied"
+        );
+        assert_eq!(
+            classify_ws_auth_failure("missing payload_hash"),
+            "authz.denied"
+        );
         assert_eq!(classify_ws_auth_failure("missing nonce"), "authz.denied");
         assert_eq!(classify_ws_auth_failure("missing ts"), "authz.denied");
         assert_eq!(classify_ws_auth_failure("missing ws_auth"), "authz.denied");
