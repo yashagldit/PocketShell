@@ -4484,9 +4484,9 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                 // account revocation, abuse takedown). Replaces the
                                 // old HeartbeatAction::Kill HTTP path.
                                 let reason = msg
-                                    .extra
-                                    .get("reason")
-                                    .and_then(|v| v.as_str())
+                                    .reason
+                                    .as_deref()
+                                    .or_else(|| msg.extra.get("reason").and_then(|v| v.as_str()))
                                     .unwrap_or("backend_kill")
                                     .to_string();
                                 info!("backend requested shutdown ({}) — stopping daemon", reason);
@@ -4517,6 +4517,11 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                     &store,
                                 );
                                 store.save()?;
+                                // Server-initiated stops are policy decisions
+                                // (free idle sleep, revocation, abuse). Disable
+                                // the boot service before exiting, otherwise
+                                // launchd/systemd Restart=always resurrects us.
+                                let _ = crate::service::uninstall();
                                 return Ok(());
                             } else if msg.message_type == "summary_subscribe" {
                                 if !summary_active {
@@ -4556,6 +4561,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                             } else if let Err(err) = handle_signal(
                                 &mut store,
                                 &backend,
+                                &config,
                                 &turn_cache,
                                 &shell,
                                 &mut sessions,
@@ -5049,6 +5055,7 @@ async fn spawn_ws_agent_pump(
 async fn handle_signal(
     store: &mut StateStore,
     backend: &BackendClient,
+    config: &AppConfig,
     turn_cache: &TurnCredsCache,
     shell: &str,
     sessions: &mut SessionManager,
@@ -6401,6 +6408,51 @@ async fn handle_signal(
                         tokio::time::sleep(Duration::from_millis(250)).await;
                         exit_for_restart(crate::service::restart());
                     });
+                }
+                "host_update_agent" => {
+                    info!(
+                        "host_update_agent requested by mobile={} (host_control)",
+                        mobile_device_id
+                    );
+                    let base_url = msg
+                        .extra
+                        .get("base_url")
+                        .and_then(|v| v.as_str())
+                        .filter(|v| !v.trim().is_empty())
+                        .unwrap_or(crate::update::DEFAULT_BASE_URL)
+                        .to_string();
+                    let requested_version = msg
+                        .extra
+                        .get("version")
+                        .and_then(|v| v.as_str())
+                        .filter(|v| !v.trim().is_empty())
+                        .map(str::to_string);
+                    let current_version = config.app_version.clone();
+                    let _ = write_audit_event_with_store(
+                        AuditEvent {
+                            details: Some(serde_json::json!({
+                                "from_version": current_version.clone(),
+                                "requested_version": requested_version.clone(),
+                                "base_url": base_url.clone(),
+                            })),
+                            ..AuditEvent::new("self_update")
+                        },
+                        store,
+                    );
+                    if install_agent_update(current_version, base_url, requested_version).await {
+                        close_all_active_sessions(
+                            store,
+                            backend,
+                            peer_session_routes,
+                            session_ciphers,
+                            sessions,
+                            webrtc_mgr,
+                            agent_ws_pumps,
+                            agent_router,
+                        )
+                        .await;
+                        exit_for_restart(crate::service::restart());
+                    }
                 }
                 other => {
                     warn!("host_control rejected: unknown action {:?}", other);
@@ -8000,6 +8052,45 @@ fn exit_for_restart(result: Result<crate::service::RestartStatus>) -> ! {
                 err
             );
             std::process::exit(1);
+        }
+    }
+}
+
+async fn install_agent_update(
+    current_version: String,
+    base_url: String,
+    requested_version: Option<String>,
+) -> bool {
+    let info = match crate::update::check(&base_url, &current_version, requested_version.as_deref())
+        .await
+    {
+        Ok(info) => info,
+        Err(err) => {
+            warn!("host_update_agent check failed: {}", err);
+            return false;
+        }
+    };
+
+    if info.up_to_date {
+        info!(
+            "host_update_agent: already up to date at {}",
+            info.current_version
+        );
+        return false;
+    }
+
+    match crate::update::download_and_install(&info).await {
+        Ok(installed) => {
+            info!(
+                "host_update_agent installed {} at {}; restarting",
+                info.target_version,
+                installed.display()
+            );
+            true
+        }
+        Err(err) => {
+            warn!("host_update_agent install failed: {}", err);
+            false
         }
     }
 }
