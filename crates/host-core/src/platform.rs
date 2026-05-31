@@ -72,7 +72,11 @@ mod tests {
         lock_exclusive(&f).unwrap();
 
         // A second handle to the same file can't take it without blocking.
-        let f2 = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        let f2 = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
         let contended = try_lock_exclusive(&f2);
         assert!(
             contended.is_err(),

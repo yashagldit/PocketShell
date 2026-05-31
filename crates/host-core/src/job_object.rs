@@ -155,9 +155,7 @@ mod imp {
             unsafe {
                 let ok = AssignProcessToJobObject(self.handle, process_handle as Handle);
                 if ok == 0 {
-                    tracing::debug!(
-                        "AssignProcessToJobObject failed for a PTY child (continuing)"
-                    );
+                    tracing::debug!("AssignProcessToJobObject failed for a PTY child (continuing)");
                 }
             }
         }

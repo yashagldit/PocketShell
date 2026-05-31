@@ -815,7 +815,8 @@ fn install_windows_task() -> Result<ServiceStatus> {
     }
 
     let xml = windows_task_xml(&exe_path, &user);
-    let tmp = std::env::temp_dir().join(format!("pocketshell-host-agent-{}.xml", std::process::id()));
+    let tmp =
+        std::env::temp_dir().join(format!("pocketshell-host-agent-{}.xml", std::process::id()));
     fs::write(&tmp, utf16le_with_bom(&xml))
         .map_err(|e| HostError::Config(format!("write task xml: {e}")))?;
     let _tmp_guard = TempFileGuard(tmp.clone());
@@ -1006,8 +1007,9 @@ pub fn restart() -> Result<RestartStatus> {
         // End any live instance, then run a fresh one. Restart-on-failure plus
         // the pid-file flock guarantee a single daemon even if the kill races.
         let _ = command_status_output("schtasks", &["/End", "/TN", WINDOWS_TASK_NAME]);
-        let (status, stderr) = command_status_output("schtasks", &["/Run", "/TN", WINDOWS_TASK_NAME])
-            .map_err(|e| HostError::Config(format!("schtasks run: {e}")))?;
+        let (status, stderr) =
+            command_status_output("schtasks", &["/Run", "/TN", WINDOWS_TASK_NAME])
+                .map_err(|e| HostError::Config(format!("schtasks run: {e}")))?;
         if !status.success() {
             return Err(HostError::Config(format!(
                 "schtasks run failed{}",
@@ -1029,7 +1031,9 @@ pub fn restart() -> Result<RestartStatus> {
         Ok(ServiceStatus::StartedDaemon) => Ok(RestartStatus::StartedDaemon),
         Ok(_) => Ok(RestartStatus::RestartedService),
         Err(e) => {
-            warn!("install_and_start during restart failed: {e} — falling back to background spawn");
+            warn!(
+                "install_and_start during restart failed: {e} — falling back to background spawn"
+            );
             start_daemon_process()?;
             Ok(RestartStatus::StartedDaemon)
         }
@@ -1114,11 +1118,12 @@ mod tests {
 
     #[test]
     fn windows_task_xml_contains_required_settings() {
-        let xml = windows_task_xml(r"C:\Program Files\PocketShell\pocketshell.exe", "WORKGROUP\\alice");
+        let xml = windows_task_xml(
+            r"C:\Program Files\PocketShell\pocketshell.exe",
+            "WORKGROUP\\alice",
+        );
         // The action launches the daemon in service mode.
-        assert!(xml.contains(
-            r"<Command>C:\Program Files\PocketShell\pocketshell.exe</Command>"
-        ));
+        assert!(xml.contains(r"<Command>C:\Program Files\PocketShell\pocketshell.exe</Command>"));
         assert!(xml.contains("<Arguments>daemon run --service</Arguments>"));
         // Boot persistence + supervision knobs.
         assert!(xml.contains("<LogonTrigger>"));

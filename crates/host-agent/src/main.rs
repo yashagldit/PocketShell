@@ -324,7 +324,9 @@ fn detach_console() {
 // the only supported path.
 #[allow(dead_code)]
 async fn pair(_config: AppConfig, _code: Option<String>, _reset: bool) -> Result<()> {
-    Err(anyhow!("typed pair-code flow is disabled — use QR (`pocketshell pair`)"))
+    Err(anyhow!(
+        "typed pair-code flow is disabled — use QR (`pocketshell pair`)"
+    ))
 }
 /*
 async fn pair(config: AppConfig, code: Option<String>, reset: bool) -> Result<()> {
@@ -542,7 +544,8 @@ async fn pair(config: AppConfig, code: Option<String>, reset: bool) -> Result<()
 
     Ok(())
 }
-*/ // end PAIRING CODE DISABLED 2026-05-24
+*/
+// end PAIRING CODE DISABLED 2026-05-24
 
 /// Add only the mobile device from this pairing to the local trust store.
 /// The daemon's periodic backend sync never adds devices; it only revokes or
@@ -1402,9 +1405,7 @@ async fn devices(config: AppConfig, command: DeviceCommands) -> Result<()> {
             // The approve command is kept for backward compatibility but now instructs the user.
             // PAIRING CODE DISABLED 2026-05-24 — message updated to point at QR.
             println!("device approval is now done via `pocketshell pair` (QR flow)");
-            println!(
-                "run `pocketshell pair` on this host and scan the QR from the mobile app"
-            );
+            println!("run `pocketshell pair` on this host and scan the QR from the mobile app");
         }
         DeviceCommands::Revoke { device_id } => {
             let revoked = backend

@@ -228,10 +228,7 @@ pub fn read_audit_tail(
             continue;
         };
         if let Some(prefix) = event_type_prefix {
-            let et = ev
-                .get("event_type")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let et = ev.get("event_type").and_then(|v| v.as_str()).unwrap_or("");
             if !et.starts_with(prefix) {
                 continue;
             }
