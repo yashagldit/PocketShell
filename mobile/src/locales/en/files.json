@@ -165,5 +165,12 @@
   "alert.leave_and_cancel": "Leave",
   "rename_modal.title": "Rename",
   "rename_modal.cancel": "Cancel",
-  "rename_modal.confirm": "Rename"
+  "rename_modal.confirm": "Rename",
+  "this_pc": "This PC",
+  "goto.title": "Go to path",
+  "goto.placeholder": "Enter a path…",
+  "goto.go": "Go",
+  "goto.drives": "Drives",
+  "goto.suggestions": "Suggestions",
+  "goto.no_suggestions": "No matching folders"
 }
