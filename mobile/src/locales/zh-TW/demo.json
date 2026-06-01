@@ -1,0 +1,68 @@
+{
+  "badge.demo": "DEMO",
+  "status.online": "online",
+
+  "cta.title": "Like what you see?",
+  "cta.subtitle": "Pair your own host to use all of this for real.",
+  "cta.pair": "Pair your own host",
+
+  "hero.subtitle": "Try the terminal, files, and live monitor — no setup required.",
+  "hero.explore": "Explore demo",
+  "mini.cpu": "cpu",
+  "mini.ram": "ram",
+
+  "row.title": "Explore the demo",
+  "row.subtitle": "Terminal · Files · Monitor — all simulated",
+  "row.dismiss": "Dismiss",
+
+  "hub.note": "Everything here is simulated and runs on your device. Nothing connects to a real machine.",
+  "hub.terminal.title": "Terminal",
+  "hub.terminal.desc": "Run commands in an encrypted shell",
+  "hub.monitor.title": "Monitor",
+  "hub.monitor.desc": "Live CPU, memory, disk & network",
+  "hub.files.title": "Files",
+  "hub.files.desc": "Browse, view & transfer files",
+  "hub.workspace.title": "Workspace",
+  "hub.workspace.desc": "Terminal and files, side by side",
+
+  "terminal.hint": "Tap a command to try it, or type your own:",
+  "terminal.host_only": "Pair your own host to use this.",
+
+  "monitor.cpu": "CPU",
+  "monitor.ram": "Memory",
+  "monitor.disk": "Disk",
+  "monitor.load": "Load avg",
+  "monitor.recv": "Down",
+  "monitor.send": "Up",
+  "monitor.cores": "Per-core usage",
+  "monitor.core": "core",
+  "monitor.note": "Simulated live metrics — pair a host to see real ones.",
+
+  "metric.cpu": "CPU",
+  "metric.memory": "Memory",
+  "metric.disk": "Disk",
+  "metric.network": "Network",
+  "metric.avg": "Average",
+  "metric.peak": "Peak",
+  "metric.min": "Min",
+  "metric.down": "Download",
+  "metric.up": "Upload",
+  "metric.breakdown": "Breakdown",
+  "metric.subtitle": "{{host}} · last {{range}} · {{count}} points",
+
+  "files.transfer_blocked": "Pair your own host for real file transfer.",
+  "files.back": "Files",
+  "files.upload": "Upload",
+  "files.download": "Download",
+  "files.empty": "Empty directory",
+
+  "workspace.terminal_tab": "Terminal",
+  "workspace.files_tab": "Files",
+
+  "nav.host": "Demo",
+  "nav.terminal": "Demo Terminal",
+  "nav.monitor": "Demo Monitor",
+  "nav.metric": "Stats",
+  "nav.files": "Demo Files",
+  "nav.workspace": "Demo Workspace"
+}

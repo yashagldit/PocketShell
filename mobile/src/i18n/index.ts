@@ -27,6 +27,7 @@ const NS_FILES = [
   "widgets",
   "notifications",
   "stats",
+  "demo",
 ] as const;
 
 export const NAMESPACES = NS_FILES;
@@ -340,6 +341,19 @@ export const LOCALE_LABELS: Record<SupportedLocale, string> = {
   "pt-BR": "Português (Brasil)",
 };
 
+import enDemo from "@/locales/en/demo.json";
+import deDemo from "@/locales/de/demo.json";
+import jaDemo from "@/locales/ja/demo.json";
+import hiDemo from "@/locales/hi/demo.json";
+import frDemo from "@/locales/fr/demo.json";
+import koDemo from "@/locales/ko/demo.json";
+import zhCNDemo from "@/locales/zh-CN/demo.json";
+import zhTWDemo from "@/locales/zh-TW/demo.json";
+import esDemo from "@/locales/es/demo.json";
+import itDemo from "@/locales/it/demo.json";
+import ruDemo from "@/locales/ru/demo.json";
+import ptBRDemo from "@/locales/pt-BR/demo.json";
+
 const resources = {
   en: {
     common: enCommon,
@@ -365,6 +379,7 @@ const resources = {
     widgets: enWidgets,
     notifications: enNotifications,
     stats: enStats,
+    demo: enDemo,
   },
   de: {
     common: deCommon,
@@ -390,6 +405,7 @@ const resources = {
     widgets: deWidgets,
     notifications: deNotifications,
     stats: deStats,
+    demo: deDemo,
   },
   ja: {
     common: jaCommon,
@@ -415,6 +431,7 @@ const resources = {
     widgets: jaWidgets,
     notifications: jaNotifications,
     stats: jaStats,
+    demo: jaDemo,
   },
   hi: {
     common: hiCommon,
@@ -440,6 +457,7 @@ const resources = {
     widgets: hiWidgets,
     notifications: hiNotifications,
     stats: hiStats,
+    demo: hiDemo,
   },
   "fr": {
     common: frCommon,
@@ -465,6 +483,7 @@ const resources = {
     widgets: frWidgets,
     notifications: frNotifications,
     stats: frStats,
+    demo: frDemo,
   },
   "ko": {
     common: koCommon,
@@ -490,6 +509,7 @@ const resources = {
     widgets: koWidgets,
     notifications: koNotifications,
     stats: koStats,
+    demo: koDemo,
   },
   "zh-CN": {
     common: zhCNCommon,
@@ -515,6 +535,7 @@ const resources = {
     widgets: zhCNWidgets,
     notifications: zhCNNotifications,
     stats: zhCNStats,
+    demo: zhCNDemo,
   },
   "zh-TW": {
     common: zhTWCommon,
@@ -540,6 +561,7 @@ const resources = {
     widgets: zhTWWidgets,
     notifications: zhTWNotifications,
     stats: zhTWStats,
+    demo: zhTWDemo,
   },
   "es": {
     common: esCommon,
@@ -565,6 +587,7 @@ const resources = {
     widgets: esWidgets,
     notifications: esNotifications,
     stats: esStats,
+    demo: esDemo,
   },
   "it": {
     common: itCommon,
@@ -590,6 +613,7 @@ const resources = {
     widgets: itWidgets,
     notifications: itNotifications,
     stats: itStats,
+    demo: itDemo,
   },
   "ru": {
     common: ruCommon,
@@ -615,6 +639,7 @@ const resources = {
     widgets: ruWidgets,
     notifications: ruNotifications,
     stats: ruStats,
+    demo: ruDemo,
   },
   "pt-BR": {
     common: ptBRCommon,
@@ -640,6 +665,7 @@ const resources = {
     widgets: ptBRWidgets,
     notifications: ptBRNotifications,
     stats: ptBRStats,
+    demo: ptBRDemo,
   },
 } as const;
 
