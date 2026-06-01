@@ -579,6 +579,7 @@ const AUTH_SENTINEL: &[u8] = b"\x00PSAU";
 const TERMINAL_KEEPALIVE_SENTINEL: &[u8] = b"\x00PSKA";
 /// Per-send timeout for streaming downloads to detect dead channels.
 const DOWNLOAD_SEND_TIMEOUT: Duration = Duration::from_secs(10);
+const WEBRTC_POLL_TIMEOUT: Duration = Duration::from_secs(5);
 const DIRECT_TRANSFER_BUFFER_HIGH_WATER: usize = 256 * 1024;
 const DIRECT_TRANSFER_BUFFER_POLL: Duration = Duration::from_millis(10);
 
@@ -832,11 +833,23 @@ async fn send_files_stream_frame(
     payload: &[u8],
 ) -> Result<()> {
     let bytes = bytes::Bytes::from(encode_files_stream_frame(header, payload));
-    channel
-        .send(&bytes)
-        .await
-        .map_err(|e| HostError::Backend(format!("files stream send failed: {e}")))?;
+    send_files_channel_bytes(&channel, bytes, "files stream send").await?;
     Ok(())
+}
+
+async fn send_files_channel_bytes(
+    channel: &std::sync::Arc<webrtc::data_channel::RTCDataChannel>,
+    bytes: bytes::Bytes,
+    label: &str,
+) -> Result<()> {
+    match tokio::time::timeout(DOWNLOAD_SEND_TIMEOUT, channel.send(&bytes)).await {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(e)) => Err(HostError::Backend(format!("{label} failed: {e}"))),
+        Err(_) => Err(HostError::Backend(format!(
+            "{label} timed out after {:?}",
+            DOWNLOAD_SEND_TIMEOUT
+        ))),
+    }
 }
 
 /// Serialize an RPC response and send it on the control channel, logging
@@ -906,10 +919,7 @@ async fn send_framed_files_response(
         ]
         .concat(),
     );
-    channel
-        .send(&start_bytes)
-        .await
-        .map_err(|e| HostError::Backend(format!("files response start send failed: {e}")))?;
+    send_files_channel_bytes(&channel, start_bytes, "files response start send").await?;
 
     for (index, chunk) in json.as_bytes().chunks(FILES_MESSAGE_CHUNK_SIZE).enumerate() {
         let chunk_value = serde_json::json!({
@@ -927,10 +937,7 @@ async fn send_framed_files_response(
             ]
             .concat(),
         );
-        channel
-            .send(&chunk_bytes)
-            .await
-            .map_err(|e| HostError::Backend(format!("files response chunk send failed: {e}")))?;
+        send_files_channel_bytes(&channel, chunk_bytes, "files response chunk send").await?;
         if index == 0 || index + 1 == total_chunks {
             info!(
                 "files WebRTC frame send chunk response_to={} chunk={}/{} bytes={}",
@@ -953,10 +960,7 @@ async fn send_framed_files_response(
         ]
         .concat(),
     );
-    channel
-        .send(&end_bytes)
-        .await
-        .map_err(|e| HostError::Backend(format!("files response end send failed: {e}")))?;
+    send_files_channel_bytes(&channel, end_bytes, "files response end send").await?;
     info!(
         "files WebRTC frame send end response_to={} chunks={}",
         response_to, total_chunks
@@ -2664,7 +2668,21 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                     }
                 }
                 _ = turn_usage_tick.tick() => {
-                    let delta = webrtc_mgr.collect_relay_delta().await;
+                    let delta = match tokio::time::timeout(
+                        WEBRTC_POLL_TIMEOUT,
+                        webrtc_mgr.collect_relay_delta(),
+                    )
+                    .await
+                    {
+                        Ok(delta) => delta,
+                        Err(_) => {
+                            warn!(
+                                "webrtc relay accounting timed out after {:?}; skipping this report",
+                                WEBRTC_POLL_TIMEOUT
+                            );
+                            0
+                        }
+                    };
                     if delta > 0 {
                         if let Ok(token) = store.access_token().map(|s| s.to_string()) {
                             let backend = backend.clone();
@@ -2677,7 +2695,14 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                     }
                 }
                 _ = webrtc_poll_tick.tick() => {
-                    webrtc_mgr.poll_events().await;
+                    let poll_result =
+                        tokio::time::timeout(WEBRTC_POLL_TIMEOUT, webrtc_mgr.poll_events()).await;
+                    if poll_result.is_err() {
+                        warn!(
+                            "webrtc poll_events timed out after {:?}; continuing control loop",
+                            WEBRTC_POLL_TIMEOUT
+                        );
+                    }
                     for (transfer_id, transfer) in &mut outbound_host_transfers {
                         while let Ok(candidate) = transfer.peer.ice_tx.try_recv() {
                             if let Ok(json) = candidate.to_json() {
