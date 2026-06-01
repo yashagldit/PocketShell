@@ -56,6 +56,9 @@
   "meta.folder": "資料夾",
   "meta.symlink": "符號連結",
   "group_title.folders": "資料夾",
+  "group_title.quick_access": "快速存取",
+  "group_title.devices_drives": "裝置和磁碟機",
+  "group_title.locations": "位置",
   "group_title.images": "圖片",
   "group_title.code": "代碼",
   "group_title.config": "配置",
@@ -165,5 +168,7 @@
   "alert.leave_and_cancel": "離開",
   "rename_modal.title": "重新命名",
   "rename_modal.cancel": "取消",
-  "rename_modal.confirm": "重新命名"
+  "rename_modal.confirm": "重新命名",
+  "this_pc": "本機",
+  "computer": "電腦"
 }

@@ -403,6 +403,7 @@ pub async fn handle_files_action_with_context(
                 read_file(&path_str, offset, limit)
             }
             "stat" => stat_path(&path_str),
+            "list_drives" => list_drives(),
             "mkdir" => audit_mutation(&ctx, "file.mkdir", &path_str, None, None, mkdir(&path_str)),
             "delete" => {
                 // Capture recursive flag before the operation so the audit record
@@ -932,6 +933,112 @@ fn stat_path(path_str: &str) -> Result<serde_json::Value> {
         "created_at": created_at,
         "is_symlink": is_symlink,
         "symlink_target": symlink_target,
+    }))
+}
+
+/// Enumerate the host's drives/volumes plus the current user's well-known
+/// folders for the mobile "This PC" (Windows) / "Computer" (Unix) view, in a
+/// single request. Replaces the client-side A–Z `stat` probing (26 round-trips,
+/// most of them failing) with one host-side call: `sysinfo` reports the real
+/// mount points and `dirs` resolves the actual Known Folder locations — correct
+/// even when Documents/Downloads are redirected (e.g. to OneDrive), which the
+/// `~/Documents` guess can't see. Read-only; denylisted volumes/folders are
+/// filtered out so the picker matches what `list_dir`/`stat` will actually open.
+fn list_drives() -> Result<serde_json::Value> {
+    use sysinfo::Disks;
+
+    // Drives: real mount points. On Windows these are drive roots (`C:\`, `D:\`);
+    // on Unix they are filesystem mounts. Deduplicated by mount, then sorted for
+    // a stable, predictable order ("/" sorts first; volumes alphabetical).
+    let mut drives: Vec<FileEntry> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for disk in Disks::new_with_refreshed_list().list() {
+        let mount_path = disk.mount_point();
+        let mount = mount_path.to_string_lossy().to_string();
+        // macOS firmware/helper/backup volumes (shared with the stats collector),
+        // plus the APFS data sibling that collapses into "/".
+        if crate::stats::is_noise_mount(&mount) || mount == "/System/Volumes/Data" {
+            continue;
+        }
+        // Container/virtual filesystems that aren't user storage. sysinfo already
+        // drops snap/squashfs, proc, sysfs, tmpfs and /proc,/sys,/run mounts; it
+        // does NOT drop Docker `overlay` or FUSE/AppImage mounts, so skip those.
+        let fs_type = disk.file_system().to_string_lossy();
+        if fs_type == "overlay" || fs_type.starts_with("fuse") {
+            continue;
+        }
+        // Stay consistent with list_dir/stat: don't surface a volume the denylist
+        // would reject on tap (otherwise it shows but errors when opened).
+        if is_path_denied(mount_path) {
+            continue;
+        }
+        if !seen.insert(mount.clone()) {
+            continue;
+        }
+        let trimmed = mount.trim_end_matches(['\\', '/']);
+        let name = if trimmed.is_empty() {
+            mount.clone() // root "/" trims to empty — keep it visible
+        } else if trimmed.ends_with(':') {
+            trimmed.to_string() // Windows drive letter ("C:")
+        } else {
+            // Friendly volume name from the last path component ("USB", "boot").
+            mount_path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| trimmed.to_string())
+        };
+        drives.push(FileEntry {
+            name,
+            path: mount,
+            is_dir: true,
+            size: 0,
+            permissions: String::new(),
+            modified_at: None,
+            is_symlink: false,
+        });
+    }
+    drives.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+
+    // Quick-access folders: the user's actual Known Folders, in Explorer's pin
+    // order. Skip any the platform doesn't define or that don't exist on disk.
+    let mut folders: Vec<FileEntry> = Vec::new();
+    let candidates = [
+        dirs::desktop_dir(),
+        dirs::download_dir(),
+        dirs::document_dir(),
+        dirs::picture_dir(),
+    ];
+    for candidate in candidates.into_iter().flatten() {
+        // Same denylist consistency as the drives above — never surface a folder
+        // the denylist would reject when the user taps it.
+        if is_path_denied(&candidate) {
+            continue;
+        }
+        let metadata = match fs::metadata(&candidate) {
+            Ok(m) if m.is_dir() => m,
+            _ => continue,
+        };
+        let name = candidate
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        folders.push(FileEntry {
+            name,
+            path: candidate.to_string_lossy().to_string(),
+            is_dir: true,
+            size: 0,
+            permissions: get_permissions(&metadata),
+            modified_at: modified_iso(&metadata),
+            is_symlink: false,
+        });
+    }
+
+    Ok(serde_json::json!({
+        "drives": drives,
+        "folders": folders,
+        // Authoritative host platform so the client labels the view ("This PC"
+        // vs "Computer") without inferring Windows-vs-Unix from drive-path shapes.
+        "platform": if cfg!(windows) { "windows" } else { "unix" },
     }))
 }
 
@@ -2118,6 +2225,33 @@ mod tests {
         let res = handle_files_action(&v, &router).await.unwrap();
         assert_eq!(res["size"], 2);
         assert_eq!(res["is_dir"], false);
+    }
+
+    #[tokio::test]
+    async fn handle_files_action_dispatches_list_drives() {
+        let v = serde_json::json!({ "action": "list_drives" });
+        let router = crate::agent_session::AgentRouter::new();
+        let res = handle_files_action(&v, &router).await.unwrap();
+        // Both keys are always present as arrays. We deliberately do NOT assert a
+        // minimum drive count: a sandboxed/containerized CI runner can legitimately
+        // report zero mounts, and that must not fail this dispatch test.
+        let drives = res["drives"].as_array().expect("drives array");
+        assert!(res["folders"].is_array(), "folders should be an array");
+        assert!(
+            matches!(res["platform"].as_str(), Some("windows") | Some("unix")),
+            "platform should be reported as windows or unix"
+        );
+        for d in drives {
+            // Each drive is a navigable directory entry with a non-empty path.
+            assert_eq!(d["is_dir"], true);
+            let path = d["path"].as_str().unwrap_or("");
+            assert!(!path.is_empty());
+            // macOS firmware/APFS-helper volumes must be filtered out.
+            assert!(
+                !path.starts_with("/System/Volumes/"),
+                "synthetic volume leaked into drives: {path}"
+            );
+        }
     }
 
     #[test]

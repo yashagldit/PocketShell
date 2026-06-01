@@ -56,6 +56,9 @@
   "meta.folder": "Ordner",
   "meta.symlink": "Symlink",
   "group_title.folders": "Ordner",
+  "group_title.quick_access": "Schnellzugriff",
+  "group_title.devices_drives": "Geräte und Laufwerke",
+  "group_title.locations": "Speicherorte",
   "group_title.images": "Bilder",
   "group_title.code": "Code",
   "group_title.config": "Konfiguration",
@@ -165,5 +168,7 @@
   "alert.leave_and_cancel": "Verlassen",
   "rename_modal.title": "Umbenennen",
   "rename_modal.cancel": "Abbrechen",
-  "rename_modal.confirm": "Umbenennen"
+  "rename_modal.confirm": "Umbenennen",
+  "this_pc": "Dieser PC",
+  "computer": "Computer"
 }

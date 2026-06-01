@@ -56,6 +56,9 @@
   "meta.folder": "फ़ोल्डर",
   "meta.symlink": "symlink",
   "group_title.folders": "फ़ोल्डर",
+  "group_title.quick_access": "त्वरित एक्सेस",
+  "group_title.devices_drives": "डिवाइस और ड्राइव",
+  "group_title.locations": "स्थान",
   "group_title.images": "छवियाँ",
   "group_title.code": "कोड",
   "group_title.config": "कॉन्फ़िग",
@@ -165,5 +168,7 @@
   "alert.leave_and_cancel": "छोड़ें",
   "rename_modal.title": "नाम बदलें",
   "rename_modal.cancel": "रद्द करें",
-  "rename_modal.confirm": "नाम बदलें"
+  "rename_modal.confirm": "नाम बदलें",
+  "this_pc": "यह पीसी",
+  "computer": "कंप्यूटर"
 }

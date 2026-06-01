@@ -56,6 +56,9 @@
   "meta.folder": "フォルダ",
   "meta.symlink": "シンボリックリンク",
   "group_title.folders": "フォルダ",
+  "group_title.quick_access": "クイックアクセス",
+  "group_title.devices_drives": "デバイスとドライブ",
+  "group_title.locations": "場所",
   "group_title.images": "画像",
   "group_title.code": "コード",
   "group_title.config": "設定",
@@ -165,5 +168,7 @@
   "alert.leave_and_cancel": "退出",
   "rename_modal.title": "名前を変更",
   "rename_modal.cancel": "キャンセル",
-  "rename_modal.confirm": "名前を変更"
+  "rename_modal.confirm": "名前を変更",
+  "this_pc": "PC",
+  "computer": "コンピュータ"
 }

@@ -56,6 +56,9 @@
   "meta.folder": "dossier",
   "meta.symlink": "lien symbolique",
   "group_title.folders": "Dossiers",
+  "group_title.quick_access": "Accès rapide",
+  "group_title.devices_drives": "Périphériques et lecteurs",
+  "group_title.locations": "Emplacements",
   "group_title.images": "Images",
   "group_title.code": "Code",
   "group_title.config": "Configuration",
@@ -165,5 +168,7 @@
   "alert.leave_and_cancel": "Quitter",
   "rename_modal.title": "Renommer",
   "rename_modal.cancel": "Annuler",
-  "rename_modal.confirm": "Renommer"
+  "rename_modal.confirm": "Renommer",
+  "this_pc": "Ce PC",
+  "computer": "Ordinateur"
 }

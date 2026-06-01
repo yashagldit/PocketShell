@@ -56,6 +56,9 @@
   "meta.folder": "carpeta",
   "meta.symlink": "enlace simbólico",
   "group_title.folders": "Carpetas",
+  "group_title.quick_access": "Acceso rápido",
+  "group_title.devices_drives": "Dispositivos y unidades",
+  "group_title.locations": "Ubicaciones",
   "group_title.images": "Imágenes",
   "group_title.code": "Código",
   "group_title.config": "Configuración",
@@ -165,5 +168,7 @@
   "alert.leave_and_cancel": "Salir",
   "rename_modal.title": "Renombrar",
   "rename_modal.cancel": "Cancelar",
-  "rename_modal.confirm": "Renombrar"
+  "rename_modal.confirm": "Renombrar",
+  "this_pc": "Este equipo",
+  "computer": "Equipo"
 }

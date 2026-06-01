@@ -56,6 +56,9 @@
   "meta.folder": "文件夹",
   "meta.symlink": "符号链接",
   "group_title.folders": "文件夹",
+  "group_title.quick_access": "快速访问",
+  "group_title.devices_drives": "设备和驱动器",
+  "group_title.locations": "位置",
   "group_title.images": "图片",
   "group_title.code": "代码",
   "group_title.config": "配置",
@@ -165,5 +168,7 @@
   "alert.leave_and_cancel": "离开",
   "rename_modal.title": "重命名",
   "rename_modal.cancel": "取消",
-  "rename_modal.confirm": "重命名"
+  "rename_modal.confirm": "重命名",
+  "this_pc": "此电脑",
+  "computer": "计算机"
 }

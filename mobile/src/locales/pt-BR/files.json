@@ -56,6 +56,9 @@
   "meta.folder": "pasta",
   "meta.symlink": "link simbólico",
   "group_title.folders": "Pastas",
+  "group_title.quick_access": "Acesso rápido",
+  "group_title.devices_drives": "Dispositivos e unidades",
+  "group_title.locations": "Locais",
   "group_title.images": "Imagens",
   "group_title.code": "Código",
   "group_title.config": "Configuração",
@@ -165,5 +168,7 @@
   "alert.leave_and_cancel": "Sair",
   "rename_modal.title": "Renomear",
   "rename_modal.cancel": "Cancelar",
-  "rename_modal.confirm": "Renomear"
+  "rename_modal.confirm": "Renomear",
+  "this_pc": "Este PC",
+  "computer": "Computador"
 }

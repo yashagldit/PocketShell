@@ -56,6 +56,9 @@
   "meta.folder": "cartella",
   "meta.symlink": "collegamento simbolico",
   "group_title.folders": "Cartelle",
+  "group_title.quick_access": "Accesso rapido",
+  "group_title.devices_drives": "Dispositivi e unità",
+  "group_title.locations": "Posizioni",
   "group_title.images": "Immagini",
   "group_title.code": "Codice",
   "group_title.config": "Configurazione",
@@ -165,5 +168,7 @@
   "alert.leave_and_cancel": "Esci",
   "rename_modal.title": "Rinomina",
   "rename_modal.cancel": "Annulla",
-  "rename_modal.confirm": "Rinomina"
+  "rename_modal.confirm": "Rinomina",
+  "this_pc": "Questo PC",
+  "computer": "Computer"
 }

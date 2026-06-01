@@ -56,6 +56,9 @@
   "meta.folder": "폴더",
   "meta.symlink": "심볼릭 링크",
   "group_title.folders": "폴더",
+  "group_title.quick_access": "빠른 액세스",
+  "group_title.devices_drives": "장치 및 드라이브",
+  "group_title.locations": "위치",
   "group_title.images": "이미지",
   "group_title.code": "코드",
   "group_title.config": "설정",
@@ -165,5 +168,7 @@
   "alert.leave_and_cancel": "나가기",
   "rename_modal.title": "이름 변경",
   "rename_modal.cancel": "취소",
-  "rename_modal.confirm": "이름 변경"
+  "rename_modal.confirm": "이름 변경",
+  "this_pc": "내 PC",
+  "computer": "컴퓨터"
 }
