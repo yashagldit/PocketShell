@@ -73,5 +73,14 @@
   "preview.metric_cpu": "CPU",
   "preview.metric_mem": "記憶體",
   "preview.metric_disk": "磁碟",
-  "preview.metric_net": "網路"
+  "preview.metric_net": "網路",
+  "fork.title": "一切就緒",
+  "fork.subtitle": "選擇你想如何開始——另一個稍後隨時都能做。",
+  "fork.demo.title": "試用示範主機",
+  "fork.demo.body": "探索一台模擬主機——真實終端機、檔案與即時指標。無需設定，現在就能在手機上體驗。",
+  "fork.demo.cta": "探索示範",
+  "fork.demo.badge": "推薦",
+  "fork.pair.title": "配對真實主機",
+  "fork.pair.body": "連接你自己的機器。你需要一台有終端機的電腦——大約一分鐘即可完成。",
+  "fork.pair.cta": "配對主機"
 }

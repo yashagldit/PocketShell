@@ -73,5 +73,14 @@
   "preview.metric_cpu": "CPU",
   "preview.metric_mem": "内存",
   "preview.metric_disk": "磁盘",
-  "preview.metric_net": "网络"
+  "preview.metric_net": "网络",
+  "fork.title": "一切就绪",
+  "fork.subtitle": "选择你想如何开始——另一个稍后随时都能做。",
+  "fork.demo.title": "试用演示主机",
+  "fork.demo.body": "探索一台模拟主机——真实终端、文件和实时指标。无需设置，现在就能在手机上体验。",
+  "fork.demo.cta": "探索演示",
+  "fork.demo.badge": "推荐",
+  "fork.pair.title": "配对真实主机",
+  "fork.pair.body": "连接你自己的机器。你需要一台带终端的电脑——大约一分钟即可完成。",
+  "fork.pair.cta": "配对主机"
 }

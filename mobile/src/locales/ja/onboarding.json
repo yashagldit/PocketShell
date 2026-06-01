@@ -73,5 +73,14 @@
   "preview.metric_cpu": "CPU",
   "preview.metric_mem": "MEM",
   "preview.metric_disk": "DISK",
-  "preview.metric_net": "NET"
+  "preview.metric_net": "NET",
+  "fork.title": "準備完了",
+  "fork.subtitle": "始め方を選んでください。もう一方は後からいつでも実行できます。",
+  "fork.demo.title": "デモホストを試す",
+  "fork.demo.body": "シミュレートされたマシンを体験 — 本物のターミナル、ファイル、ライブ指標。セットアップ不要、今すぐスマホで。",
+  "fork.demo.cta": "デモを見る",
+  "fork.demo.badge": "おすすめ",
+  "fork.pair.title": "実際のホストをペアリング",
+  "fork.pair.body": "自分のマシンを接続します。ターミナルのあるコンピューターが必要です — 約1分で完了します。",
+  "fork.pair.cta": "ホストをペアリング"
 }

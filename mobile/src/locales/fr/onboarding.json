@@ -73,5 +73,14 @@
   "preview.metric_cpu": "CPU",
   "preview.metric_mem": "MÉM",
   "preview.metric_disk": "DISQUE",
-  "preview.metric_net": "RÉSEAU"
+  "preview.metric_net": "RÉSEAU",
+  "fork.title": "Vous y êtes",
+  "fork.subtitle": "Choisissez par où commencer — vous pourrez toujours faire l'autre plus tard.",
+  "fork.demo.title": "Essayer un hôte de démo",
+  "fork.demo.body": "Explorez une machine simulée — vrai terminal, fichiers et métriques en direct. Sans installation, tout de suite sur votre téléphone.",
+  "fork.demo.cta": "Explorer la démo",
+  "fork.demo.badge": "Recommandé",
+  "fork.pair.title": "Associer un hôte réel",
+  "fork.pair.body": "Connectez votre propre machine. Il vous faudra un ordinateur avec un terminal — cela prend environ une minute.",
+  "fork.pair.cta": "Associer un hôte"
 }

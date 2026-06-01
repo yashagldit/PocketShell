@@ -73,5 +73,14 @@
   "preview.metric_cpu": "CPU",
   "preview.metric_mem": "MEM",
   "preview.metric_disk": "DISCO",
-  "preview.metric_net": "RETE"
+  "preview.metric_net": "RETE",
+  "fork.title": "Ci sei",
+  "fork.subtitle": "Scegli come iniziare — puoi sempre fare l'altro più tardi.",
+  "fork.demo.title": "Prova un host demo",
+  "fork.demo.body": "Esplora una macchina simulata: terminale reale, file e metriche in tempo reale. Nessuna configurazione, subito dal telefono.",
+  "fork.demo.cta": "Esplora la demo",
+  "fork.demo.badge": "Consigliato",
+  "fork.pair.title": "Abbina un host reale",
+  "fork.pair.body": "Connetti la tua macchina. Ti servirà un computer con un terminale — ci vuole circa un minuto.",
+  "fork.pair.cta": "Abbina un host"
 }
