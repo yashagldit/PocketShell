@@ -1,0 +1,52 @@
+name: Windows Host Agent
+
+# Native Windows build/test of the Rust host agent. The dev team works on
+# macOS/Linux, where `#[cfg(windows)]` / `#[cfg(not(unix))]` branches are never
+# compiled — this job is the regression guard that they keep building.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, ci/windows-host-agent]
+    paths:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/windows-host-agent.yml'
+  pull_request:
+    paths:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/windows-host-agent.yml'
+
+jobs:
+  windows-build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      # Build the binary the way Windows users would get it (MSVC toolchain is
+      # the windows-latest default). The webrtc feature pulls in ring/aws-lc,
+      # which compile fine natively on Windows but cannot cross-compile from a
+      # mac — which is exactly why this job exists.
+      - name: Build host-agent
+        run: cargo build -p host-agent --verbose
+      - name: Test
+        run: cargo test -p host-core -p host-agent --verbose
+      # Clippy is advisory here, not gating: the repo carries pre-existing
+      # lint debt that isn't Windows-specific, and the goal of this job is to
+      # catch Windows *compile* regressions. `cargo build`/`cargo test` above
+      # are the hard gates.
+      - name: Run clippy (non-blocking)
+        run: cargo clippy -p host-agent -p host-core
+        continue-on-error: true
+      - name: Build host-core without default features
+        run: cargo build -p host-core --no-default-features --verbose
+      - name: Build host-agent (release)
+        run: cargo build -p host-agent --verbose --release
