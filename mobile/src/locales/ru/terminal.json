@@ -91,6 +91,7 @@
   "accessory.arrow_up": "Стрелка вверх",
   "accessory.arrow_down": "Стрелка вниз",
   "accessory.arrow_right": "Стрелка вправо",
+  "accessory.backspace": "Удалить",
   "accessory.tab": "Tab",
   "accessory.esc": "Esc",
   "accessory.ctrl": "Ctrl",

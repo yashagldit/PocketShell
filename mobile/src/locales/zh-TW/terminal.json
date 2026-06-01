@@ -91,6 +91,7 @@
   "accessory.arrow_up": "上方向鍵",
   "accessory.arrow_down": "下方向鍵",
   "accessory.arrow_right": "右方向鍵",
+  "accessory.backspace": "退格",
   "accessory.tab": "Tab",
   "accessory.esc": "Esc",
   "accessory.ctrl": "Ctrl",

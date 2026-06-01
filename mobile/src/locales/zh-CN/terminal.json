@@ -91,6 +91,7 @@
   "accessory.arrow_up": "上箭头",
   "accessory.arrow_down": "下箭头",
   "accessory.arrow_right": "右箭头",
+  "accessory.backspace": "退格",
   "accessory.tab": "Tab",
   "accessory.esc": "Esc",
   "accessory.ctrl": "Ctrl",
