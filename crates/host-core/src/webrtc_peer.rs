@@ -43,6 +43,12 @@ struct RelayPairSnapshot {
     was_relay: bool,
 }
 
+const PUBLIC_STUN_URIS: &[&str] = &[
+    "stun:stun.l.google.com:19302",
+    "stun:stun1.l.google.com:19302",
+    "stun:global.stun.twilio.com:3478",
+];
+
 /// webrtc-rs does not support `turns:` (TURN-over-TLS) or `transport=tcp`.
 /// Strip those URIs so they don't end up in the ICE config and break TURN
 /// fallback silently.
@@ -55,6 +61,65 @@ where
         .map(|u| u.as_ref().to_string())
         .filter(|u| !u.starts_with("turns:") && !u.contains("transport=tcp"))
         .collect()
+}
+
+pub(crate) async fn build_ice_servers(
+    uris: Vec<String>,
+    username: String,
+    credential: String,
+) -> Vec<RTCIceServer> {
+    let ice_uris = collect_supported_ice_uris(uris);
+    let resolved_uris = resolve_uris_prefer_ipv4(ice_uris).await;
+    let mut stun_urls = Vec::new();
+    let mut turn_urls = Vec::new();
+    for uri in resolved_uris {
+        if uri.starts_with("stun:") || uri.starts_with("stuns:") {
+            stun_urls.push(uri);
+        } else {
+            turn_urls.push(uri);
+        }
+    }
+
+    let mut servers = Vec::new();
+    if !stun_urls.is_empty() {
+        servers.push(RTCIceServer {
+            urls: stun_urls,
+            ..Default::default()
+        });
+    }
+    if !turn_urls.is_empty() {
+        servers.push(RTCIceServer {
+            urls: turn_urls,
+            username,
+            credential,
+            ..Default::default()
+        });
+    }
+    servers
+}
+
+pub(crate) fn collect_supported_ice_uris<I, S>(uris: I) -> Vec<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let supported_uris = filter_supported_turn_uris(uris);
+    let mut ice_uris = Vec::with_capacity(PUBLIC_STUN_URIS.len() + supported_uris.len());
+
+    for uri in PUBLIC_STUN_URIS {
+        push_unique_uri(&mut ice_uris, (*uri).to_string());
+    }
+    for uri in supported_uris {
+        push_unique_uri(&mut ice_uris, uri);
+    }
+
+    ice_uris
+}
+
+fn push_unique_uri(uris: &mut Vec<String>, uri: String) {
+    if !uris.iter().any(|existing| existing == &uri) {
+        uris.push(uri);
+    }
 }
 
 /// Resolve hostnames in `turn:`/`stun:` URIs to an IP literal, preferring IPv4.
@@ -150,15 +215,9 @@ impl WebRtcPeer {
             .map_err(|e| HostError::Backend(format!("webrtc codec registration failed: {e}")))?;
 
         let api = APIBuilder::new().with_media_engine(media).build();
-        let supported_uris = filter_supported_turn_uris(turn_uris);
-        let resolved_uris = resolve_uris_prefer_ipv4(supported_uris).await;
+        let ice_servers = build_ice_servers(turn_uris, username, credential).await;
         let config = RTCConfiguration {
-            ice_servers: vec![RTCIceServer {
-                urls: resolved_uris,
-                username,
-                credential,
-                ..Default::default()
-            }],
+            ice_servers,
             ..Default::default()
         };
 
@@ -383,6 +442,40 @@ mod tests {
     fn filter_turn_uris_empty_input_yields_empty() {
         let out: Vec<String> = filter_supported_turn_uris(Vec::<String>::new());
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn collect_supported_ice_uris_prepends_public_stun() {
+        let out = collect_supported_ice_uris(["turn:t.example.com:3478?transport=udp"]);
+        assert!(
+            out.starts_with(
+                &PUBLIC_STUN_URIS
+                    .iter()
+                    .map(|uri| (*uri).to_string())
+                    .collect::<Vec<_>>()
+            ),
+            "public STUN should be first: {out:?}"
+        );
+        assert!(out.contains(&"turn:t.example.com:3478?transport=udp".to_string()));
+    }
+
+    #[test]
+    fn collect_supported_ice_uris_dedupes_stun_and_drops_unsupported_turn() {
+        let out = collect_supported_ice_uris([
+            "stun:stun.l.google.com:19302",
+            "turn:t.example.com:3478?transport=tcp",
+            "turns:t.example.com:5349",
+            "turn:t.example.com:3478?transport=udp",
+        ]);
+        assert_eq!(
+            out.iter()
+                .filter(|uri| uri.as_str() == "stun:stun.l.google.com:19302")
+                .count(),
+            1
+        );
+        assert!(!out.iter().any(|uri| uri.contains("transport=tcp")));
+        assert!(!out.iter().any(|uri| uri.starts_with("turns:")));
+        assert!(out.contains(&"turn:t.example.com:3478?transport=udp".to_string()));
     }
 
     #[tokio::test]

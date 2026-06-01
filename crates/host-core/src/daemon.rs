@@ -575,6 +575,8 @@ const MAX_ACTIVE_UPLOADS_PER_DEVICE: usize = 3;
 
 /// Sentinel prefix for challenge-response authentication messages on WebRTC channels.
 const AUTH_SENTINEL: &[u8] = b"\x00PSAU";
+/// Sentinel prefix for terminal keepalive / latency messages.
+const TERMINAL_KEEPALIVE_SENTINEL: &[u8] = b"\x00PSKA";
 /// Per-send timeout for streaming downloads to detect dead channels.
 const DOWNLOAD_SEND_TIMEOUT: Duration = Duration::from_secs(10);
 const DIRECT_TRANSFER_BUFFER_HIGH_WATER: usize = 256 * 1024;
@@ -2878,8 +2880,12 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                             } else if !authenticated_channels.contains(&session_id) {
                                 warn!("dropping unauthenticated input on session {} from device {}", session_id, mobile_device_id);
                             } else {
-                                if data.len() >= 5 && data[0] == 0x00 && &data[1..5] == b"PSKA" {
-                                    trace!("terminal keepalive received for session {}", session_id);
+                                if data.starts_with(TERMINAL_KEEPALIVE_SENTINEL) {
+                                    if let Some(response) = build_terminal_keepalive_pong(&data) {
+                                        webrtc_mgr.send_output(&session_id, &response).await;
+                                    } else {
+                                        trace!("terminal keepalive received for session {}", session_id);
+                                    }
                                 } else if data.len() > 5 && data[0] == 0x00 && &data[1..5] == b"PSFT" {
                                     if let Ok(json_str) = std::str::from_utf8(&data[5..]) {
                                         if let Some(update) =
@@ -6530,7 +6536,7 @@ async fn handle_signal(
                         };
 
                     // Check for file transfer sentinel via signaling relay
-                    if bytes.len() >= 5 && bytes[0] == 0x00 && &bytes[1..5] == b"PSKA" {
+                    if bytes.starts_with(TERMINAL_KEEPALIVE_SENTINEL) {
                         trace!(
                             "terminal keepalive received via signaling for session {}",
                             session_id
@@ -7972,6 +7978,31 @@ fn build_auth_message(json: &serde_json::Value) -> Vec<u8> {
     msg.extend_from_slice(AUTH_SENTINEL);
     msg.extend_from_slice(&json_bytes);
     msg
+}
+
+fn build_terminal_keepalive_pong(data: &[u8]) -> Option<Vec<u8>> {
+    if data.len() <= TERMINAL_KEEPALIVE_SENTINEL.len()
+        || !data.starts_with(TERMINAL_KEEPALIVE_SENTINEL)
+    {
+        return None;
+    }
+
+    let msg =
+        serde_json::from_slice::<serde_json::Value>(&data[TERMINAL_KEEPALIVE_SENTINEL.len()..])
+            .ok()?;
+    if msg.get("type").and_then(|v| v.as_str()) != Some("ping") {
+        return None;
+    }
+
+    let response = serde_json::json!({
+        "type": "pong",
+        "id": msg.get("id").cloned().unwrap_or(serde_json::Value::Null),
+    });
+    let json_bytes = serde_json::to_vec(&response).ok()?;
+    let mut out = Vec::with_capacity(TERMINAL_KEEPALIVE_SENTINEL.len() + json_bytes.len());
+    out.extend_from_slice(TERMINAL_KEEPALIVE_SENTINEL);
+    out.extend_from_slice(&json_bytes);
+    Some(out)
 }
 
 /// Tear down every active session on this host: kill PTYs, drop WebRTC
