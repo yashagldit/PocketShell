@@ -44,19 +44,21 @@ The `mobile/src/locales/` tree is here because translations benefit from being p
 
 ## Install
 
-Pre-built binaries — pick either:
+### Pre-built binaries
+
+Pick either:
 
 ```bash
-# install script
+# install script — macOS & Linux
 brew install cosign  # one-time, for Sigstore signature verification
 curl -fsSL https://pocketshell.app/install.sh | bash
 
-# npm
+# npm — macOS, Linux & Windows
 npm i -g pocketshell
 ```
 
-**Install script** detects your OS and arch, fetches the matching
-tarball from the latest [GitHub
+**Install script** (macOS / Linux) detects your OS and arch, fetches the
+matching tarball from the latest [GitHub
 Release](https://github.com/yashagldit/PocketShell/releases), verifies
 its SHA-256 checksum **and the Sigstore cosign keyless signature**
 (pinned to this repo's release workflow identity), then installs to
@@ -65,32 +67,106 @@ root). Without cosign installed the script refuses to proceed — the
 SHA-256 alone is same-origin integrity, not authenticity, so a
 compromised release publisher could serve a matching checksum for a
 malicious binary. Set `POCKETSHELL_SKIP_COSIGN=1` only if you've
-verified the artifact out of band.
+verified the artifact out of band. It's a POSIX shell script — on
+**Windows** use npm (below) or [build from source](#build-from-source).
 
 Read the script first if you'd rather not pipe to bash blindly — it's
 served from the static site and intentionally short.
 
 **npm** ships the binary inside platform-specific packages
-(`@pocketshell/darwin-arm64`, `@pocketshell/linux-x64-gnu`, etc.)
-selected by npm's `os` / `cpu` / `libc` filters. The packages are
-published from this repo's release workflow via [npm Trusted
+(`@pocketshell/darwin-arm64`, `@pocketshell/linux-x64-gnu`,
+`@pocketshell/win32-x64-msvc`, etc.) selected by npm's `os` / `cpu` /
+`libc` filters — this is the **recommended path on Windows**. The
+packages are published from this repo's release workflow via [npm Trusted
 Publishing](https://docs.npmjs.com/trusted-publishers/) (OIDC, no
 long-lived tokens), with build provenance attached automatically.
 
-From source (Rust 1.78+):
-
-```bash
-git clone https://github.com/yashagldit/PocketShell.git
-cd PocketShell
-cargo install --path crates/host-agent --root ~/.local
-export PATH="$HOME/.local/bin:$PATH"
-```
-
-Verify:
+Verify either install:
 
 ```bash
 pocketshell --version
 ```
+
+### Build from source
+
+Prefer to compile the agent yourself rather than trust a pre-built
+binary? The source carries **no backend URL** — you supply PocketShell's
+endpoints either at build time (baked into the binary) or at runtime
+(per invocation).
+
+**Prerequisites**
+
+- Rust 1.78+ — install via [rustup](https://rustup.rs).
+- A C linker/toolchain: `build-essential` (Debian/Ubuntu) or the
+  equivalent `gcc`/`clang` package on Linux · Xcode Command Line Tools
+  (`xcode-select --install`) on macOS · [Visual Studio C++ Build
+  Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) on
+  Windows.
+- Nothing else — the keychain (native OS keyring on macOS / Linux /
+  Windows) and the WebRTC stack are pure-Rust, so there's no OpenSSL,
+  dbus, or pkg-config to install.
+
+**Clone, then build with the backend URL baked in** (recommended) —
+macOS / Linux:
+
+```bash
+git clone https://github.com/yashagldit/PocketShell.git
+cd PocketShell
+POCKETSHELL_DEFAULT_BACKEND_URL=https://api.pocketshell.app \
+POCKETSHELL_DEFAULT_WS_URL=wss://api.pocketshell.app/ws/host \
+  cargo install --path crates/host-agent --root ~/.local
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+Windows (PowerShell):
+
+```powershell
+git clone https://github.com/yashagldit/PocketShell.git
+cd PocketShell
+$env:POCKETSHELL_DEFAULT_BACKEND_URL = "https://api.pocketshell.app"
+$env:POCKETSHELL_DEFAULT_WS_URL      = "wss://api.pocketshell.app/ws/host"
+cargo install --path crates/host-agent --root "$env:USERPROFILE\.local"
+# then add %USERPROFILE%\.local\bin to your PATH
+```
+
+> **Why the env vars matter.** `crates/host-core/src/config.rs` reads
+> them at compile time via `option_env!`. Build *without* them and the
+> binary ships with empty URLs and fails its first connection with a
+> misleading `invalid ws request` error. Cargo also **doesn't treat an
+> env-var change as a reason to rebuild** — if you already built once
+> without them set, force a clean recompile first:
+> `cargo clean -p host-core -p host-agent`.
+
+Alternatively, build with no URL baked in and supply it at runtime:
+
+```bash
+POCKETSHELL_BACKEND_URL=https://api.pocketshell.app \
+POCKETSHELL_WS_URL=wss://api.pocketshell.app/ws/host \
+  pocketshell daemon run
+```
+
+**Verify the URL is baked in** before relying on the binary:
+
+```bash
+# macOS / Linux
+strings ~/.local/bin/pocketshell \
+  | grep -oE '(wss|https)://[a-z.]+\.pocketshell\.app[a-z/]*' | sort -u
+```
+
+```powershell
+# Windows (PowerShell)
+Select-String -Path "$env:USERPROFILE\.local\bin\pocketshell.exe" `
+  -Pattern 'wss?://[a-z.]+\.pocketshell\.app' |
+  ForEach-Object { $_.Matches.Value } | Sort-Object -Unique
+```
+
+Both the `https://` and `wss://` URLs should print. If nothing does, the
+binary won't connect — rebuild after `cargo clean` (see the note above).
+
+> PocketShell's backend is **not self-hostable** — a from-source build
+> still talks to the hosted control plane at `api.pocketshell.app`. The
+> `POCKETSHELL_*` overrides exist for our own dev/test, not for pointing
+> the agent at a server you run.
 
 ## Pair and run
 
@@ -104,12 +180,17 @@ pocketshell pair
 #    point the camera at the QR shown in step 1
 
 # 3. start the daemon (runs as your user, not root)
-pocketshell daemon start
+pocketshell daemon start                           # linux / macOS — installs a user service
+
+#    windows: the background service isn't wired up yet, so run it in the
+#    foreground in a terminal you keep open instead of `daemon start`:
+pocketshell daemon run                             # windows
 
 # 4. status & logs
 pocketshell daemon status
 journalctl --user -fu pocketshell-host-agent      # linux
 log stream --predicate 'process == "pocketshell"' # macOS
+#    windows: logs stream to the console running `daemon run`
 ```
 
 The QR carries a short-lived claim plus the host's public key, so the mobile app pins the host identity at pair time rather than trusting a backend-relayed field. To re-pair an existing host onto a different account, run `pocketshell pair --reset` — this wipes the local identity before generating a fresh QR.
@@ -263,6 +344,10 @@ cargo test  -p host-core                 # core library tests
 cargo test  -p host-agent                # CLI tests
 RUST_LOG=debug cargo run -p host-agent -- daemon run    # run with verbose logs
 ```
+
+Running an actual daemon from a dev build needs the backend URLs too —
+bake them in or set `POCKETSHELL_BACKEND_URL` / `POCKETSHELL_WS_URL` at
+runtime (see [Build from source](#build-from-source)).
 
 Targets supported today: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-pc-windows-msvc`. Windows x64 is distributed via npm (`npm i -g pocketshell`); some host features (service install, local-attach, PTY relay) are still stubbed on Windows.
 
