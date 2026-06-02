@@ -72,6 +72,15 @@ jobs:
             os: ubuntu-latest
             strip: strip
             cross_apt: musl-tools
+          # Windows x86_64 (MSVC). No strip (MSVC keeps debug info in a
+          # separate .pdb, which we don't ship — nothing to strip from the
+          # .exe) and no codesign (shipped unsigned for v1; self-update
+          # authenticity is still enforced via cosign + SHA-256). Distributed
+          # via npm only (@pocketshell/win32-x64-msvc); the GitHub Release
+          # tarball exists so publish-npm.yml can repackage it.
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            strip: ''
     runs-on: ${{ matrix.os }}
     env:
       # Production backend URLs are injected at compile time via option_env!
@@ -140,6 +149,7 @@ jobs:
         run: cargo build --release --target "$TARGET" -p host-agent
 
       - name: Strip binary
+        if: matrix.strip != ''
         shell: bash
         run: $STRIP_BIN "target/$TARGET/release/pocketshell"
 
@@ -174,6 +184,7 @@ jobs:
           # ubuntu-latest x64, ubuntu-24.04-arm arm64, musl runs on glibc),
           # so the produced binary is executable here.
           bin="target/$TARGET/release/pocketshell"
+          [ "$RUNNER_OS" = "Windows" ] && bin="$bin.exe"
           EXPECTED="pocketshell ${REF_NAME#v}"
           ACTUAL="$("$bin" --version)"
           echo "expected: $EXPECTED"
@@ -187,6 +198,7 @@ jobs:
         shell: bash
         run: |
           bin="target/$TARGET/release/pocketshell"
+          [ "$RUNNER_OS" = "Windows" ] && bin="$bin.exe"
           echo "looking for: $POCKETSHELL_DEFAULT_BACKEND_URL"
           echo "binary size: $(wc -c < "$bin") bytes"
           if LC_ALL=C grep -aoF "$POCKETSHELL_DEFAULT_BACKEND_URL" "$bin" | head -1; then
@@ -202,8 +214,10 @@ jobs:
         shell: bash
         run: |
           cd "target/$TARGET/release"
+          binname=pocketshell
+          [ "$RUNNER_OS" = "Windows" ] && binname=pocketshell.exe
           archive="pocketshell-${GITHUB_REF_NAME}-${TARGET}.tar.gz"
-          tar -czf "$archive" pocketshell
+          tar -czf "$archive" "$binname"
           shasum -a 256 "$archive" > "$archive.sha256"
           ls -la "$archive" "$archive.sha256"
 

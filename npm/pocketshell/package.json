@@ -21,6 +21,7 @@
     "@pocketshell/darwin-arm64": "0.0.0-placeholder",
     "@pocketshell/linux-x64-gnu": "0.0.0-placeholder",
     "@pocketshell/linux-arm64-gnu": "0.0.0-placeholder",
-    "@pocketshell/linux-x64-musl": "0.0.0-placeholder"
+    "@pocketshell/linux-x64-musl": "0.0.0-placeholder",
+    "@pocketshell/win32-x64-msvc": "0.0.0-placeholder"
   }
 }

@@ -264,7 +264,7 @@ cargo test  -p host-agent                # CLI tests
 RUST_LOG=debug cargo run -p host-agent -- daemon run    # run with verbose logs
 ```
 
-Targets supported today: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `aarch64-apple-darwin`, `x86_64-apple-darwin`. Windows is not yet supported (PRs welcome).
+Targets supported today: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-pc-windows-msvc`. Windows x64 is distributed via npm (`npm i -g pocketshell`); some host features (service install, local-attach, PTY relay) are still stubbed on Windows.
 
 ---
 

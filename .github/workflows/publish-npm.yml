@@ -89,6 +89,11 @@ jobs:
             os: linux
             cpu: x64
             libc: musl
+          - target: x86_64-pc-windows-msvc
+            npm_name: '@pocketshell/win32-x64-msvc'
+            os: win32
+            cpu: x64
+            libc: ''
     runs-on: ubuntu-latest
     env:
       TAG: ${{ inputs.tag }}
@@ -141,15 +146,19 @@ jobs:
             --dir stage
           ( cd stage && shasum -a 256 -c "${archive}.sha256" )
           tar -xzf "stage/$archive" -C stage
-          test -f stage/pocketshell || { echo "::error::binary missing from $archive"; exit 1; }
+          binname=pocketshell
+          [ "$PKG_OS" = "win32" ] && binname=pocketshell.exe
+          test -f "stage/$binname" || { echo "::error::binary missing from $archive"; exit 1; }
 
       - name: Assemble platform package
         shell: bash
         run: |
           out="npm-pkg"
           mkdir -p "$out/bin"
-          mv stage/pocketshell "$out/bin/pocketshell"
-          chmod +x "$out/bin/pocketshell"
+          binname=pocketshell
+          [ "$PKG_OS" = "win32" ] && binname=pocketshell.exe
+          mv "stage/$binname" "$out/bin/$binname"
+          chmod +x "$out/bin/$binname"
 
           # Build the package.json with jq so escaping stays correct even
           # if any matrix value ever grows special characters. Platform

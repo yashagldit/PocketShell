@@ -78,6 +78,7 @@ pub fn detect_target() -> Result<String> {
                 "x86_64-unknown-linux-gnu"
             }
         }
+        ("windows", "x86_64") => "x86_64-pc-windows-msvc",
         _ => {
             return Err(HostError::Config(format!(
                 "no prebuilt binary for {os}/{arch}"
@@ -336,11 +337,18 @@ pub async fn download_and_install_with(
         return Err(HostError::Config("tar extraction failed".into()));
     }
 
-    let new_binary = staging.join("pocketshell");
+    // The release tarball carries `pocketshell.exe` on Windows, `pocketshell`
+    // everywhere else — matching the binary name cargo produces per target.
+    let bin_name = if cfg!(windows) {
+        "pocketshell.exe"
+    } else {
+        "pocketshell"
+    };
+    let new_binary = staging.join(bin_name);
     if !new_binary.exists() {
-        return Err(HostError::Config(
-            "tarball did not contain a `pocketshell` binary".into(),
-        ));
+        return Err(HostError::Config(format!(
+            "tarball did not contain a `{bin_name}` binary"
+        )));
     }
 
     // On macOS, verify the new binary carries our Developer ID code signature
