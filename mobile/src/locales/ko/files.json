@@ -171,5 +171,11 @@
   "rename_modal.cancel": "취소",
   "rename_modal.confirm": "이름 변경",
   "this_pc": "내 PC",
-  "computer": "컴퓨터"
+  "computer": "컴퓨터",
+  "goto.title": "경로로 이동",
+  "goto.placeholder": "경로를 입력하세요…",
+  "goto.go": "이동",
+  "goto.drives": "드라이브",
+  "goto.suggestions": "추천 경로",
+  "goto.no_suggestions": "일치하는 폴더가 없습니다"
 }

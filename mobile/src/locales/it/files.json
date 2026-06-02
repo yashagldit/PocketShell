@@ -171,5 +171,11 @@
   "rename_modal.cancel": "Annulla",
   "rename_modal.confirm": "Rinomina",
   "this_pc": "Questo PC",
-  "computer": "Computer"
+  "computer": "Computer",
+  "goto.title": "Vai al percorso",
+  "goto.placeholder": "Inserisci un percorso…",
+  "goto.go": "Vai",
+  "goto.drives": "Unità",
+  "goto.suggestions": "Suggerimenti",
+  "goto.no_suggestions": "Nessuna cartella corrispondente"
 }

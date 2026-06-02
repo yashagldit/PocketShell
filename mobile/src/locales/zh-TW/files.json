@@ -171,5 +171,11 @@
   "rename_modal.cancel": "取消",
   "rename_modal.confirm": "重新命名",
   "this_pc": "本機",
-  "computer": "電腦"
+  "computer": "電腦",
+  "goto.title": "前往路徑",
+  "goto.placeholder": "輸入路徑…",
+  "goto.go": "前往",
+  "goto.drives": "磁碟機",
+  "goto.suggestions": "建議",
+  "goto.no_suggestions": "無符合的資料夾"
 }

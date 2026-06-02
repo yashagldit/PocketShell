@@ -171,5 +171,11 @@
   "rename_modal.cancel": "Отмена",
   "rename_modal.confirm": "Переименовать",
   "this_pc": "Этот компьютер",
-  "computer": "Компьютер"
+  "computer": "Компьютер",
+  "goto.title": "Перейти по пути",
+  "goto.placeholder": "Введите путь…",
+  "goto.go": "Перейти",
+  "goto.drives": "Диски",
+  "goto.suggestions": "Подсказки",
+  "goto.no_suggestions": "Совпадений не найдено"
 }

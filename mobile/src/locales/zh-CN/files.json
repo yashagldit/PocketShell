@@ -171,5 +171,11 @@
   "rename_modal.cancel": "取消",
   "rename_modal.confirm": "重命名",
   "this_pc": "此电脑",
-  "computer": "计算机"
+  "computer": "计算机",
+  "goto.title": "跳转到路径",
+  "goto.placeholder": "输入路径…",
+  "goto.go": "跳转",
+  "goto.drives": "驱动器",
+  "goto.suggestions": "建议",
+  "goto.no_suggestions": "无匹配文件夹"
 }

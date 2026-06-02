@@ -171,5 +171,11 @@
   "rename_modal.cancel": "キャンセル",
   "rename_modal.confirm": "名前を変更",
   "this_pc": "PC",
-  "computer": "コンピュータ"
+  "computer": "コンピュータ",
+  "goto.title": "パスへ移動",
+  "goto.placeholder": "パスを入力…",
+  "goto.go": "移動",
+  "goto.drives": "ドライブ",
+  "goto.suggestions": "候補",
+  "goto.no_suggestions": "一致するフォルダはありません"
 }

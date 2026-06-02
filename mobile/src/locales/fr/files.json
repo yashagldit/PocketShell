@@ -171,5 +171,11 @@
   "rename_modal.cancel": "Annuler",
   "rename_modal.confirm": "Renommer",
   "this_pc": "Ce PC",
-  "computer": "Ordinateur"
+  "computer": "Ordinateur",
+  "goto.title": "Aller à un chemin",
+  "goto.placeholder": "Entrez un chemin…",
+  "goto.go": "Aller",
+  "goto.drives": "Lecteurs",
+  "goto.suggestions": "Suggestions",
+  "goto.no_suggestions": "Aucun dossier correspondant"
 }

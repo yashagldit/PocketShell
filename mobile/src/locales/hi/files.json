@@ -171,5 +171,11 @@
   "rename_modal.cancel": "रद्द करें",
   "rename_modal.confirm": "नाम बदलें",
   "this_pc": "यह पीसी",
-  "computer": "कंप्यूटर"
+  "computer": "कंप्यूटर",
+  "goto.title": "पथ पर जाएँ",
+  "goto.placeholder": "पथ दर्ज करें…",
+  "goto.go": "जाएँ",
+  "goto.drives": "ड्राइव",
+  "goto.suggestions": "सुझाव",
+  "goto.no_suggestions": "कोई मेल खाता फ़ोल्डर नहीं"
 }

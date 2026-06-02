@@ -171,5 +171,11 @@
   "rename_modal.cancel": "Cancelar",
   "rename_modal.confirm": "Renombrar",
   "this_pc": "Este equipo",
-  "computer": "Equipo"
+  "computer": "Equipo",
+  "goto.title": "Ir a ruta",
+  "goto.placeholder": "Introduce una ruta…",
+  "goto.go": "Ir",
+  "goto.drives": "Unidades",
+  "goto.suggestions": "Sugerencias",
+  "goto.no_suggestions": "No hay carpetas coincidentes"
 }

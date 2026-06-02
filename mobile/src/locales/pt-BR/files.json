@@ -171,5 +171,11 @@
   "rename_modal.cancel": "Cancelar",
   "rename_modal.confirm": "Renomear",
   "this_pc": "Este PC",
-  "computer": "Computador"
+  "computer": "Computador",
+  "goto.title": "Ir para caminho",
+  "goto.placeholder": "Digite um caminho…",
+  "goto.go": "Ir",
+  "goto.drives": "Unidades",
+  "goto.suggestions": "Sugestões",
+  "goto.no_suggestions": "Nenhuma pasta correspondente"
 }

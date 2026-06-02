@@ -171,5 +171,11 @@
   "rename_modal.cancel": "Abbrechen",
   "rename_modal.confirm": "Umbenennen",
   "this_pc": "Dieser PC",
-  "computer": "Computer"
+  "computer": "Computer",
+  "goto.title": "Zu Pfad wechseln",
+  "goto.placeholder": "Pfad eingeben…",
+  "goto.go": "Los",
+  "goto.drives": "Laufwerke",
+  "goto.suggestions": "Vorschläge",
+  "goto.no_suggestions": "Keine passenden Ordner"
 }
