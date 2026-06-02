@@ -1157,6 +1157,7 @@ mod tests {
         assert_eq!(bytes, vec![0xFF, 0xFE, 0x41, 0x00, 0x42, 0x00]);
     }
 
+    #[cfg(unix)] // POSIX-only behavior; not meaningful on Windows
     #[test]
     fn launchd_plist_path_is_under_library_launchagents() {
         let p = launchd_plist_path();

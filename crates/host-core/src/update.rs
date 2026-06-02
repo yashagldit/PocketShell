@@ -625,6 +625,7 @@ mod tests {
                     | "aarch64-unknown-linux-gnu"
                     | "x86_64-unknown-linux-gnu"
                     | "x86_64-unknown-linux-musl"
+                    | "x86_64-pc-windows-msvc"
             ),
             "unexpected target triple: {t}"
         );

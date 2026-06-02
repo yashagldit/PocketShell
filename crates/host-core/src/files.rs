@@ -1792,6 +1792,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)] // POSIX-only behavior; not meaningful on Windows
     #[test]
     fn safe_resolve_dest_errors_when_ancestor_unresolvable() {
         // Paths containing `..` in a non-existent segment cause the
@@ -2127,6 +2128,7 @@ mod tests {
         assert_eq!(res["total"], 1);
     }
 
+    #[cfg(unix)] // POSIX-only behavior; not meaningful on Windows
     #[test]
     fn search_files_matches_path_shaped_queries() {
         // Used to return 0 hits because the substring matcher only saw
@@ -2300,6 +2302,7 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)] // POSIX-only behavior; not meaningful on Windows
     #[test]
     fn denylist_blocks_system_paths() {
         // Defense-in-depth for the case where the daemon ends up running with
@@ -2388,6 +2391,7 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)] // POSIX-only behavior; not meaningful on Windows
     #[test]
     fn denylist_blocks_subpath_under_protected_root() {
         // `.starts_with` matches component-by-component, so an attacker can't
@@ -2414,6 +2418,7 @@ mod tests {
         assert!(!is_path_denied_against(Path::new("/var/loghub/file"), &d));
     }
 
+    #[cfg(unix)] // POSIX-only behavior; not meaningful on Windows
     #[test]
     fn allowlist_overrides_root_absolute_deny_for_coding_agents() {
         // Root-installed daemons keep coding-agent session history at
@@ -2471,6 +2476,7 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)] // POSIX-only behavior; not meaningful on Windows
     #[test]
     fn allowlist_does_not_apply_when_path_outside_home() {
         // A `.claude` dir somewhere weird (not the resolved HOME) is NOT

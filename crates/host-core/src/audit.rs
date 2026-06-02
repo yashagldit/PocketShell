@@ -353,6 +353,7 @@ mod tests {
         assert!(s.contains("\"outcome\":\"success\""));
     }
 
+    #[cfg(unix)] // POSIX-only behavior; not meaningful on Windows
     #[test]
     fn write_audit_event_appends_json_line_to_audit_file() {
         let _g = crate::test_support::HOME_LOCK
@@ -417,6 +418,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)] // POSIX-only behavior; not meaningful on Windows
     #[test]
     fn audit_log_rotates_at_size_threshold() {
         let _g = crate::test_support::HOME_LOCK

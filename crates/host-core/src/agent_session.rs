@@ -2365,6 +2365,7 @@ mod tests {
         assert!(err.contains("path not found") || err.contains("No such"));
     }
 
+    #[cfg(unix)] // POSIX-only behavior; not meaningful on Windows
     #[test]
     fn agent_localpath_rejects_protected_paths() {
         let input = SendUserMessageInput {
@@ -2439,6 +2440,7 @@ mod tests {
         .unwrap();
     }
 
+    #[cfg(unix)] // POSIX-only behavior; not meaningful on Windows
     #[test]
     fn validate_codex_stdin_frame_rejects_protected_localimage_path() {
         // The headline exploit: mobile builds the JSON-RPC frame itself and

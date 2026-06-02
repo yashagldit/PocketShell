@@ -346,6 +346,7 @@ mod tests {
         assert!(!SessionDiscovery::tmux_session_exists(name));
     }
 
+    #[cfg(unix)] // POSIX-only behavior; not meaningful on Windows
     #[test]
     fn register_and_discover_exposed_roundtrip() {
         let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -392,6 +393,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)] // POSIX-only behavior; not meaningful on Windows
     #[test]
     fn discover_exposed_parses_marker_files() {
         let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
