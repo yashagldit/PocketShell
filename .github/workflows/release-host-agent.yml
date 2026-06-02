@@ -218,7 +218,14 @@ jobs:
           [ "$RUNNER_OS" = "Windows" ] && binname=pocketshell.exe
           archive="pocketshell-${GITHUB_REF_NAME}-${TARGET}.tar.gz"
           tar -czf "$archive" "$binname"
-          shasum -a 256 "$archive" > "$archive.sha256"
+          # Git-bash on Windows runners ships `sha256sum` (coreutils) but not the
+          # Perl `shasum` that macOS/Linux runners have. Both emit the same
+          # "<hex>  <file>" format that update.rs / install.sh / publish-npm verify.
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            sha256sum "$archive" > "$archive.sha256"
+          else
+            shasum -a 256 "$archive" > "$archive.sha256"
+          fi
           ls -la "$archive" "$archive.sha256"
 
       # Sigstore cosign keyless signing. Pinned to v2.6.3 (latest v2.x stable
