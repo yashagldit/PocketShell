@@ -33,7 +33,7 @@
   "list.st": "СТ",
   "list.no_match": "Нет процессов, соответствующих поиску",
   "list.no_data": "Нет данных о процессах",
-  "list.error": "Couldn't load processes: {{message}}",
-  "list.retry": "Retry",
-  "list.truncated": "Showing {{count}} of {{total}} (host cap reached)"
+  "list.error": "Не удалось загрузить процессы: {{message}}",
+  "list.retry": "Повторить",
+  "list.truncated": "Показано {{count}} из {{total}} (достигнут лимит хоста)"
 }

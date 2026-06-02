@@ -34,7 +34,7 @@
   "alert.deleteFailed": "Error al eliminar",
   "alert.sessionFallbackTitle": "Sesión",
   "group.noProject": "sin proyecto",
-  "badge.live": "Live",
+  "badge.live": "En vivo",
   "badge.paused": "Pausado",
   "badge.running": "En ejecución",
   "project.showAll": "Ver {{count}} más",

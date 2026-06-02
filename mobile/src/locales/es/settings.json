@@ -130,7 +130,7 @@
   "feedback.message_label": "Mensaje",
   "feedback.message_placeholder": "Cuéntanos qué tienes en mente…",
   "feedback.contact_label": "Correo de respuesta (opcional)",
-  "feedback.contact_placeholder": "tu@ejemplo.com",
+  "feedback.contact_placeholder": "you@example.com",
   "feedback.submit": "Enviar",
   "feedback.submit_success": "¡Gracias — tu comentario está en camino!",
   "feedback.submit_failed": "No se pudo enviar el comentario. Inténtalo de nuevo."

@@ -89,7 +89,7 @@
   "delete_account_otp_invalid": "Ce code n'a pas fonctionné. Vérifiez votre email et réessayez.",
   "pro_card.active_renews": "Active · renouvellement le {{date}}",
   "pro_card.active_subscription": "Abonnement actif",
-  "pro_card.active_pill": "Active",
+  "pro_card.active_pill": "Actif",
   "pro_card.manage_subscription": "Gérer l'abonnement",
   "import_status.picking": "Choisissez le fichier de sauvegarde…",
   "import_status.decrypting": "Déchiffrement de la sauvegarde…",
@@ -130,7 +130,7 @@
   "feedback.message_label": "Message",
   "feedback.message_placeholder": "Dites-nous ce qui vous préoccupe…",
   "feedback.contact_label": "E-mail de réponse (facultatif)",
-  "feedback.contact_placeholder": "vous@exemple.com",
+  "feedback.contact_placeholder": "you@example.com",
   "feedback.submit": "Envoyer",
   "feedback.submit_success": "Merci — votre commentaire est en route !",
   "feedback.submit_failed": "Impossible d'envoyer le commentaire. Veuillez réessayer."

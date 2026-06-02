@@ -33,7 +33,7 @@
   "list.st": "ST",
   "list.no_match": "Aucun processus correspondant à la recherche",
   "list.no_data": "Aucune donnée de processus",
-  "list.error": "Couldn't load processes: {{message}}",
-  "list.retry": "Retry",
-  "list.truncated": "Showing {{count}} of {{total}} (host cap reached)"
+  "list.error": "Impossible de charger les processus : {{message}}",
+  "list.retry": "Réessayer",
+  "list.truncated": "{{count}} sur {{total}} affichés (limite de l'hôte atteinte)"
 }

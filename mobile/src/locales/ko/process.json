@@ -33,7 +33,7 @@
   "list.st": "ST",
   "list.no_match": "검색 결과와 일치하는 프로세스가 없습니다",
   "list.no_data": "프로세스 데이터가 없습니다",
-  "list.error": "Couldn't load processes: {{message}}",
-  "list.retry": "Retry",
-  "list.truncated": "Showing {{count}} of {{total}} (host cap reached)"
+  "list.error": "프로세스를 불러올 수 없습니다: {{message}}",
+  "list.retry": "재시도",
+  "list.truncated": "{{total}}개 중 {{count}}개 표시 중 (호스트 최대치 도달)"
 }

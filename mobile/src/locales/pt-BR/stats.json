@@ -22,7 +22,7 @@
   "section.logged_in_users": "Usuários logados ({{count}})",
   "section.live_trend": "Tendência ao vivo",
   "section.processes": "Processos ({{count}})",
-  "label.uptime": "Uptime",
+  "label.uptime": "Tempo de atividade",
   "label.memory": "Memória",
   "label.disk": "Disco",
   "label.load": "Carga",

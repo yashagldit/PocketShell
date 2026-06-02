@@ -48,7 +48,7 @@
   "login.terms_suffix": ".",
   "login.email.title": "¿Cuál es tu correo?",
   "login.email.subtitle": "Te enviaremos un código de 6 dígitos.",
-  "login.email.placeholder": "tu@ejemplo.com",
+  "login.email.placeholder": "you@example.com",
   "login.email.send": "Enviar código",
   "login.otp.title": "Verifica {{email}}",
   "login.otp.subtitle": "Ingresa el código de 6 dígitos que acabamos de enviar.",

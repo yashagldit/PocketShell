@@ -27,7 +27,7 @@
   "sessionPicker.connect": "연결",
   "sessionPicker.cancel": "취소",
   "sessionPicker.sessionNamePlaceholder": "세션 이름 (선택 사항)",
-  "sessionPicker.shellName": "셸 {{id}}",
+  "sessionPicker.shellName": "Shell {{id}}",
   "sessionPicker.started": "시작: {{date}}",
   "sessionPicker.noActiveSessions": "활성 세션이 없습니다",
   "sessionPicker.noActiveSessionsSubtitle": "이 호스트에서 공개, tmux 또는 screen 세션을 찾을 수 없습니다. 위에서 새 터미널 세션을 만들거나 호스트에서 `pocketshell rc --name <name>`을 실행하세요.",

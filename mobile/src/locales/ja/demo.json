@@ -20,9 +20,9 @@
   "hub.terminal.desc": "暗号化シェルでコマンドを実行",
   "hub.monitor.title": "Monitor",
   "hub.monitor.desc": "CPU・メモリ・ディスク・ネットワークをリアルタイム表示",
-  "hub.files.title": "Files",
+  "hub.files.title": "ファイル",
   "hub.files.desc": "ファイルの閲覧・表示・転送",
-  "hub.workspace.title": "Workspace",
+  "hub.workspace.title": "ワークスペース",
   "hub.workspace.desc": "ターミナルとファイルを横並びで表示",
 
   "terminal.hint": "コマンドをタップして試すか、自分で入力してください：",
@@ -51,18 +51,18 @@
   "metric.subtitle": "{{host}} · 過去 {{range}} · {{count}} ポイント",
 
   "files.transfer_blocked": "実際のファイル転送を使うには自分のホストをペアリングしてください。",
-  "files.back": "Files",
+  "files.back": "ファイル",
   "files.upload": "アップロード",
   "files.download": "ダウンロード",
   "files.empty": "空のディレクトリ",
 
   "workspace.terminal_tab": "Terminal",
-  "workspace.files_tab": "Files",
+  "workspace.files_tab": "ファイル",
 
   "nav.host": "Demo",
-  "nav.terminal": "Demo Terminal",
-  "nav.monitor": "Demo Monitor",
+  "nav.terminal": "デモ ターミナル",
+  "nav.monitor": "デモ モニター",
   "nav.metric": "統計",
-  "nav.files": "Demo Files",
-  "nav.workspace": "Demo Workspace"
+  "nav.files": "デモ ファイル",
+  "nav.workspace": "デモ ワークスペース"
 }

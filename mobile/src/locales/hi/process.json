@@ -33,7 +33,7 @@
   "list.st": "ST",
   "list.no_match": "आपकी खोज से कोई प्रक्रिया मेल नहीं खाती",
   "list.no_data": "कोई प्रक्रिया डेटा उपलब्ध नहीं",
-  "list.error": "Couldn't load processes: {{message}}",
-  "list.retry": "Retry",
-  "list.truncated": "Showing {{count}} of {{total}} (host cap reached)"
+  "list.error": "प्रक्रियाएँ लोड नहीं हो सकीं: {{message}}",
+  "list.retry": "पुनः प्रयास करें",
+  "list.truncated": "{{total}} में से {{count}} दिखाई जा रही हैं (होस्ट सीमा पहुँच गई)"
 }

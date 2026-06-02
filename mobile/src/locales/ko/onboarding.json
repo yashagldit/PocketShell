@@ -48,7 +48,7 @@
   "login.terms_suffix": "에 동의하게 됩니다.",
   "login.email.title": "이메일이 무엇인가요?",
   "login.email.subtitle": "6자리 코드를 전송해드립니다.",
-  "login.email.placeholder": "your@example.com",
+  "login.email.placeholder": "you@example.com",
   "login.email.send": "코드 전송",
   "login.otp.title": "{{email}} 확인",
   "login.otp.subtitle": "방금 전송한 6자리 코드를 입력하세요.",

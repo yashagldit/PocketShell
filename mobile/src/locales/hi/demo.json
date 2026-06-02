@@ -1,6 +1,6 @@
 {
   "badge.demo": "DEMO",
-  "status.online": "online",
+  "status.online": "ऑनलाइन",
 
   "cta.title": "पसंद आया?",
   "cta.subtitle": "असल में उपयोग करने के लिए अपना होस्ट जोड़ें।",
@@ -12,18 +12,18 @@
   "mini.ram": "ram",
 
   "row.title": "डेमो एक्सप्लोर करें",
-  "row.subtitle": "Terminal · Files · Monitor — सब सिम्युलेटेड",
+  "row.subtitle": "टर्मिनल · फ़ाइलें · मॉनीटर — सब सिम्युलेटेड",
   "row.dismiss": "हटाएँ",
 
   "hub.note": "यहाँ सब कुछ सिम्युलेटेड है और आपके डिवाइस पर चलता है। कोई भी असली मशीन से कनेक्ट नहीं होता।",
-  "hub.terminal.title": "Terminal",
+  "hub.terminal.title": "टर्मिनल",
   "hub.terminal.desc": "एन्क्रिप्टेड शेल में कमांड चलाएँ",
   "hub.monitor.title": "मॉनीटर",
   "hub.monitor.desc": "लाइव CPU, मेमोरी, डिस्क और नेटवर्क",
   "hub.files.title": "फ़ाइलें",
   "hub.files.desc": "फ़ाइलें ब्राउज़ करें, देखें और ट्रांसफर करें",
-  "hub.workspace.title": "Workspace",
-  "hub.workspace.desc": "Terminal और फ़ाइलें, साथ-साथ",
+  "hub.workspace.title": "वर्कस्पेस",
+  "hub.workspace.desc": "टर्मिनल और फ़ाइलें, साथ-साथ",
 
   "terminal.hint": "कोई कमांड टैप करके आज़माएं, या अपना लिखें:",
   "terminal.host_only": "इसे इस्तेमाल करने के लिए अपना होस्ट जोड़ें।",
@@ -56,13 +56,13 @@
   "files.download": "डाउनलोड",
   "files.empty": "खाली डायरेक्टरी",
 
-  "workspace.terminal_tab": "Terminal",
+  "workspace.terminal_tab": "टर्मिनल",
   "workspace.files_tab": "फ़ाइलें",
 
-  "nav.host": "Demo",
-  "nav.terminal": "Demo Terminal",
-  "nav.monitor": "Demo Monitor",
+  "nav.host": "डेमो",
+  "nav.terminal": "डेमो टर्मिनल",
+  "nav.monitor": "डेमो मॉनीटर",
   "nav.metric": "आँकड़े",
-  "nav.files": "Demo Files",
-  "nav.workspace": "Demo Workspace"
+  "nav.files": "डेमो फ़ाइलें",
+  "nav.workspace": "डेमो वर्कस्पेस"
 }

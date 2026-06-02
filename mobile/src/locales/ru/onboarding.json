@@ -48,7 +48,7 @@
   "login.terms_suffix": ".",
   "login.email.title": "Какой у вас адрес электронной почты?",
   "login.email.subtitle": "Мы отправим вам 6-значный код.",
-  "login.email.placeholder": "your@example.com",
+  "login.email.placeholder": "you@example.com",
   "login.email.send": "Отправить код",
   "login.otp.title": "Подтвердите {{email}}",
   "login.otp.subtitle": "Введите 6-значный код, который мы только что отправили.",

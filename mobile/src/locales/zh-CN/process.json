@@ -33,7 +33,7 @@
   "list.st": "状态",
   "list.no_match": "没有匹配搜索的进程",
   "list.no_data": "无进程数据",
-  "list.error": "Couldn't load processes: {{message}}",
-  "list.retry": "Retry",
-  "list.truncated": "Showing {{count}} of {{total}} (host cap reached)"
+  "list.error": "无法加载进程：{{message}}",
+  "list.retry": "重试",
+  "list.truncated": "正在显示 {{count}} / {{total}}（已达主机上限）"
 }

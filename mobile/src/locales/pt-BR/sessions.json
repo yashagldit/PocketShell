@@ -14,7 +14,7 @@
   "header.subtitle_one": "{{sessions}} sessão em {{hosts}} host",
   "header.subtitle_other": "{{sessions}} sessões em {{hosts}} hosts",
   "quickConnect.label": "Conexão rápida",
-  "live": "Live",
+  "live": "Ao vivo",
   "background": "Segundo plano",
   "liveSession.connecting": "Conectando",
   "bgSession.shell": "Shell",

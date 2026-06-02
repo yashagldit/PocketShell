@@ -48,7 +48,7 @@
   "login.terms_suffix": " に同意したものとみなされます。",
   "login.email.title": "メールアドレスは？",
   "login.email.subtitle": "6桁のコードを送信します。",
-  "login.email.placeholder": "your@example.com",
+  "login.email.placeholder": "you@example.com",
   "login.email.send": "コードを送信",
   "login.otp.title": "{{email}}を確認",
   "login.otp.subtitle": "送信した6桁のコードを入力してください。",

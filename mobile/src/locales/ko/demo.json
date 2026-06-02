@@ -16,13 +16,13 @@
   "row.dismiss": "닫기",
 
   "hub.note": "여기의 모든 것은 시뮬레이션으로 기기에서 실행됩니다. 실제 머신에는 연결되지 않습니다.",
-  "hub.terminal.title": "Terminal",
+  "hub.terminal.title": "터미널",
   "hub.terminal.desc": "암호화된 셸에서 명령어 실행",
-  "hub.monitor.title": "Monitor",
+  "hub.monitor.title": "모니터링",
   "hub.monitor.desc": "실시간 CPU, 메모리, 디스크 & 네트워크",
   "hub.files.title": "파일",
   "hub.files.desc": "파일 탐색, 보기 & 전송",
-  "hub.workspace.title": "Workspace",
+  "hub.workspace.title": "워크스페이스",
   "hub.workspace.desc": "터미널과 파일을 나란히",
 
   "terminal.hint": "명령어를 탭해서 실행하거나 직접 입력하세요:",
@@ -56,13 +56,13 @@
   "files.download": "다운로드",
   "files.empty": "빈 디렉토리",
 
-  "workspace.terminal_tab": "Terminal",
+  "workspace.terminal_tab": "터미널",
   "workspace.files_tab": "파일",
 
   "nav.host": "Demo",
-  "nav.terminal": "Demo Terminal",
-  "nav.monitor": "Demo Monitor",
+  "nav.terminal": "Demo 터미널",
+  "nav.monitor": "Demo 모니터링",
   "nav.metric": "통계",
   "nav.files": "Demo 파일",
-  "nav.workspace": "Demo Workspace"
+  "nav.workspace": "Demo 워크스페이스"
 }

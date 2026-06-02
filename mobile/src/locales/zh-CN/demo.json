@@ -16,7 +16,7 @@
   "row.dismiss": "关闭",
 
   "hub.note": "此处所有内容均为模拟，运行在您的设备上。不会连接到任何真实机器。",
-  "hub.terminal.title": "Terminal",
+  "hub.terminal.title": "终端",
   "hub.terminal.desc": "在加密 Shell 中运行命令",
   "hub.monitor.title": "监控",
   "hub.monitor.desc": "实时 CPU、内存、磁盘和网络",
@@ -56,7 +56,7 @@
   "files.download": "下载",
   "files.empty": "空目录",
 
-  "workspace.terminal_tab": "Terminal",
+  "workspace.terminal_tab": "终端",
   "workspace.files_tab": "文件",
 
   "nav.host": "Demo",

@@ -132,7 +132,7 @@
   "alerts.cooldown_minutes": "Espera (minutos)",
   "alerts.save_rule": "Guardar regla",
   "alerts.add_rule": "Añadir regla",
-  "alerts.actual": "Actual:",
+  "alerts.actual": "Real:",
   "alerts.threshold_prefix": "Umbral:",
   "alerts.acknowledged": "confirmada",
   "alerts.tap_to_acknowledge": "Toca para confirmar",

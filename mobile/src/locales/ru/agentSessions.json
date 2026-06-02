@@ -34,7 +34,7 @@
   "alert.deleteFailed": "Ошибка удаления",
   "alert.sessionFallbackTitle": "Сессия",
   "group.noProject": "без проекта",
-  "badge.live": "Live",
+  "badge.live": "В эфире",
   "badge.paused": "Пауза",
   "badge.running": "Выполняется",
   "project.showAll": "Показать еще {{count}}",
