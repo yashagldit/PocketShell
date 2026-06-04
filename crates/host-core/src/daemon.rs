@@ -4000,6 +4000,42 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                                 );
                                             }
                                         }
+                                    } else if msg_type == "host_update_agent" {
+                                        // Self-update over the Ed25519-authenticated stats
+                                        // channel — same trust anchor as kill_process/reboot
+                                        // above: the device proved key possession in the
+                                        // channel auth handshake (verify_device_auth), so a
+                                        // compromised backend cannot forge this. Origin and
+                                        // version are pinned inside install_agent_update —
+                                        // always the latest signed build from our own repo.
+                                        if !require_device_permission(&store, &mobile_device_id, "shell", "host_update_agent") {
+                                            continue;
+                                        }
+                                        info!(
+                                            "host_update_agent request received from mobile {} (stats channel)",
+                                            mobile_device_id
+                                        );
+                                        let current_version = config.app_version.clone();
+                                        if try_spawn_self_update(current_version.clone()) {
+                                            let _ = write_audit_event_with_store(
+                                                AuditEvent {
+                                                    mobile_device_id: Some(mobile_device_id.clone()),
+                                                    details: Some(serde_json::json!({
+                                                        "from_version": current_version,
+                                                        "base_url": crate::update::DEFAULT_BASE_URL,
+                                                        "target_version": "latest",
+                                                        "channel": "stats",
+                                                    })),
+                                                    ..AuditEvent::new("self_update")
+                                                },
+                                                &store,
+                                            );
+                                        } else {
+                                            warn!(
+                                                "host_update_agent ignored: an update is already in progress (stats channel, mobile {})",
+                                                mobile_device_id
+                                            );
+                                        }
                                     }
                                 }
                             }
@@ -4081,7 +4117,63 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                 let method = req.method.clone();
                                 let req_id = req.id.clone();
                                 let ch = Arc::clone(&channel);
-                                if crate::rpc::is_stateful_method(&method) {
+                                if method == "host/update_agent" {
+                                    // Self-update over the Ed25519-authenticated control
+                                    // channel. The channel auth handshake already proved
+                                    // device-key possession, but re-check the permission
+                                    // per-call (auth is one-time at open, so a mid-session
+                                    // revoke must still take effect — same reason audit/list
+                                    // re-checks below). Origin/version are pinned inside
+                                    // install_agent_update; the backend has no device key and
+                                    // cannot forge this. Mirrors the reboot/kill trust model.
+                                    let resp = if let Err(reason) =
+                                        device_permission_result(&store, &mobile_device_id, "shell")
+                                    {
+                                        audit_authz_denied(
+                                            &store,
+                                            &mobile_device_id,
+                                            "host/update_agent",
+                                            &reason,
+                                            None,
+                                        );
+                                        crate::rpc::RpcResponse::err(
+                                            req_id.clone(),
+                                            crate::rpc::RpcError::permission_denied(reason),
+                                        )
+                                    } else {
+                                        let current_version = config.app_version.clone();
+                                        if try_spawn_self_update(current_version.clone()) {
+                                            let _ = write_audit_event_with_store(
+                                                AuditEvent {
+                                                    mobile_device_id: Some(mobile_device_id.clone()),
+                                                    details: Some(serde_json::json!({
+                                                        "from_version": current_version,
+                                                        "base_url": crate::update::DEFAULT_BASE_URL,
+                                                        "target_version": "latest",
+                                                        "channel": "control",
+                                                    })),
+                                                    ..AuditEvent::new("self_update")
+                                                },
+                                                &store,
+                                            );
+                                            crate::rpc::RpcResponse::ok(
+                                                req_id.clone(),
+                                                serde_json::json!({ "scheduled": true }),
+                                            )
+                                        } else {
+                                            // An update is already running — idempotent, not an
+                                            // error. Report it so the client doesn't double-trigger.
+                                            crate::rpc::RpcResponse::ok(
+                                                req_id.clone(),
+                                                serde_json::json!({
+                                                    "scheduled": false,
+                                                    "already_in_progress": true,
+                                                }),
+                                            )
+                                        }
+                                    };
+                                    send_control_rpc_response(ch, &resp, &method, &req_id).await;
+                                } else if crate::rpc::is_stateful_method(&method) {
                                     // Borrow the daemon's warm StatsCollector to keep CPU%
                                     // accurate (the 2s stream tick has just refreshed it).
                                     // Worst case ~30 ms on a 1000-process host briefly delays
@@ -4592,7 +4684,6 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                             } else if let Err(err) = handle_signal(
                                 &mut store,
                                 &backend,
-                                &config,
                                 &turn_cache,
                                 &shell,
                                 &mut sessions,
@@ -5086,7 +5177,6 @@ async fn spawn_ws_agent_pump(
 async fn handle_signal(
     store: &mut StateStore,
     backend: &BackendClient,
-    config: &AppConfig,
     turn_cache: &TurnCredsCache,
     shell: &str,
     sessions: &mut SessionManager,
@@ -6441,49 +6531,23 @@ async fn handle_signal(
                     });
                 }
                 "host_update_agent" => {
-                    info!(
-                        "host_update_agent requested by mobile={} (host_control)",
+                    // Self-update has been REMOVED from this unsigned backend WS
+                    // path. host_control is not Ed25519-signed (see
+                    // `ws_auth_required`), so a compromised backend could forge
+                    // it — and a binary swap is the one host_control action with a
+                    // consequence beyond DoS. Updates now travel ONLY over the
+                    // Ed25519-authenticated P2P stats/control channels (the
+                    // `host_update_agent` stats handler and the
+                    // `host/update_agent` control RPC), exactly like reboot and
+                    // kill_process, so the command is cryptographically bound to
+                    // the paired device and the backend cannot trigger a binary
+                    // swap. Reject forged/legacy requests here instead of acting.
+                    warn!(
+                        "host_update_agent over host_control is no longer supported \
+                         (moved to the authenticated P2P channel); ignoring request \
+                         from mobile={}",
                         mobile_device_id
                     );
-                    let base_url = msg
-                        .extra
-                        .get("base_url")
-                        .and_then(|v| v.as_str())
-                        .filter(|v| !v.trim().is_empty())
-                        .unwrap_or(crate::update::DEFAULT_BASE_URL)
-                        .to_string();
-                    let requested_version = msg
-                        .extra
-                        .get("version")
-                        .and_then(|v| v.as_str())
-                        .filter(|v| !v.trim().is_empty())
-                        .map(str::to_string);
-                    let current_version = config.app_version.clone();
-                    let _ = write_audit_event_with_store(
-                        AuditEvent {
-                            details: Some(serde_json::json!({
-                                "from_version": current_version.clone(),
-                                "requested_version": requested_version.clone(),
-                                "base_url": base_url.clone(),
-                            })),
-                            ..AuditEvent::new("self_update")
-                        },
-                        store,
-                    );
-                    if install_agent_update(current_version, base_url, requested_version).await {
-                        close_all_active_sessions(
-                            store,
-                            backend,
-                            peer_session_routes,
-                            session_ciphers,
-                            sessions,
-                            webrtc_mgr,
-                            agent_ws_pumps,
-                            agent_router,
-                        )
-                        .await;
-                        exit_for_restart(crate::service::restart());
-                    }
                 }
                 other => {
                     warn!("host_control rejected: unknown action {:?}", other);
@@ -8110,6 +8174,45 @@ fn exit_for_restart(result: Result<crate::service::RestartStatus>) -> ! {
             std::process::exit(1);
         }
     }
+}
+
+/// Single-flight guard for self-update. The install (download → atomic binary
+/// swap, see `update::download_and_install`) stages into a per-PID directory
+/// and renames over the running executable; two concurrent installs in the same
+/// process would race that swap and could leave a partial/absent binary. The
+/// old code awaited the install inline on the daemon's main loop, which
+/// serialized it for free; now that both the stats and control channels spawn it
+/// as a detached task, this flag restores the one-at-a-time invariant.
+static UPDATE_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+/// Acquire [`UPDATE_IN_FLIGHT`] and spawn the install on success. Returns
+/// `false` (without spawning) if an update is already running, so callers can
+/// reject the duplicate. On a *successful* install the spawned task never
+/// returns (it `exit_for_restart`s); on failure / already-up-to-date it releases
+/// the guard so a later update can be attempted. Origin and version are pinned
+/// to the latest signed build from our own repo — never taken from the message.
+fn try_spawn_self_update(current_version: String) -> bool {
+    if UPDATE_IN_FLIGHT
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return false;
+    }
+    tokio::spawn(async move {
+        if install_agent_update(
+            current_version,
+            crate::update::DEFAULT_BASE_URL.to_string(),
+            None,
+        )
+        .await
+        {
+            exit_for_restart(crate::service::restart());
+        }
+        // Install failed or already up to date — release so a future request
+        // can retry. (On success the line above never returns.)
+        UPDATE_IN_FLIGHT.store(false, Ordering::SeqCst);
+    });
+    true
 }
 
 async fn install_agent_update(
