@@ -16,7 +16,7 @@ use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::vte::ansi::Processor;
 
-use super::Snapshot;
+use super::snapshot::{Snapshot, SNAPSHOT_SCROLLBACK_LINES};
 
 /// Default scrollback retained by the mirror, in lines. Generous on purpose:
 /// the whole point is "come back later and see everything Claude did". The grid
@@ -53,6 +53,11 @@ pub struct TerminalMirror {
     parser: Processor,
     cols: usize,
     lines: usize,
+    /// Absolute count of bytes fed through the emulator since creation. Doubles
+    /// as the live output stream offset: a snapshot taken now has
+    /// `base_offset == bytes_fed`, and live frames produced after carry offsets
+    /// ≥ that value, making the snapshot→live seam dedupable on the client.
+    bytes_fed: u64,
 }
 
 impl TerminalMirror {
@@ -79,6 +84,7 @@ impl TerminalMirror {
             parser: Processor::new(),
             cols,
             lines,
+            bytes_fed: 0,
         }
     }
 
@@ -86,6 +92,12 @@ impl TerminalMirror {
     /// place PTY bytes mutate mirror state; call it for every chunk, in order.
     pub fn feed(&mut self, bytes: &[u8]) {
         self.parser.advance(&mut self.term, bytes);
+        self.bytes_fed += bytes.len() as u64;
+    }
+
+    /// Absolute count of bytes fed so far — the current live stream offset.
+    pub fn bytes_fed(&self) -> u64 {
+        self.bytes_fed
     }
 
     /// Resize the emulated screen. No-op when dimensions are unchanged.
@@ -102,7 +114,7 @@ impl TerminalMirror {
 
     /// Capture the current visible screen as a restorable [`Snapshot`].
     pub fn snapshot(&self) -> Snapshot {
-        Snapshot::capture(&self.term)
+        Snapshot::capture(&self.term, self.bytes_fed, SNAPSHOT_SCROLLBACK_LINES)
     }
 
     /// Visible screen width in columns.

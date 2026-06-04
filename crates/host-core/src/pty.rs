@@ -49,6 +49,11 @@ impl portable_pty::Child for DummyChild {
 
 pub struct SessionOutputChunk {
     pub session_id: String,
+    /// Absolute start offset of `bytes` in the session's output stream — equal
+    /// to the mirror's `bytes_fed` just before these bytes were folded in.
+    /// Lets the client dedup the snapshot→live seam (drop frames whose end is
+    /// ≤ the snapshot `base_offset`).
+    pub offset: u64,
     pub bytes: Vec<u8>,
 }
 
@@ -74,7 +79,7 @@ impl SessionAttentionEvent {
 struct PtySession {
     input_tx: mpsc::Sender<Vec<u8>>,
     resize_tx: mpsc::Sender<(u16, u16)>,
-    output_rx: mpsc::Receiver<Vec<u8>>,
+    output_rx: mpsc::Receiver<(u64, Vec<u8>)>,
     stop: Arc<AtomicBool>,
     child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
     scrollback: Arc<Mutex<VecDeque<u8>>>,
@@ -353,7 +358,7 @@ impl SessionManager {
         )));
         let (input_tx, input_rx) = mpsc::channel::<Vec<u8>>();
         let (resize_tx, _resize_rx) = mpsc::channel::<(u16, u16)>();
-        let (output_tx, output_rx) = mpsc::sync_channel::<Vec<u8>>(1024);
+        let (output_tx, output_rx) = mpsc::sync_channel::<(u64, Vec<u8>)>(1024);
         // Passive mirror for snapshot-based resume. Relay sessions attach to an
         // externally-owned PTY of unknown size; default to 80×24 and let the
         // client's first resize correct it.
@@ -492,7 +497,7 @@ impl SessionManager {
 
         let (input_tx, input_rx) = mpsc::channel::<Vec<u8>>();
         let (resize_tx, resize_rx) = mpsc::channel::<(u16, u16)>();
-        let (output_tx, output_rx) = mpsc::sync_channel::<Vec<u8>>(1024);
+        let (output_tx, output_rx) = mpsc::sync_channel::<(u64, Vec<u8>)>(1024);
         // Passive mirror fed every PTY byte (see terminal::TerminalMirror) so we
         // can serve a canonical screen snapshot on resume.
         let mirror = Arc::new(Mutex::new(TerminalMirror::new(cols, rows)));
@@ -595,9 +600,10 @@ impl SessionManager {
     pub fn drain_output(&self) -> Vec<SessionOutputChunk> {
         let mut out = Vec::new();
         for (session_id, session) in &self.sessions {
-            while let Ok(bytes) = session.output_rx.try_recv() {
+            while let Ok((offset, bytes)) = session.output_rx.try_recv() {
                 out.push(SessionOutputChunk {
                     session_id: session_id.clone(),
+                    offset,
                     bytes,
                 });
             }
@@ -750,7 +756,7 @@ fn spawn_pty_reader_thread<R: Read + Send + 'static>(
     scrollback: Arc<Mutex<VecDeque<u8>>>,
     attention: Arc<Mutex<AttentionTracker>>,
     mirror: Arc<Mutex<TerminalMirror>>,
-    output_tx: mpsc::SyncSender<Vec<u8>>,
+    output_tx: mpsc::SyncSender<(u64, Vec<u8>)>,
 ) {
     thread::spawn(move || {
         let mut buf = vec![0_u8; 4096];
@@ -765,10 +771,22 @@ fn spawn_pty_reader_thread<R: Read + Send + 'static>(
                     if let Ok(mut tracker) = attention.lock() {
                         tracker.on_bytes(chunk, Instant::now());
                     }
-                    if let Ok(mut mir) = mirror.lock() {
+                    // Read the chunk's absolute start offset under the SAME lock
+                    // that folds it into the mirror, so it matches a snapshot cut
+                    // at this instant: base_offset == bytes_fed BEFORE this feed.
+                    // Capture and feed cannot interleave within one chunk, so live
+                    // offsets are strictly contiguous with the snapshot boundary.
+                    let offset = if let Ok(mut mir) = mirror.lock() {
+                        let off = mir.bytes_fed();
                         mir.feed(chunk);
-                    }
-                    let _ = output_tx.send(chunk.to_vec());
+                        off
+                    } else {
+                        // Mirror lock poisoned (alacritty panicked): emit a sentinel
+                        // so the client treats this frame as untagged / always-apply
+                        // rather than mis-deduping against a wrong offset.
+                        u64::MAX
+                    };
+                    let _ = output_tx.send((offset, chunk.to_vec()));
                 }
                 Err(_) => break,
             }

@@ -1,15 +1,15 @@
 //! Screen snapshot serializer.
 //!
-//! Walks the emulator's visible grid and emits a standard escape-code byte
-//! stream that, written into a freshly-`reset()` xterm.js of the same size,
-//! reproduces the current screen. This is the canonical-state resume payload —
-//! it replaces blind raw-byte replay entirely.
+//! Walks the emulator's grid (recent scrollback + visible viewport) and emits a
+//! standard escape-code byte stream that, written into a freshly-`reset()`
+//! xterm.js of the same size, reproduces the screen. This is the canonical-state
+//! resume payload — it replaces blind raw-byte replay entirely.
 //!
 //! The algorithm is a port of xterm.js's own `SerializeAddon`
-//! (`addons/addon-serialize/src/SerializeAddon.ts`), which is the reference for
+//! (`addons/addon-serialize/src/SerializeAddon.ts`), the reference for
 //! "grid → restorable escape stream":
 //!
-//! * iterate rows, then columns;
+//! * iterate rows (scrollback first, then viewport), then columns;
 //! * emit an SGR sequence only when a cell's style differs from the last
 //!   (each emission is reset-prefixed `0;…` so it is self-contained);
 //! * map fg/bg across named / 256-indexed / 24-bit RGB;
@@ -19,9 +19,11 @@
 //! * trim trailing blank rows;
 //! * finish with an absolute cursor position + cursor visibility.
 //!
-//! Scrollback history is intentionally *not* part of this payload — it is large
-//! and is fetched on demand as the user scrolls. The snapshot is the current
-//! screen only: small, instant, and always correct (including alt-screen TUIs).
+//! Deep history beyond [`SNAPSHOT_SCROLLBACK_LINES`] is fetched on demand as the
+//! user scrolls (Phase 2 `scrollback_request`); the snapshot carries the screen
+//! plus a bounded slice of recent scrollback so resume is instant *and* shows
+//! what just happened. The alternate screen buffer has no scrollback, so an
+//! alt-screen snapshot is the visible screen only.
 
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line, Point};
@@ -33,7 +35,18 @@ use alacritty_terminal::vte::ansi::{Color, NamedColor};
 /// shape changes so the mobile client can refuse / adapt.
 pub const SNAPSHOT_VERSION: u32 = 1;
 
-/// A restorable snapshot of the current visible screen.
+/// How many lines of recent scrollback to fold into a snapshot. Bounds the
+/// payload while still giving "scroll up a little and see what just happened";
+/// deeper history comes from on-demand scrollback requests.
+///
+/// NOTE: the snapshot is delivered over the signaling relay, which rejects
+/// messages over ~300 KB (`app/websocket/manager.py`). The visible screen is
+/// always tiny; this caps the *scrollback* fold so heavily-styled history can't
+/// blow that budget. A precise byte-cap (truncate oldest until under budget) is
+/// the proper follow-up; deeper history then comes from `scrollback_request`.
+pub const SNAPSHOT_SCROLLBACK_LINES: usize = 500;
+
+/// A restorable snapshot of the current screen (+ recent scrollback).
 #[derive(Debug, Clone)]
 pub struct Snapshot {
     pub version: u32,
@@ -41,31 +54,40 @@ pub struct Snapshot {
     pub rows: u16,
     /// Whether the alternate screen buffer was active when captured.
     pub alt_screen: bool,
+    /// Absolute byte offset in the session's output stream at the instant this
+    /// snapshot was cut (== bytes fed to the mirror). The client applies the
+    /// snapshot, sets its `lastAppliedOffset` to this, and ignores any live
+    /// frame whose bytes fall at or before it — making the snapshot→live seam
+    /// gap- and overlap-free once live frames are offset-tagged.
+    pub base_offset: u64,
     /// Escape-code stream to write into a freshly-reset terminal of `cols`×`rows`.
     pub data: Vec<u8>,
 }
 
 impl Snapshot {
-    /// Capture the visible screen of `term`.
-    pub fn capture<T>(term: &Term<T>) -> Snapshot {
+    /// Capture the screen of `term` (with up to `scrollback_lines` of recent
+    /// history), tagged with the stream offset `base_offset`.
+    pub fn capture<T>(term: &Term<T>, base_offset: u64, scrollback_lines: usize) -> Snapshot {
         Snapshot {
             version: SNAPSHOT_VERSION,
             cols: term.columns() as u16,
             rows: term.screen_lines() as u16,
             alt_screen: term.mode().contains(TermMode::ALT_SCREEN),
-            data: serialize_visible(term),
+            base_offset,
+            data: serialize(term, scrollback_lines),
         }
     }
 }
 
-/// Serialize the visible viewport of `term` into a restorable escape stream.
-fn serialize_visible<T>(term: &Term<T>) -> Vec<u8> {
+/// Serialize recent scrollback + the visible viewport of `term` into a
+/// restorable escape stream.
+fn serialize<T>(term: &Term<T>, scrollback_lines: usize) -> Vec<u8> {
     let grid = term.grid();
     let cols = term.columns();
-    let rows = term.screen_lines();
+    let rows = term.screen_lines() as i32;
     let alt = term.mode().contains(TermMode::ALT_SCREEN);
 
-    let mut out: Vec<u8> = Vec::with_capacity(rows * cols);
+    let mut out: Vec<u8> = Vec::with_capacity((rows as usize) * cols);
 
     // Switch the client into the alternate buffer first if that's where the
     // content lives, so the restore lands in the correct screen.
@@ -76,29 +98,32 @@ fn serialize_visible<T>(term: &Term<T>) -> Vec<u8> {
     out.extend_from_slice(b"\x1b[H\x1b[0m");
     let mut cur_sgr = String::from("0");
 
-    let last_row = last_content_row(term, cols, rows);
+    // Alacritty addresses scrollback with negative line indices. The alternate
+    // screen has no scrollback, so only fold history in for the primary buffer.
+    let history = if alt {
+        0
+    } else {
+        scrollback_lines.min(grid.history_size())
+    };
+    let top: i32 = -(history as i32);
 
-    if let Some(last_row) = last_row {
-        for r in 0..=last_row {
-            let line = Line(r as i32);
+    if let Some(last_row) = last_content_row(term, cols, top, rows) {
+        let mut r = top;
+        while r <= last_row {
+            let line = Line(r);
             let wrapped = cols > 0
                 && grid[Point::new(line, Column(cols - 1))]
                     .flags
                     .contains(Flags::WRAPLINE);
             // A wrapped row always occupies the full width; otherwise stop at
             // the last significant cell so we don't paint trailing blanks.
-            let line_len = if wrapped {
-                cols
-            } else {
-                row_len(term, r, cols)
-            };
+            let line_len = if wrapped { cols } else { row_len(term, line, cols) };
 
             let mut c = 0;
             while c < line_len {
                 let cell = &grid[Point::new(line, Column(c))];
                 // Skip the trailing/leading placeholder of a wide glyph; the
-                // wide char itself (previous/next cell) carries the codepoint
-                // and occupies both columns in the client.
+                // wide char itself occupies both columns in the client.
                 if cell
                     .flags
                     .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
@@ -126,11 +151,12 @@ fn serialize_visible<T>(term: &Term<T>) -> Vec<u8> {
             if r != last_row && !wrapped {
                 out.extend_from_slice(b"\r\n");
             }
+            r += 1;
         }
     }
 
-    // Restore the cursor with an absolute move so any drift from emitting the
-    // content above (autowrap, trimming) is irrelevant. Coordinates are 1-based.
+    // Restore the cursor with an absolute move (viewport coordinates, 1-based)
+    // so any drift from emitting the content above is irrelevant.
     let cursor = grid.cursor.point;
     let cur_row = cursor.line.0.max(0) as usize + 1;
     let cur_col = cursor.column.0 + 1;
@@ -143,12 +169,14 @@ fn serialize_visible<T>(term: &Term<T>) -> Vec<u8> {
     out
 }
 
-/// The last row index (0-based) that holds anything worth restoring, or `None`
-/// when the whole screen is blank. Trailing empty rows below this are dropped.
-fn last_content_row<T>(term: &Term<T>, cols: usize, rows: usize) -> Option<usize> {
+/// The last row index that holds anything worth restoring, scanning from the
+/// viewport bottom up to `top` (which may be negative, into scrollback), or
+/// `None` when the whole range is blank.
+fn last_content_row<T>(term: &Term<T>, cols: usize, top: i32, rows: i32) -> Option<i32> {
     let grid = term.grid();
-    for r in (0..rows).rev() {
-        let line = Line(r as i32);
+    let mut r = rows - 1;
+    while r >= top {
+        let line = Line(r);
         // A soft-wrapped row is content even if its cells look blank.
         if cols > 0
             && grid[Point::new(line, Column(cols - 1))]
@@ -157,18 +185,18 @@ fn last_content_row<T>(term: &Term<T>, cols: usize, rows: usize) -> Option<usize
         {
             return Some(r);
         }
-        if row_len(term, r, cols) > 0 {
+        if row_len(term, line, cols) > 0 {
             return Some(r);
         }
+        r -= 1;
     }
     None
 }
 
-/// Number of leading columns in row `r` that carry restorable content: the
-/// index past the last cell with a visible glyph or a non-default background.
-fn row_len<T>(term: &Term<T>, r: usize, cols: usize) -> usize {
+/// Number of leading columns in `line` that carry restorable content: the index
+/// past the last cell with a visible glyph or a non-default background.
+fn row_len<T>(term: &Term<T>, line: Line, cols: usize) -> usize {
     let grid = term.grid();
-    let line = Line(r as i32);
     let mut len = 0;
     for c in 0..cols {
         let cell = &grid[Point::new(line, Column(c))];
@@ -287,16 +315,13 @@ mod tests {
         let s = snap(80, 24, b"hello");
         assert!(s.starts_with("\x1b[H\x1b[0m"), "starts homed + reset: {s:?}");
         assert!(s.contains("hello"), "contains text: {s:?}");
-        // Cursor ends one past "hello" → row 1, col 6.
         assert!(s.ends_with("\x1b[1;6H"), "cursor restored: {s:?}");
     }
 
     #[test]
     fn trailing_blank_cells_and_rows_are_trimmed() {
         let s = snap(80, 24, b"hi");
-        // No long run of spaces padding the 80-col row.
         assert!(!s.contains("hi   "), "trailing spaces trimmed: {s:?}");
-        // Only one logical line emitted (no CRLF for blank rows below).
         assert_eq!(s.matches("\r\n").count(), 0, "no trailing rows: {s:?}");
     }
 
@@ -310,7 +335,6 @@ mod tests {
     #[test]
     fn bold_red_foreground_emits_sgr() {
         let s = snap(80, 24, b"\x1b[1;31mhi");
-        // Reset-prefixed, bold (1), red fg (31), before the glyphs.
         assert!(s.contains("\x1b[0;1;31mhi"), "bold-red sgr: {s:?}");
     }
 
@@ -328,7 +352,6 @@ mod tests {
 
     #[test]
     fn style_reset_between_styled_and_plain() {
-        // Styled "A" then default "B": the serializer must drop back to "0".
         let s = snap(80, 24, b"\x1b[1mA\x1b[0mB");
         assert!(s.contains("\x1b[0;1mA"), "bold A: {s:?}");
         assert!(s.contains("\x1b[0mB"), "reset before B: {s:?}");
@@ -349,31 +372,24 @@ mod tests {
 
     #[test]
     fn absolute_cursor_position_is_restored() {
-        // Move cursor to row 5, col 3 then capture.
         let s = snap(80, 24, b"\x1b[5;3H");
         assert!(s.ends_with("\x1b[5;3H"), "cursor at 5;3: {s:?}");
     }
 
     #[test]
     fn soft_wrapped_line_has_no_internal_crlf() {
-        // Write more columns than the width to force a soft wrap.
         let line = "z".repeat(15);
         let mut m = TerminalMirror::new(10, 6);
         m.feed(line.as_bytes());
         let s = String::from_utf8(m.snapshot().data).unwrap();
-        // 15 z's across a 10-wide screen wrap to a second row, but as ONE
-        // logical line — no CRLF injected at the wrap boundary.
         assert!(s.contains(&"z".repeat(15)), "all glyphs present: {s:?}");
         assert_eq!(s.matches("\r\n").count(), 0, "no crlf at soft wrap: {s:?}");
     }
 
     #[test]
     fn wide_char_spacer_is_skipped() {
-        // A CJK glyph occupies two columns: the glyph cell + a spacer cell.
-        // The serializer must emit the glyph once and skip the spacer.
         let s = snap(80, 24, "你好".as_bytes());
         assert!(s.contains("你好"), "cjk glyphs present once: {s:?}");
-        // No stray spaces between the two wide glyphs from the spacer cells.
         assert!(!s.contains("你 好"), "no spacer artifacts: {s:?}");
     }
 
@@ -381,5 +397,27 @@ mod tests {
     fn blank_screen_emits_only_home_reset_and_cursor() {
         let s = snap(80, 24, b"");
         assert_eq!(s, "\x1b[H\x1b[0m\x1b[1;1H", "minimal payload: {s:?}");
+    }
+
+    #[test]
+    fn scrollback_is_folded_into_snapshot() {
+        // 5-row terminal; feed 12 lines. Lines that scrolled off the top must
+        // still appear in the snapshot (folded-in recent scrollback), along
+        // with the lines currently on screen.
+        let mut m = TerminalMirror::new(40, 5);
+        for i in 0..12 {
+            m.feed(format!("line{i}\r\n").as_bytes());
+        }
+        let s = String::from_utf8(m.snapshot().data).unwrap();
+        assert!(s.contains("line0"), "scrolled-off line present: {s:?}");
+        assert!(s.contains("line11"), "on-screen line present: {s:?}");
+    }
+
+    #[test]
+    fn base_offset_tracks_bytes_fed() {
+        let mut m = TerminalMirror::new(80, 24);
+        m.feed(b"hello");
+        m.feed(b" world");
+        assert_eq!(m.snapshot().base_offset, 11, "base_offset == total bytes fed");
     }
 }

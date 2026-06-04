@@ -2514,6 +2514,10 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                             session_id: Some(chunk.session_id),
                             payload: Some(serde_json::json!({
                                 "channel": "terminal",
+                                // Absolute stream offset of these bytes. v2 clients
+                                // dedup the snapshot→live seam against it; old
+                                // clients ignore the unknown field.
+                                "offset": chunk.offset,
                                 "data_b64": base64::engine::general_purpose::STANDARD.encode(chunk.bytes)
                             })),
                             state: None,
@@ -6951,6 +6955,14 @@ async fn handle_signal(
                 .and_then(|v| v.as_u64())
                 .unwrap_or(120) as u16;
             let rows = msg.extra.get("rows").and_then(|v| v.as_u64()).unwrap_or(30) as u16;
+            // Capability negotiation: snapshot-resume clients advertise
+            // `resume_protocol: 2` in `extra`. Absent (old clients) => 1 => the
+            // legacy raw-scrollback replay path below.
+            let resume_protocol = msg
+                .extra
+                .get("resume_protocol")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(1);
 
             if !store.is_trusted(&mobile_device_id) {
                 audit_authz_denied(
@@ -7022,8 +7034,38 @@ async fn handle_signal(
                 };
                 let _ = send_signal(ws, &event).await;
 
-                // Send scrollback replay ONLY to the joining device (not all viewers)
-                if let Ok(scrollback) = sessions.capture_scrollback(&session_id) {
+                // Resume payload, sent ONLY to the joining device (not all viewers).
+                if resume_protocol >= 2 {
+                    // v2: a canonical screen snapshot (recent scrollback + visible
+                    // screen + cursor) from the terminal mirror. The client resets
+                    // its terminal and writes this — correct for TUI apps, with no
+                    // duplication or garbled escapes (unlike the raw blob below).
+                    if let Ok(snap) = sessions.capture_snapshot(&session_id) {
+                        let mut extra = std::collections::HashMap::new();
+                        extra.insert(
+                            "target_mobile_device_id".to_string(),
+                            serde_json::json!(mobile_device_id),
+                        );
+                        let snapshot_msg = SignalEnvelope {
+                            message_type: "session_snapshot".to_string(),
+                            session_id: Some(session_id.clone()),
+                            payload: Some(serde_json::json!({
+                                "version": snap.version,
+                                "cols": snap.cols,
+                                "rows": snap.rows,
+                                "alt_screen": snap.alt_screen,
+                                "base_offset": snap.base_offset,
+                                "data_b64": base64::engine::general_purpose::STANDARD.encode(&snap.data),
+                            })),
+                            state: None,
+                            accepted: None,
+                            reason: None,
+                            extra,
+                        };
+                        let _ = send_signal(ws, &snapshot_msg).await;
+                    }
+                } else if let Ok(scrollback) = sessions.capture_scrollback(&session_id) {
+                    // Legacy clients: raw scrollback replay blob (unchanged).
                     if !scrollback.is_empty() {
                         let mut extra = std::collections::HashMap::new();
                         extra.insert(
