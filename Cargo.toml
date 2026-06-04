@@ -43,3 +43,4 @@ whoami = "1.6"
 keyring = { version = "3.6", features = ["apple-native", "linux-native", "windows-native"] }
 bytes = "1"
 regex = "1"
+alacritty_terminal = "0.26"

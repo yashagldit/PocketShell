@@ -33,6 +33,7 @@ uuid.workspace = true
 regex.workspace = true
 keyring.workspace = true
 zeroize = "1"
+alacritty_terminal.workspace = true
 
 # `nix` is POSIX-only and does not build on Windows. Every use of it in this
 # crate is behind `#[cfg(unix)]`; the cross-platform fallbacks live in

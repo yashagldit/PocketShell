@@ -23,6 +23,7 @@ pub mod session;
 pub mod signaling_crypto;
 pub mod stats;
 pub mod store;
+pub mod terminal;
 pub mod terminal_marks;
 pub mod transport;
 pub mod update;

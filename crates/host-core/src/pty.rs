@@ -1,4 +1,5 @@
 use crate::error::{HostError, Result};
+use crate::terminal::TerminalMirror;
 use crate::terminal_marks::{
     AttentionKind, AttentionTracker, PendingAttention, DEFAULT_QUIET_PERIOD,
 };
@@ -84,6 +85,9 @@ struct PtySession {
     /// OSC 133 + BEL detector with 10 s debounce. Updated by the read
     /// thread on every chunk; drained by the daemon each output tick.
     attention: Arc<Mutex<AttentionTracker>>,
+    /// Passive headless terminal emulator fed every PTY byte by the read
+    /// thread. Source of the canonical screen snapshot used for resume.
+    mirror: Arc<Mutex<TerminalMirror>>,
 }
 
 pub struct SessionManager {
@@ -152,6 +156,24 @@ impl SessionManager {
             .lock()
             .map_err(|_| HostError::Pty(format!("scrollback lock poisoned: {session_id}")))?;
         Ok(scrollback.iter().copied().collect())
+    }
+
+    /// Capture a canonical screen snapshot from the session's terminal mirror.
+    ///
+    /// This is the resume payload for the rewrite: it reflects the *current
+    /// rendered screen* (including alt-screen TUIs), independent of how many
+    /// bytes a reconnecting client missed. Not yet wired into the daemon's
+    /// resume path — see `docs/terminal-rewrite-design.md` (Phase 2).
+    pub fn capture_snapshot(&self, session_id: &str) -> Result<crate::terminal::Snapshot> {
+        let session = self
+            .sessions
+            .get(session_id)
+            .ok_or_else(|| HostError::Pty(format!("unknown session: {session_id}")))?;
+        let mirror = session
+            .mirror
+            .lock()
+            .map_err(|_| HostError::Pty(format!("mirror lock poisoned: {session_id}")))?;
+        Ok(mirror.snapshot())
     }
 
     /// Check if a session is persistent.
@@ -332,6 +354,10 @@ impl SessionManager {
         let (input_tx, input_rx) = mpsc::channel::<Vec<u8>>();
         let (resize_tx, _resize_rx) = mpsc::channel::<(u16, u16)>();
         let (output_tx, output_rx) = mpsc::sync_channel::<Vec<u8>>(1024);
+        // Passive mirror for snapshot-based resume. Relay sessions attach to an
+        // externally-owned PTY of unknown size; default to 80×24 and let the
+        // client's first resize correct it.
+        let mirror = Arc::new(Mutex::new(TerminalMirror::new(80, 24)));
 
         // Writer thread — sends mobile input to the host's PTY
         {
@@ -355,6 +381,7 @@ impl SessionManager {
             Arc::clone(&stop),
             Arc::clone(&scrollback),
             Arc::clone(&attention),
+            Arc::clone(&mirror),
             output_tx,
         );
 
@@ -374,6 +401,7 @@ impl SessionManager {
                 persistent: false,
                 tmux_session_name: None,
                 attention,
+                mirror,
             },
         );
 
@@ -465,6 +493,9 @@ impl SessionManager {
         let (input_tx, input_rx) = mpsc::channel::<Vec<u8>>();
         let (resize_tx, resize_rx) = mpsc::channel::<(u16, u16)>();
         let (output_tx, output_rx) = mpsc::sync_channel::<Vec<u8>>(1024);
+        // Passive mirror fed every PTY byte (see terminal::TerminalMirror) so we
+        // can serve a canonical screen snapshot on resume.
+        let mirror = Arc::new(Mutex::new(TerminalMirror::new(cols, rows)));
 
         {
             let stop = Arc::clone(&stop);
@@ -504,6 +535,7 @@ impl SessionManager {
             Arc::clone(&stop),
             Arc::clone(&scrollback),
             Arc::clone(&attention),
+            Arc::clone(&mirror),
             output_tx,
         );
 
@@ -519,6 +551,7 @@ impl SessionManager {
                 persistent,
                 tmux_session_name,
                 attention,
+                mirror,
             },
         );
 
@@ -548,6 +581,11 @@ impl SessionManager {
             .sessions
             .get(session_id)
             .ok_or_else(|| HostError::Pty(format!("unknown session: {session_id}")))?;
+        // Keep the snapshot mirror's dimensions in lock-step with the PTY so a
+        // resume taken after a resize reflows at the correct width.
+        if let Ok(mut mir) = session.mirror.lock() {
+            mir.resize(cols, rows);
+        }
         session
             .resize_tx
             .send((cols, rows))
@@ -700,13 +738,18 @@ fn append_scrollback(scrollback: &mut VecDeque<u8>, chunk: &[u8]) {
 }
 
 /// Read PTY output in a dedicated thread: append to scrollback, feed the
-/// attention parser, forward to the daemon's output channel. Used by both
-/// native and relay session paths.
+/// attention parser, feed the headless terminal mirror, and forward to the
+/// daemon's output channel. Used by both native and relay session paths.
+///
+/// `output_tx` is a bounded `SyncSender`; when the daemon falls behind, `send`
+/// blocks here, which stalls the read loop and propagates backpressure to the
+/// PTY (the child blocks on write) rather than dropping output.
 fn spawn_pty_reader_thread<R: Read + Send + 'static>(
     mut reader: R,
     stop: Arc<AtomicBool>,
     scrollback: Arc<Mutex<VecDeque<u8>>>,
     attention: Arc<Mutex<AttentionTracker>>,
+    mirror: Arc<Mutex<TerminalMirror>>,
     output_tx: mpsc::SyncSender<Vec<u8>>,
 ) {
     thread::spawn(move || {
@@ -721,6 +764,9 @@ fn spawn_pty_reader_thread<R: Read + Send + 'static>(
                     }
                     if let Ok(mut tracker) = attention.lock() {
                         tracker.on_bytes(chunk, Instant::now());
+                    }
+                    if let Ok(mut mir) = mirror.lock() {
+                        mir.feed(chunk);
                     }
                     let _ = output_tx.send(chunk.to_vec());
                 }
