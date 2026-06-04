@@ -16,7 +16,7 @@ use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::vte::ansi::Processor;
 
-use super::snapshot::{Snapshot, SNAPSHOT_SCROLLBACK_LINES};
+use super::snapshot::{Snapshot, SNAPSHOT_BYTE_BUDGET};
 
 /// Default scrollback retained by the mirror, in lines. Generous on purpose:
 /// the whole point is "come back later and see everything Claude did". The grid
@@ -114,7 +114,7 @@ impl TerminalMirror {
 
     /// Capture the current visible screen as a restorable [`Snapshot`].
     pub fn snapshot(&self) -> Snapshot {
-        Snapshot::capture(&self.term, self.bytes_fed, SNAPSHOT_SCROLLBACK_LINES)
+        Snapshot::capture(&self.term, self.bytes_fed, SNAPSHOT_BYTE_BUDGET)
     }
 
     /// Visible screen width in columns.

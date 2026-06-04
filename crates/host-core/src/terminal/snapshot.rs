@@ -19,11 +19,11 @@
 //! * trim trailing blank rows;
 //! * finish with an absolute cursor position + cursor visibility.
 //!
-//! Deep history beyond [`SNAPSHOT_SCROLLBACK_LINES`] is fetched on demand as the
+//! Deep history beyond [`SNAPSHOT_BYTE_BUDGET`] is fetched on demand as the
 //! user scrolls (Phase 2 `scrollback_request`); the snapshot carries the screen
-//! plus a bounded slice of recent scrollback so resume is instant *and* shows
-//! what just happened. The alternate screen buffer has no scrollback, so an
-//! alt-screen snapshot is the visible screen only.
+//! plus as much recent scrollback as fits that budget, so resume is instant
+//! *and* shows what just happened. The alternate screen buffer has no
+//! scrollback, so an alt-screen snapshot is the visible screen only.
 
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line, Point};
@@ -35,16 +35,15 @@ use alacritty_terminal::vte::ansi::{Color, NamedColor};
 /// shape changes so the mobile client can refuse / adapt.
 pub const SNAPSHOT_VERSION: u32 = 1;
 
-/// How many lines of recent scrollback to fold into a snapshot. Bounds the
-/// payload while still giving "scroll up a little and see what just happened";
-/// deeper history comes from on-demand scrollback requests.
+/// Byte budget for the serialized snapshot payload.
 ///
-/// NOTE: the snapshot is delivered over the signaling relay, which rejects
-/// messages over ~300 KB (`app/websocket/manager.py`). The visible screen is
-/// always tiny; this caps the *scrollback* fold so heavily-styled history can't
-/// blow that budget. A precise byte-cap (truncate oldest until under budget) is
-/// the proper follow-up; deeper history then comes from `scrollback_request`.
-pub const SNAPSHOT_SCROLLBACK_LINES: usize = 500;
+/// The snapshot is delivered over the signaling relay, which rejects messages
+/// larger than ~300 KB (`app/websocket/manager.py`). base64 of this budget
+/// (~245 KB) plus the JSON envelope stays comfortably under that. The serializer
+/// folds in as much *recent* scrollback as fits: the visible screen is always
+/// included, then older history is trimmed until the payload fits. Deeper
+/// history beyond this comes from on-demand `scrollback_request`.
+pub const SNAPSHOT_BYTE_BUDGET: usize = 180 * 1024;
 
 /// A restorable snapshot of the current screen (+ recent scrollback).
 #[derive(Debug, Clone)]
@@ -65,16 +64,33 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    /// Capture the screen of `term` (with up to `scrollback_lines` of recent
-    /// history), tagged with the stream offset `base_offset`.
-    pub fn capture<T>(term: &Term<T>, base_offset: u64, scrollback_lines: usize) -> Snapshot {
+    /// Capture the screen of `term` plus as much recent scrollback as fits
+    /// within `byte_budget`, tagged with the stream offset `base_offset`.
+    ///
+    /// Starts from the full retained history and trims the oldest lines until
+    /// the serialized payload fits the budget. The visible screen is always
+    /// included regardless of how much scrollback survives, so this converges
+    /// (worst case: screen only).
+    pub fn capture<T>(term: &Term<T>, base_offset: u64, byte_budget: usize) -> Snapshot {
+        let mut lines = term.history_size();
+        let mut data = serialize(term, lines);
+        let mut attempts = 0;
+        while data.len() > byte_budget && lines > 0 && attempts < 6 {
+            // Shrink proportionally toward the budget (×0.9 for margin), always
+            // making progress so we can't loop on a pathological line.
+            let scaled =
+                (lines as u128 * byte_budget as u128 / (data.len().max(1) as u128)) as usize;
+            lines = (scaled * 9 / 10).min(lines.saturating_sub(1));
+            data = serialize(term, lines);
+            attempts += 1;
+        }
         Snapshot {
             version: SNAPSHOT_VERSION,
             cols: term.columns() as u16,
             rows: term.screen_lines() as u16,
             alt_screen: term.mode().contains(TermMode::ALT_SCREEN),
             base_offset,
-            data: serialize(term, scrollback_lines),
+            data,
         }
     }
 }
@@ -419,5 +435,25 @@ mod tests {
         m.feed(b"hello");
         m.feed(b" world");
         assert_eq!(m.snapshot().base_offset, 11, "base_offset == total bytes fed");
+    }
+
+    #[test]
+    fn snapshot_stays_within_byte_budget_and_keeps_recent() {
+        // Feed far more styled history than the budget can hold. The snapshot
+        // must stay within budget yet still contain the most recent lines (the
+        // oldest scrollback is what gets trimmed).
+        let mut m = TerminalMirror::new(80, 10);
+        for i in 0..5000 {
+            m.feed(format!("line{i}: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\r\n").as_bytes());
+        }
+        let snap = m.snapshot();
+        assert!(
+            snap.data.len() <= super::SNAPSHOT_BYTE_BUDGET,
+            "snapshot {} exceeds budget {}",
+            snap.data.len(),
+            super::SNAPSHOT_BYTE_BUDGET
+        );
+        let s = String::from_utf8(snap.data).unwrap();
+        assert!(s.contains("line4999"), "keeps the most recent line");
     }
 }
