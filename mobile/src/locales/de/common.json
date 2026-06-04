@@ -53,5 +53,9 @@
   "splash.stage.session_ready": "Sitzung bereit – wird gestartet",
   "splash.stage.no_session": "keine gespeicherte Sitzung",
   "actions.close": "Schließen",
-  "actions.retry": "Erneut versuchen"
+  "actions.retry": "Erneut versuchen",
+  "update.title": "Update verfügbar",
+  "update.body": "Eine neue Version ist bereit. Jetzt neu starten zum Aktualisieren, oder später anwenden.",
+  "update.restart": "Jetzt neu starten",
+  "update.later": "Später"
 }

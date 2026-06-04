@@ -53,5 +53,9 @@
   "splash.stage.session_ready": "sessione pronta — avvio",
   "splash.stage.no_session": "nessuna sessione salvata",
   "actions.close": "Chiudi",
-  "actions.retry": "Riprova"
+  "actions.retry": "Riprova",
+  "update.title": "Aggiornamento disponibile",
+  "update.body": "È pronta una nuova versione. Riavvia per aggiornare ora, oppure verrà applicato più tardi.",
+  "update.restart": "Riavvia ora",
+  "update.later": "Più tardi"
 }

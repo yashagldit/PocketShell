@@ -53,5 +53,9 @@
   "splash.stage.session_ready": "सत्र तैयार — लॉन्च हो रहा है",
   "splash.stage.no_session": "कोई सहेजा गया सत्र नहीं",
   "actions.close": "बंद करें",
-  "actions.retry": "पुनः प्रयास करें"
+  "actions.retry": "पुनः प्रयास करें",
+  "update.title": "अपडेट उपलब्ध है",
+  "update.body": "नया वर्शन तैयार है। अभी अपडेट करने के लिए पुनः आरंभ करें, या यह बाद में लागू होगा।",
+  "update.restart": "अभी पुनः आरंभ करें",
+  "update.later": "बाद में"
 }

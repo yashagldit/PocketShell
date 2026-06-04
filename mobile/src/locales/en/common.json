@@ -53,5 +53,9 @@
   "splash.stage.session_ready": "session ready — launching",
   "splash.stage.no_session": "no saved session",
   "actions.close": "Close",
-  "actions.retry": "Retry"
+  "actions.retry": "Retry",
+  "update.title": "Update available",
+  "update.body": "A new version is ready. Restart to update now, or dismiss and it'll apply later.",
+  "update.restart": "Restart now",
+  "update.later": "Later"
 }

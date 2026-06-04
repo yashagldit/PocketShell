@@ -53,5 +53,9 @@
   "splash.stage.session_ready": "세션 준비 완료 — 시작 중",
   "splash.stage.no_session": "저장된 세션 없음",
   "actions.close": "닫기",
-  "actions.retry": "다시 시도"
+  "actions.retry": "다시 시도",
+  "update.title": "업데이트 사용 가능",
+  "update.body": "새 버전이 준비되었습니다. 지금 다시 시작하여 업데이트하거나 나중에 적용됩니다.",
+  "update.restart": "지금 다시 시작",
+  "update.later": "나중에"
 }
