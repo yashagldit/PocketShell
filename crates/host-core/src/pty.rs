@@ -544,6 +544,12 @@ impl SessionManager {
             output_tx,
         );
 
+        // Windows/ConPTY only: kick the pseudoconsole so it flushes the initial
+        // prompt frame into the read pipe instead of staying blank until a
+        // manual reconnect. No-op elsewhere.
+        #[cfg(windows)]
+        nudge_conpty_initial_frame(Arc::clone(&master), Arc::clone(&stop), cols, rows);
+
         self.sessions.insert(
             session_id,
             PtySession {
@@ -741,6 +747,54 @@ fn append_scrollback(scrollback: &mut VecDeque<u8>, chunk: &[u8]) {
         let overflow = scrollback.len() - MAX_SCROLLBACK_BYTES;
         drop(scrollback.drain(..overflow));
     }
+}
+
+/// Force a freshly-created Windows ConPTY to emit its initial frame (the shell
+/// prompt). A new pseudoconsole frequently won't flush its first frame until it
+/// receives a resize it actually honors, and a resize landing too close to the
+/// client attach is dropped (microsoft/terminal#10400). portable-pty also
+/// doesn't set `PSEUDOCONSOLE_RESIZE_QUIRK`, so a size change forces a full
+/// buffer repaint. We nudge the size (a transient +1-row wiggle) shortly after
+/// spawn so the prompt lands in the read pipe → the mirror + live stream,
+/// instead of the terminal staying blank until a manual reconnect. Only invoked
+/// on Windows (Unix PTYs emit immediately); the body is platform-agnostic so it
+/// type-checks on every target.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn nudge_conpty_initial_frame(
+    master: Arc<Mutex<Box<dyn portable_pty::MasterPty + Send>>>,
+    stop: Arc<AtomicBool>,
+    cols: u16,
+    rows: u16,
+) {
+    if cols == 0 || rows == 0 {
+        return;
+    }
+    thread::spawn(move || {
+        let resize_to = |r: u16| {
+            if let Ok(m) = master.lock() {
+                let _ = m.resize(PtySize {
+                    rows: r,
+                    cols,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                });
+            }
+        };
+        // Wait past the attach window (and give the shell time to print its
+        // prompt into ConPTY's buffer), then wiggle the row count to force a
+        // repaint, then restore. The client's own resize settles the final size.
+        thread::sleep(Duration::from_millis(500));
+        if stop.load(Ordering::Relaxed) {
+            return;
+        }
+        resize_to(rows.saturating_add(1));
+        thread::sleep(Duration::from_millis(60));
+        if stop.load(Ordering::Relaxed) {
+            return;
+        }
+        resize_to(rows);
+        tracing::info!("conpty: applied initial-frame nudge for fresh session");
+    });
 }
 
 /// Read PTY output in a dedicated thread: append to scrollback, feed the

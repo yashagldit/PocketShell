@@ -7041,6 +7041,12 @@ async fn handle_signal(
                     // its terminal and writes this — correct for TUI apps, with no
                     // duplication or garbled escapes (unlike the raw blob below).
                     if let Ok(snap) = sessions.capture_snapshot(&session_id) {
+                        info!(
+                            "session_join: sending session_snapshot for {} ({} bytes, alt_screen={})",
+                            session_id,
+                            snap.data.len(),
+                            snap.alt_screen
+                        );
                         let mut extra = std::collections::HashMap::new();
                         extra.insert(
                             "target_mobile_device_id".to_string(),
