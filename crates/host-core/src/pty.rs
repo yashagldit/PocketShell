@@ -388,6 +388,7 @@ impl SessionManager {
             Arc::clone(&attention),
             Arc::clone(&mirror),
             output_tx,
+            input_tx.clone(),
         );
 
         // Use a dummy child — the PTY is owned by the rc process, not us
@@ -542,6 +543,7 @@ impl SessionManager {
             Arc::clone(&attention),
             Arc::clone(&mirror),
             output_tx,
+            input_tx.clone(),
         );
 
         // Windows/ConPTY only: kick the pseudoconsole so it flushes the initial
@@ -811,6 +813,10 @@ fn spawn_pty_reader_thread<R: Read + Send + 'static>(
     attention: Arc<Mutex<AttentionTracker>>,
     mirror: Arc<Mutex<TerminalMirror>>,
     output_tx: mpsc::SyncSender<(u64, Vec<u8>)>,
+    // Back-channel to the PTY's input writer. The mirror answers device queries
+    // (e.g. PowerShell's `\x1b[6n` cursor-position request) and those replies are
+    // written here so query-driven shells unblock and render their prompt.
+    reply_tx: mpsc::Sender<Vec<u8>>,
 ) {
     thread::spawn(move || {
         let mut buf = vec![0_u8; 4096];
@@ -830,16 +836,35 @@ fn spawn_pty_reader_thread<R: Read + Send + 'static>(
                     // at this instant: base_offset == bytes_fed BEFORE this feed.
                     // Capture and feed cannot interleave within one chunk, so live
                     // offsets are strictly contiguous with the snapshot boundary.
-                    let offset = if let Ok(mut mir) = mirror.lock() {
+                    let (offset, replies) = if let Ok(mut mir) = mirror.lock() {
                         let off = mir.bytes_fed();
                         mir.feed(chunk);
-                        off
+                        // Drain under the same lock so a reply can't be split across
+                        // two feeds: the emulator generated it from exactly the bytes
+                        // just fed.
+                        (off, mir.take_replies())
                     } else {
                         // Mirror lock poisoned (alacritty panicked): emit a sentinel
                         // so the client treats this frame as untagged / always-apply
                         // rather than mis-deduping against a wrong offset.
-                        u64::MAX
+                        (u64::MAX, Vec::new())
                     };
+                    // Write any device-query replies (cursor-position report, device
+                    // attributes, …) back to the PTY — Windows only. PowerShell/
+                    // PSReadLine blocks on its `\x1b[6n` query before drawing the
+                    // prompt, and the pure-viewer mobile can't reliably answer
+                    // (deduped on resume / suppressed during snapshot apply), so the
+                    // host must. On macOS/Linux the shell doesn't gate its prompt on
+                    // the reply AND the mobile xterm.js already answers, so writing
+                    // here too would double the report and leak stray input — keep the
+                    // existing (client-answers) behavior there. `take_replies` is still
+                    // drained above on every platform so the buffer can't grow.
+                    #[cfg(windows)]
+                    if !replies.is_empty() {
+                        let _ = reply_tx.send(replies);
+                    }
+                    #[cfg(not(windows))]
+                    let _ = (&reply_tx, replies);
                     let _ = output_tx.send((offset, chunk.to_vec()));
                 }
                 Err(_) => break,
