@@ -113,5 +113,6 @@
   "help.camera.body": "请打开设备设置，允许 PocketShell 使用相机；或在另一部手机或平板上登录，从那里扫描二维码。",
   "help.remove.title": "如何卸载？",
   "help.remove.body": "在主机上运行 pocketshell uninstall，即可停止守护进程、移除服务、清除本地 PocketShell 状态并删除代理程序。",
-  "help.footnote": "请仅配对您拥有或被授权访问的电脑。"
+  "help.footnote": "请仅配对您拥有或被授权访问的电脑。",
+  "scan_qr.device_not_registered": "移动设备未注册"
 }

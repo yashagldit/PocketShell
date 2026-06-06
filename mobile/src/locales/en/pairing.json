@@ -70,6 +70,7 @@
   "scan_qr.camera_denied_recovery": "If camera access is blocked, open Settings and allow Camera for PocketShell.",
   "scan_qr.use_another_device": "You can also sign in on another phone or tablet and scan the QR there.",
   "scan_qr.unsupported_qr": "Unsupported QR code",
+  "scan_qr.device_not_registered": "Mobile device not registered",
   "scan_qr.confirm_title": "Pair Host",
   "scan_qr.confirm_add_device_title": "Add Device",
   "scan_qr.host_detected": "Host detected",

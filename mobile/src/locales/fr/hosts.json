@@ -153,5 +153,9 @@
   "errors.load_failed": "Échec du chargement des hôtes",
   "errors.delete_failed": "Échec de la suppression de l'hôte",
   "errors.load_trusted_devices_failed": "Échec du chargement des appareils de confiance",
-  "errors.update_failed": "Échec de la demande de mise à jour de l'hôte"
+  "errors.update_failed": "Échec de la demande de mise à jour de l'hôte",
+  "errors.create_pairing_code_failed": "Impossible de créer le code d'appairage",
+  "errors.refresh_pairing_status_failed": "Impossible d'actualiser l'état d'appairage",
+  "errors.recovery_failed": "L'action de récupération a échoué",
+  "security.trusted_device_required": "Accès à l'appareil approuvé requis"
 }

@@ -27,6 +27,7 @@
   "section.network": "Network",
   "section.disk_io": "Disk I/O",
   "section.system": "System",
+  "section.fleet": "FLEET",
   "section.temperatures": "Temperatures",
   "section.network_io": "Network I/O",
   "section.disk": "Disk",

@@ -24,5 +24,6 @@
   "tab_label_terminal": "{{host}} 上的終端機",
   "tab_label_files": "{{host}} 上的檔案",
   "on_host": "在 {{host}} 上",
-  "errors.load_failed": "載入工作區失敗"
+  "errors.load_failed": "載入工作區失敗",
+  "default_name": "工作區 {{index}}"
 }

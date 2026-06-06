@@ -52,6 +52,7 @@
   "splash.stage.requesting_biometric": "requesting biometric unlock",
   "splash.stage.session_ready": "session ready — launching",
   "splash.stage.no_session": "no saved session",
+  "boot.error_prefix": "error:",
   "actions.close": "Close",
   "actions.retry": "Retry",
   "update.title": "Update available",

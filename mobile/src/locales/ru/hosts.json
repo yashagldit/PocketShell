@@ -153,5 +153,9 @@
   "errors.load_failed": "Не удалось загрузить хосты",
   "errors.delete_failed": "Не удалось удалить хост",
   "errors.load_trusted_devices_failed": "Не удалось загрузить доверенные устройства",
-  "errors.update_failed": "Не удалось запросить обновление хоста"
+  "errors.update_failed": "Не удалось запросить обновление хоста",
+  "errors.create_pairing_code_failed": "Не удалось создать код сопряжения",
+  "errors.refresh_pairing_status_failed": "Не удалось обновить статус сопряжения",
+  "errors.recovery_failed": "Действие восстановления не удалось",
+  "security.trusted_device_required": "Требуется доступ с доверенного устройства"
 }

@@ -113,5 +113,6 @@
   "help.camera.body": "デバイスの設定を開いてPocketShellのカメラを許可するか、別のスマートフォンやタブレットでサインインしてそこからQRをスキャンしてください。",
   "help.remove.title": "削除するにはどうすればよいですか？",
   "help.remove.body": "ホストで pocketshell uninstall を実行すると、デーモンの停止、サービスの削除、ローカルのPocketShell状態のクリア、エージェントバイナリの削除が行われます。",
-  "help.footnote": "所有しているか、アクセスを許可されたコンピューターのみをペアリングしてください。"
+  "help.footnote": "所有しているか、アクセスを許可されたコンピューターのみをペアリングしてください。",
+  "scan_qr.device_not_registered": "モバイルデバイスが登録されていません"
 }

@@ -24,5 +24,8 @@
   "menu.remove_starred": "Retirer des favoris",
   "menu.star_folder": "Mettre ce dossier en favori",
   "menu.starred_folders": "Dossiers favoris",
-  "menu.refresh": "Actualiser"
+  "menu.refresh": "Actualiser",
+  "default_name": "Espace de travail",
+  "session.file_browser_title": "Navigateur de fichiers",
+  "session.shell_title": "Shell {{id}}"
 }

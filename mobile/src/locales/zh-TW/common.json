@@ -57,5 +57,6 @@
   "update.title": "有可用更新",
   "update.body": "新版本已就緒。立即重新啟動以更新，或稍後再套用。",
   "update.restart": "立即重新啟動",
-  "update.later": "稍後"
+  "update.later": "稍後",
+  "boot.error_prefix": "錯誤:"
 }

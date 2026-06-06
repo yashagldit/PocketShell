@@ -153,5 +153,9 @@
   "errors.failed_to_open_file_explorer": "Datei-Explorer konnte nicht geöffnet werden",
   "errors.load_failed": "Hosts konnten nicht geladen werden",
   "errors.delete_failed": "Host konnte nicht gelöscht werden",
-  "errors.load_trusted_devices_failed": "Vertraute Geräte konnten nicht geladen werden"
+  "errors.load_trusted_devices_failed": "Vertraute Geräte konnten nicht geladen werden",
+  "errors.create_pairing_code_failed": "Pairingcode konnte nicht erstellt werden",
+  "errors.refresh_pairing_status_failed": "Pairingstatus konnte nicht aktualisiert werden",
+  "errors.recovery_failed": "Wiederherstellungsvorgang fehlgeschlagen",
+  "security.trusted_device_required": "Zugriff mit vertrautem Gerät erforderlich"
 }

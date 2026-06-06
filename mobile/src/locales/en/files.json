@@ -177,5 +177,18 @@
   "goto.go": "Go",
   "goto.drives": "Drives",
   "goto.suggestions": "Suggestions",
-  "goto.no_suggestions": "No matching folders"
+  "goto.no_suggestions": "No matching folders",
+  "list_footer.loading_more": "Loading more files...",
+  "list_footer.scroll_hint": "More files will load as you scroll",
+  "viewer.pdf_loading": "Loading PDF...",
+  "viewer.pdf_render_failed": "Failed to render PDF:",
+  "viewer.media_unsupported": "Your browser does not support this media format.",
+  "errors.transfer_channel_unavailable": "This operation requires a direct transfer channel which is not available",
+  "errors.operation_timed_out": "File operation timed out",
+  "errors.operation_failed": "File operation failed",
+  "errors.terminal_upload_timed_out": "Terminal file upload timed out",
+  "errors.terminal_channel_closed": "Terminal WebRTC file channel is not open",
+  "errors.terminal_upload_failed": "Terminal file upload failed",
+  "errors.files_channel_closed": "Files WebRTC channel is not open",
+  "errors.signaling_unavailable": "Signaling connection is unavailable"
 }

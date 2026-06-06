@@ -24,5 +24,8 @@
   "menu.remove_starred": "從星標中移除",
   "menu.star_folder": "星標此資料夾",
   "menu.starred_folders": "星標資料夾",
-  "menu.refresh": "重新整理"
+  "menu.refresh": "重新整理",
+  "default_name": "工作區",
+  "session.file_browser_title": "檔案瀏覽器",
+  "session.shell_title": "Shell {{id}}"
 }

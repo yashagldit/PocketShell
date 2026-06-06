@@ -153,5 +153,9 @@
   "errors.load_failed": "載入主機失敗",
   "errors.delete_failed": "刪除主機失敗",
   "errors.load_trusted_devices_failed": "載入受信任的裝置失敗",
-  "errors.update_failed": "請求 host agent 更新失敗"
+  "errors.update_failed": "請求 host agent 更新失敗",
+  "errors.create_pairing_code_failed": "無法建立配對代碼",
+  "errors.refresh_pairing_status_failed": "無法重新整理配對狀態",
+  "errors.recovery_failed": "復原操作失敗",
+  "security.trusted_device_required": "需要受信任的裝置存取"
 }

@@ -153,5 +153,9 @@
   "errors.load_failed": "No se pudieron cargar los hosts",
   "errors.delete_failed": "No se pudo eliminar el host",
   "errors.load_trusted_devices_failed": "No se pudieron cargar los dispositivos de confianza",
-  "errors.update_failed": "No se pudo solicitar la actualización del host"
+  "errors.update_failed": "No se pudo solicitar la actualización del host",
+  "errors.create_pairing_code_failed": "Error al crear código de emparejamiento",
+  "errors.refresh_pairing_status_failed": "Error al actualizar estado de emparejamiento",
+  "errors.recovery_failed": "La acción de recuperación falló",
+  "security.trusted_device_required": "Se requiere acceso de dispositivo de confianza"
 }

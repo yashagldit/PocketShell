@@ -177,5 +177,18 @@
   "goto.go": "Vai",
   "goto.drives": "Unità",
   "goto.suggestions": "Suggerimenti",
-  "goto.no_suggestions": "Nessuna cartella corrispondente"
+  "goto.no_suggestions": "Nessuna cartella corrispondente",
+  "list_footer.loading_more": "Caricamento di altri file...",
+  "list_footer.scroll_hint": "Altri file si caricheranno mentre scorri",
+  "viewer.pdf_loading": "Caricamento PDF...",
+  "viewer.pdf_render_failed": "Impossibile eseguire il rendering del PDF:",
+  "viewer.media_unsupported": "Il tuo browser non supporta questo formato multimediale.",
+  "errors.transfer_channel_unavailable": "Questa operazione richiede un canale di trasferimento diretto che non è disponibile",
+  "errors.operation_timed_out": "Timeout dell'operazione di file",
+  "errors.operation_failed": "Operazione di file non riuscita",
+  "errors.terminal_upload_timed_out": "Timeout del caricamento del file del terminale",
+  "errors.terminal_channel_closed": "Il canale file WebRTC del terminale non è aperto",
+  "errors.terminal_upload_failed": "Caricamento del file del terminale non riuscito",
+  "errors.files_channel_closed": "Il canale WebRTC dei file non è aperto",
+  "errors.signaling_unavailable": "La connessione di segnalazione non è disponibile"
 }

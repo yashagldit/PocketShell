@@ -39,5 +39,13 @@
   "badge.running": "En cours",
   "project.showAll": "En voir {{count}} de plus",
   "project.showLess": "En voir moins",
-  "badge.terminal": ">_"
+  "badge.terminal": ">_",
+  "list.no_project": "aucun projet",
+  "list.untitled": "Chat agent",
+  "list.load_active_failed": "Impossible de charger les sessions actives",
+  "list.list_failed": "Impossible de lister les sessions de codage",
+  "list.timed_out": "{{label}} a expiré après {{ms}}ms",
+  "list.timeout_label.active": "sessions actives",
+  "list.timeout_label.scan": "analyse des sessions de codage",
+  "list.timeout_label.page": "page des sessions de codage"
 }

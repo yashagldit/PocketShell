@@ -24,5 +24,6 @@
   "tab_label_terminal": "Терминал на {{host}}",
   "tab_label_files": "Файлы на {{host}}",
   "on_host": "на {{host}}",
-  "errors.load_failed": "Не удалось загрузить рабочие пространства"
+  "errors.load_failed": "Не удалось загрузить рабочие пространства",
+  "default_name": "Рабочее пространство {{index}}"
 }

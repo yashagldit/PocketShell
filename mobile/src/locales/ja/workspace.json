@@ -24,5 +24,8 @@
   "menu.remove_starred": "お気に入りから削除",
   "menu.star_folder": "このフォルダをお気に入りに追加",
   "menu.starred_folders": "お気に入りフォルダ",
-  "menu.refresh": "更新"
+  "menu.refresh": "更新",
+  "default_name": "ワークスペース",
+  "session.file_browser_title": "ファイルブラウザー",
+  "session.shell_title": "Shell {{id}}"
 }

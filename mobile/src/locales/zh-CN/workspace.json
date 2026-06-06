@@ -24,5 +24,8 @@
   "menu.remove_starred": "从星标中移除",
   "menu.star_folder": "星标此文件夹",
   "menu.starred_folders": "星标文件夹",
-  "menu.refresh": "刷新"
+  "menu.refresh": "刷新",
+  "default_name": "工作区",
+  "session.file_browser_title": "文件浏览器",
+  "session.shell_title": "Shell {{id}}"
 }

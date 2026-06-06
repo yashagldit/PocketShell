@@ -177,5 +177,18 @@
   "goto.go": "Ir",
   "goto.drives": "Unidades",
   "goto.suggestions": "Sugerencias",
-  "goto.no_suggestions": "No hay carpetas coincidentes"
+  "goto.no_suggestions": "No hay carpetas coincidentes",
+  "list_footer.loading_more": "Cargando más archivos...",
+  "list_footer.scroll_hint": "Se cargarán más archivos al desplazarse",
+  "viewer.pdf_loading": "Cargando PDF...",
+  "viewer.pdf_render_failed": "Error al renderizar PDF:",
+  "viewer.media_unsupported": "Su navegador no admite este formato de medios.",
+  "errors.transfer_channel_unavailable": "Esta operación requiere un canal de transferencia directo que no está disponible",
+  "errors.operation_timed_out": "La operación de archivo agotó el tiempo de espera",
+  "errors.operation_failed": "La operación de archivo falló",
+  "errors.terminal_upload_timed_out": "La carga de archivo de terminal agotó el tiempo de espera",
+  "errors.terminal_channel_closed": "El canal de archivo WebRTC de terminal no está abierto",
+  "errors.terminal_upload_failed": "La carga de archivo de terminal falló",
+  "errors.files_channel_closed": "El canal WebRTC de archivos no está abierto",
+  "errors.signaling_unavailable": "La conexión de señalización no está disponible"
 }

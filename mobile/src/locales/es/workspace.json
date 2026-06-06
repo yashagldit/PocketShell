@@ -24,5 +24,8 @@
   "menu.remove_starred": "Quitar de destacados",
   "menu.star_folder": "Destacar esta carpeta",
   "menu.starred_folders": "Carpetas destacadas",
-  "menu.refresh": "Actualizar"
+  "menu.refresh": "Actualizar",
+  "default_name": "Espacio de trabajo",
+  "session.file_browser_title": "Explorador de archivos",
+  "session.shell_title": "Shell {{id}}"
 }

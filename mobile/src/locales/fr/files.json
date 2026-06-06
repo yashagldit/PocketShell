@@ -177,5 +177,18 @@
   "goto.go": "Aller",
   "goto.drives": "Lecteurs",
   "goto.suggestions": "Suggestions",
-  "goto.no_suggestions": "Aucun dossier correspondant"
+  "goto.no_suggestions": "Aucun dossier correspondant",
+  "list_footer.loading_more": "Chargement de plus de fichiers...",
+  "list_footer.scroll_hint": "Plus de fichiers se chargeront au fur et à mesure du défilement",
+  "viewer.pdf_loading": "Chargement du PDF...",
+  "viewer.pdf_render_failed": "Échec du rendu du PDF :",
+  "viewer.media_unsupported": "Votre navigateur ne supporte pas ce format multimédia.",
+  "errors.transfer_channel_unavailable": "Cette opération nécessite un canal de transfert direct qui n'est pas disponible",
+  "errors.operation_timed_out": "L'opération sur fichier a expiré",
+  "errors.operation_failed": "L'opération sur fichier a échoué",
+  "errors.terminal_upload_timed_out": "Le téléchargement du fichier terminal a expiré",
+  "errors.terminal_channel_closed": "Le canal de fichier WebRTC du terminal n'est pas ouvert",
+  "errors.terminal_upload_failed": "Le téléchargement du fichier terminal a échoué",
+  "errors.files_channel_closed": "Le canal WebRTC des fichiers n'est pas ouvert",
+  "errors.signaling_unavailable": "La connexion de signalisation est indisponible"
 }

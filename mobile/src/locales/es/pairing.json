@@ -113,5 +113,6 @@
   "help.camera.body": "Abre los ajustes del dispositivo y permite la cámara para PocketShell, o inicia sesión en otro teléfono o tablet y escanea el QR desde allí.",
   "help.remove.title": "¿Cómo lo elimino?",
   "help.remove.body": "Ejecuta pocketshell uninstall en el host para detener el demonio, eliminar el servicio, borrar el estado local de PocketShell y eliminar el binario del agente.",
-  "help.footnote": "Solo vincula ordenadores que seas tuyo o que estés autorizado a acceder."
+  "help.footnote": "Solo vincula ordenadores que seas tuyo o que estés autorizado a acceder.",
+  "scan_qr.device_not_registered": "Dispositivo móvil no registrado"
 }

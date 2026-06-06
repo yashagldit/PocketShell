@@ -39,5 +39,13 @@
   "badge.running": "Läuft",
   "project.showAll": "{{count}} weitere anzeigen",
   "project.showLess": "Weniger anzeigen",
-  "badge.terminal": ">_"
+  "badge.terminal": ">_",
+  "list.no_project": "kein Projekt",
+  "list.untitled": "Agent-Chat",
+  "list.load_active_failed": "Aktive Sitzungen konnten nicht geladen werden",
+  "list.list_failed": "Coding-Sitzungen konnten nicht aufgelistet werden",
+  "list.timed_out": "{{label}} abgelaufen nach {{ms}}ms",
+  "list.timeout_label.active": "aktive Sitzungen",
+  "list.timeout_label.scan": "Scan von Coding-Sitzungen",
+  "list.timeout_label.page": "Seite von Coding-Sitzungen"
 }

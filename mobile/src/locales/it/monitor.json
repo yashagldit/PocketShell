@@ -234,5 +234,6 @@
   "labels.net_time_wait": "TWAIT",
   "labels.net_close_wait": "CWAIT",
   "labels.net_listen": "LISTEN",
-  "labels.net_total": "TOTAL"
+  "labels.net_total": "TOTAL",
+  "section.fleet": "FLOTTA"
 }

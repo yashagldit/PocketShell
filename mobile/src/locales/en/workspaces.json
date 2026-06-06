@@ -1,4 +1,5 @@
 {
+  "default_name": "Workspace {{index}}",
   "screen.title": "Workspaces",
   "count_one": "{{count}} workspace",
   "count_other": "{{count}} workspaces",

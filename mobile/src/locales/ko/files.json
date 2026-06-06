@@ -177,5 +177,18 @@
   "goto.go": "이동",
   "goto.drives": "드라이브",
   "goto.suggestions": "추천 경로",
-  "goto.no_suggestions": "일치하는 폴더가 없습니다"
+  "goto.no_suggestions": "일치하는 폴더가 없습니다",
+  "list_footer.loading_more": "파일 더 불러오는 중...",
+  "list_footer.scroll_hint": "스크롤하면 더 많은 파일이 로드됩니다",
+  "viewer.pdf_loading": "PDF 로드 중...",
+  "viewer.pdf_render_failed": "PDF 렌더링 실패:",
+  "viewer.media_unsupported": "브라우저에서 이 미디어 형식을 지원하지 않습니다.",
+  "errors.transfer_channel_unavailable": "이 작업을 위해서는 사용할 수 없는 직접 전송 채널이 필요합니다",
+  "errors.operation_timed_out": "파일 작업 시간 초과",
+  "errors.operation_failed": "파일 작업 실패",
+  "errors.terminal_upload_timed_out": "터미널 파일 업로드 시간 초과",
+  "errors.terminal_channel_closed": "터미널 WebRTC 파일 채널이 열려있지 않습니다",
+  "errors.terminal_upload_failed": "터미널 파일 업로드 실패",
+  "errors.files_channel_closed": "파일 WebRTC 채널이 열려있지 않습니다",
+  "errors.signaling_unavailable": "신호 연결을 사용할 수 없습니다"
 }

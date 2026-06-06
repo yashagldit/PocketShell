@@ -39,5 +39,13 @@
   "badge.running": "Running",
   "badge.terminal": ">_",
   "project.showAll": "Show {{count}} more",
-  "project.showLess": "Show less"
+  "project.showLess": "Show less",
+  "list.no_project": "no project",
+  "list.untitled": "Agent chat",
+  "list.load_active_failed": "Failed to load active sessions",
+  "list.list_failed": "Failed to list coding sessions",
+  "list.timed_out": "{{label}} timed out after {{ms}}ms",
+  "list.timeout_label.active": "active sessions",
+  "list.timeout_label.scan": "coding sessions scan",
+  "list.timeout_label.page": "coding sessions page"
 }

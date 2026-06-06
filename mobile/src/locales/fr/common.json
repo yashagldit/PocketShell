@@ -57,5 +57,6 @@
   "update.title": "Mise à jour disponible",
   "update.body": "Une nouvelle version est prête. Redémarrez pour mettre à jour maintenant, ou plus tard.",
   "update.restart": "Redémarrer",
-  "update.later": "Plus tard"
+  "update.later": "Plus tard",
+  "boot.error_prefix": "erreur :"
 }

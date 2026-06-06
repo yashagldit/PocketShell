@@ -177,5 +177,18 @@
   "goto.go": "前往",
   "goto.drives": "磁碟機",
   "goto.suggestions": "建議",
-  "goto.no_suggestions": "無符合的資料夾"
+  "goto.no_suggestions": "無符合的資料夾",
+  "list_footer.loading_more": "正在載入更多檔案...",
+  "list_footer.scroll_hint": "向下捲動可載入更多檔案",
+  "viewer.pdf_loading": "正在載入 PDF...",
+  "viewer.pdf_render_failed": "無法轉譯 PDF:",
+  "viewer.media_unsupported": "您的瀏覽器不支援此媒體格式。",
+  "errors.transfer_channel_unavailable": "此操作需要無法取得的直接傳輸通道",
+  "errors.operation_timed_out": "檔案操作逾時",
+  "errors.operation_failed": "檔案操作失敗",
+  "errors.terminal_upload_timed_out": "終端機檔案上傳逾時",
+  "errors.terminal_channel_closed": "終端機 WebRTC 檔案通道未開啟",
+  "errors.terminal_upload_failed": "終端機檔案上傳失敗",
+  "errors.files_channel_closed": "檔案 WebRTC 通道未開啟",
+  "errors.signaling_unavailable": "信令連線無法使用"
 }

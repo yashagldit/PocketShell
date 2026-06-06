@@ -113,5 +113,6 @@
   "help.camera.body": "請開啟裝置設定並允許 PocketShell 使用相機，或在另一支手機或平板上登入，從那裡掃描 QR 碼。",
   "help.remove.title": "如何移除代理程式？",
   "help.remove.body": "在主機上執行 pocketshell uninstall，即可停止常駐程式、移除服務、清除本地 PocketShell 狀態並刪除代理程式執行檔。",
-  "help.footnote": "請僅配對您擁有或被授權存取的電腦。"
+  "help.footnote": "請僅配對您擁有或被授權存取的電腦。",
+  "scan_qr.device_not_registered": "行動裝置未註冊"
 }

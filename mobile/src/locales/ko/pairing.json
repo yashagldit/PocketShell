@@ -113,5 +113,6 @@
   "help.camera.body": "기기 설정을 열고 PocketShell의 카메라 권한을 허용하거나, 다른 휴대폰이나 태블릿에 로그인해서 그곳에서 QR을 스캔하세요.",
   "help.remove.title": "어떻게 제거하나요?",
   "help.remove.body": "호스트에서 pocketshell uninstall을 실행하면 데몬을 중지하고, 서비스를 제거하며, 로컬 PocketShell 상태를 초기화하고, 에이전트 바이너리를 삭제합니다.",
-  "help.footnote": "본인이 소유하거나 접근 권한이 있는 컴퓨터만 페어링하세요."
+  "help.footnote": "본인이 소유하거나 접근 권한이 있는 컴퓨터만 페어링하세요.",
+  "scan_qr.device_not_registered": "모바일 기기 미등록"
 }

@@ -39,5 +39,13 @@
   "badge.running": "Em execução",
   "project.showAll": "Ver mais {{count}}",
   "project.showLess": "Ver menos",
-  "badge.terminal": ">_"
+  "badge.terminal": ">_",
+  "list.no_project": "sem projeto",
+  "list.untitled": "Chat do agente",
+  "list.load_active_failed": "Falha ao carregar sessões ativas",
+  "list.list_failed": "Falha ao listar sessões de codificação",
+  "list.timed_out": "{{label}} expirou após {{ms}}ms",
+  "list.timeout_label.active": "sessões ativas",
+  "list.timeout_label.scan": "varredura de sessões de codificação",
+  "list.timeout_label.page": "página de sessões de codificação"
 }

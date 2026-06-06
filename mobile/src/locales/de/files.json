@@ -177,5 +177,18 @@
   "goto.go": "Los",
   "goto.drives": "Laufwerke",
   "goto.suggestions": "Vorschläge",
-  "goto.no_suggestions": "Keine passenden Ordner"
+  "goto.no_suggestions": "Keine passenden Ordner",
+  "list_footer.loading_more": "Weitere Dateien werden geladen...",
+  "list_footer.scroll_hint": "Weitere Dateien werden beim Scrollen geladen",
+  "viewer.pdf_loading": "PDF wird geladen...",
+  "viewer.pdf_render_failed": "PDF konnte nicht gerendert werden:",
+  "viewer.media_unsupported": "Ihr Browser unterstützt dieses Medienformat nicht.",
+  "errors.transfer_channel_unavailable": "Dieser Vorgang erfordert einen direkten Übertragungskanal, der nicht verfügbar ist",
+  "errors.operation_timed_out": "Dateivorgang abgelaufen",
+  "errors.operation_failed": "Dateivorgang fehlgeschlagen",
+  "errors.terminal_upload_timed_out": "Terminal-Datei-Upload abgelaufen",
+  "errors.terminal_channel_closed": "Terminal WebRTC-Dateikanal ist nicht geöffnet",
+  "errors.terminal_upload_failed": "Terminal-Datei-Upload fehlgeschlagen",
+  "errors.files_channel_closed": "WebRTC-Dateikanal ist nicht geöffnet",
+  "errors.signaling_unavailable": "Signalisierungsverbindung ist nicht verfügbar"
 }

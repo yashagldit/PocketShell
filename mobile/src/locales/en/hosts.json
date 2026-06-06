@@ -153,5 +153,9 @@
   "errors.update_failed": "Failed to request host update",
   "errors.load_failed": "Failed to load hosts",
   "errors.delete_failed": "Failed to delete host",
-  "errors.load_trusted_devices_failed": "Failed to load trusted devices"
+  "errors.load_trusted_devices_failed": "Failed to load trusted devices",
+  "errors.create_pairing_code_failed": "Failed to create pairing code",
+  "errors.refresh_pairing_status_failed": "Failed to refresh pairing status",
+  "errors.recovery_failed": "Recovery action failed",
+  "security.trusted_device_required": "Trusted device access required"
 }

@@ -39,5 +39,13 @@
   "badge.running": "Выполняется",
   "project.showAll": "Показать еще {{count}}",
   "project.showLess": "Скрыть",
-  "badge.terminal": ">_"
+  "badge.terminal": ">_",
+  "list.no_project": "нет проекта",
+  "list.untitled": "Чат с агентом",
+  "list.load_active_failed": "Не удалось загрузить активные сеансы",
+  "list.list_failed": "Не удалось загрузить список сеансов кодирования",
+  "list.timed_out": "{{label}} истёк тайм-аут через {{ms}}ms",
+  "list.timeout_label.active": "активные сеансы",
+  "list.timeout_label.scan": "сканирование сеансов кодирования",
+  "list.timeout_label.page": "страница сеансов кодирования"
 }

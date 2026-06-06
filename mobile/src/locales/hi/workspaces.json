@@ -24,5 +24,6 @@
   "tab_label_terminal": "{{host}} पर टर्मिनल",
   "tab_label_files": "{{host}} पर फ़ाइलें",
   "on_host": "{{host}} पर",
-  "errors.load_failed": "कार्यक्षेत्र लोड करने में विफल"
+  "errors.load_failed": "कार्यक्षेत्र लोड करने में विफल",
+  "default_name": "वर्कस्पेस {{index}}"
 }

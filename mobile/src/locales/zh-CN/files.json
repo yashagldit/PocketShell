@@ -177,5 +177,18 @@
   "goto.go": "跳转",
   "goto.drives": "驱动器",
   "goto.suggestions": "建议",
-  "goto.no_suggestions": "无匹配文件夹"
+  "goto.no_suggestions": "无匹配文件夹",
+  "list_footer.loading_more": "加载更多文件...",
+  "list_footer.scroll_hint": "滚动时将加载更多文件",
+  "viewer.pdf_loading": "加载 PDF...",
+  "viewer.pdf_render_failed": "无法渲染 PDF:",
+  "viewer.media_unsupported": "您的浏览器不支持此媒体格式。",
+  "errors.transfer_channel_unavailable": "此操作需要直接传输通道，但该通道不可用",
+  "errors.operation_timed_out": "文件操作超时",
+  "errors.operation_failed": "文件操作失败",
+  "errors.terminal_upload_timed_out": "终端文件上传超时",
+  "errors.terminal_channel_closed": "终端 WebRTC 文件通道未打开",
+  "errors.terminal_upload_failed": "终端文件上传失败",
+  "errors.files_channel_closed": "文件 WebRTC 通道未打开",
+  "errors.signaling_unavailable": "信令连接不可用"
 }

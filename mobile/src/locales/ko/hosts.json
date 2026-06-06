@@ -153,5 +153,9 @@
   "errors.load_failed": "호스트를 불러오지 못했습니다",
   "errors.delete_failed": "호스트를 삭제하지 못했습니다",
   "errors.load_trusted_devices_failed": "신뢰할 수 있는 기기를 불러오지 못했습니다",
-  "errors.update_failed": "호스트 업데이트 요청에 실패했습니다"
+  "errors.update_failed": "호스트 업데이트 요청에 실패했습니다",
+  "errors.create_pairing_code_failed": "페어링 코드 생성 실패",
+  "errors.refresh_pairing_status_failed": "페어링 상태 새로고침 실패",
+  "errors.recovery_failed": "복구 작업 실패",
+  "security.trusted_device_required": "신뢰할 수 있는 기기 액세스 필요"
 }

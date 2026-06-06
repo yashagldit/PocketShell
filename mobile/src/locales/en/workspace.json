@@ -1,4 +1,7 @@
 {
+  "default_name": "Workspace",
+  "session.file_browser_title": "File Browser",
+  "session.shell_title": "Shell {{id}}",
   "no_open_tabs": "No open tabs",
   "add_tab_hint": "Tap + to open a terminal or file browser",
   "title.terminal": "Terminal",

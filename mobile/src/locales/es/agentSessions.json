@@ -39,5 +39,13 @@
   "badge.running": "En ejecución",
   "project.showAll": "Ver {{count}} más",
   "project.showLess": "Ver menos",
-  "badge.terminal": ">_"
+  "badge.terminal": ">_",
+  "list.no_project": "sin proyecto",
+  "list.untitled": "Chat del agente",
+  "list.load_active_failed": "Error al cargar sesiones activas",
+  "list.list_failed": "Error al listar sesiones de codificación",
+  "list.timed_out": "{{label}} agotó el tiempo de espera después de {{ms}}ms",
+  "list.timeout_label.active": "sesiones activas",
+  "list.timeout_label.scan": "escaneo de sesiones de codificación",
+  "list.timeout_label.page": "página de sesiones de codificación"
 }

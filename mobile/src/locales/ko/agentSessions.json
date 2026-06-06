@@ -39,5 +39,13 @@
   "badge.running": "실행 중",
   "project.showAll": "{{count}}개 더 보기",
   "project.showLess": "접기",
-  "badge.terminal": ">_"
+  "badge.terminal": ">_",
+  "list.no_project": "프로젝트 없음",
+  "list.untitled": "에이전트 채팅",
+  "list.load_active_failed": "활성 세션을 로드할 수 없습니다",
+  "list.list_failed": "코딩 세션을 나열할 수 없습니다",
+  "list.timed_out": "{{label}}이(가) {{ms}}ms 후 시간 초과됨",
+  "list.timeout_label.active": "활성 세션",
+  "list.timeout_label.scan": "코딩 세션 스캔",
+  "list.timeout_label.page": "코딩 세션 페이지"
 }

@@ -153,5 +153,9 @@
   "errors.load_failed": "होस्ट लोड करने में विफल",
   "errors.delete_failed": "होस्ट हटाने में विफल",
   "errors.load_trusted_devices_failed": "विश्वसनीय डिवाइस लोड करने में विफल",
-  "errors.update_failed": "Host agent अपडेट का अनुरोध करने में विफल"
+  "errors.update_failed": "Host agent अपडेट का अनुरोध करने में विफल",
+  "errors.create_pairing_code_failed": "पेयरिंग कोड बनाने में विफल",
+  "errors.refresh_pairing_status_failed": "पेयरिंग स्टेटस रीफ्रेश करने में विफल",
+  "errors.recovery_failed": "रिकवरी कार्रवाई विफल",
+  "security.trusted_device_required": "विश्वसनीय डिवाइस एक्सेस आवश्यक है"
 }

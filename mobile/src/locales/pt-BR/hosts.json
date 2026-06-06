@@ -153,5 +153,9 @@
   "errors.load_failed": "Falha ao carregar hosts",
   "errors.delete_failed": "Falha ao excluir host",
   "errors.load_trusted_devices_failed": "Falha ao carregar dispositivos confiáveis",
-  "errors.update_failed": "Falha ao solicitar atualização do host"
+  "errors.update_failed": "Falha ao solicitar atualização do host",
+  "errors.create_pairing_code_failed": "Falha ao criar código de emparelhamento",
+  "errors.refresh_pairing_status_failed": "Falha ao atualizar status de emparelhamento",
+  "errors.recovery_failed": "Ação de recuperação falhou",
+  "security.trusted_device_required": "Acesso de dispositivo confiável necessário"
 }

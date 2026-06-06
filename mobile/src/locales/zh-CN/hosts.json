@@ -153,5 +153,9 @@
   "errors.load_failed": "加载主机失败",
   "errors.delete_failed": "删除主机失败",
   "errors.load_trusted_devices_failed": "加载受信任设备失败",
-  "errors.update_failed": "请求 host agent 更新失败"
+  "errors.update_failed": "请求 host agent 更新失败",
+  "errors.create_pairing_code_failed": "创建配对码失败",
+  "errors.refresh_pairing_status_failed": "刷新配对状态失败",
+  "errors.recovery_failed": "恢复操作失败",
+  "security.trusted_device_required": "需要可信设备访问"
 }

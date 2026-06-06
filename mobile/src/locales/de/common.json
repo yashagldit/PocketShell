@@ -57,5 +57,6 @@
   "update.title": "Update verfügbar",
   "update.body": "Eine neue Version ist bereit. Jetzt neu starten zum Aktualisieren, oder später anwenden.",
   "update.restart": "Jetzt neu starten",
-  "update.later": "Später"
+  "update.later": "Später",
+  "boot.error_prefix": "fehler:"
 }

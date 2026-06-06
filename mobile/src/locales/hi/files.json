@@ -177,5 +177,18 @@
   "goto.go": "जाएँ",
   "goto.drives": "ड्राइव",
   "goto.suggestions": "सुझाव",
-  "goto.no_suggestions": "कोई मेल खाता फ़ोल्डर नहीं"
+  "goto.no_suggestions": "कोई मेल खाता फ़ोल्डर नहीं",
+  "list_footer.loading_more": "अधिक फाइलें लोड हो रहीं...",
+  "list_footer.scroll_hint": "जैसे-जैसे आप स्क्रॉल करेंगे अधिक फाइलें लोड होंगी",
+  "viewer.pdf_loading": "PDF लोड हो रहा है...",
+  "viewer.pdf_render_failed": "PDF रेंडर करने में विफल:",
+  "viewer.media_unsupported": "आपका ब्राउज़र इस मीडिया प्रारूप को समर्थन नहीं करता।",
+  "errors.transfer_channel_unavailable": "इस ऑपरेशन के लिए एक सीधे स्थानांतरण चैनल की आवश्यकता है जो उपलब्ध नहीं है",
+  "errors.operation_timed_out": "फाइल ऑपरेशन समय समाप्त हो गया",
+  "errors.operation_failed": "फाइल ऑपरेशन विफल",
+  "errors.terminal_upload_timed_out": "Terminal फाइल अपलोड समय समाप्त हो गया",
+  "errors.terminal_channel_closed": "Terminal WebRTC फाइल चैनल खुला नहीं है",
+  "errors.terminal_upload_failed": "Terminal फाइल अपलोड विफल",
+  "errors.files_channel_closed": "Files WebRTC चैनल खुला नहीं है",
+  "errors.signaling_unavailable": "सिग्नलिंग कनेक्शन उपलब्ध नहीं है"
 }

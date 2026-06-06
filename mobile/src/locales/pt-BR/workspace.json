@@ -24,5 +24,8 @@
   "menu.remove_starred": "Remover dos favoritos",
   "menu.star_folder": "Favoritar esta pasta",
   "menu.starred_folders": "Pastas favoritas",
-  "menu.refresh": "Atualizar"
+  "menu.refresh": "Atualizar",
+  "default_name": "Workspace",
+  "session.file_browser_title": "Navegador de Arquivos",
+  "session.shell_title": "Shell {{id}}"
 }

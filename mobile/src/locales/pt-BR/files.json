@@ -177,5 +177,18 @@
   "goto.go": "Ir",
   "goto.drives": "Unidades",
   "goto.suggestions": "Sugestões",
-  "goto.no_suggestions": "Nenhuma pasta correspondente"
+  "goto.no_suggestions": "Nenhuma pasta correspondente",
+  "list_footer.loading_more": "Carregando mais arquivos...",
+  "list_footer.scroll_hint": "Mais arquivos serão carregados conforme você rola",
+  "viewer.pdf_loading": "Carregando PDF...",
+  "viewer.pdf_render_failed": "Falha ao renderizar PDF:",
+  "viewer.media_unsupported": "Seu navegador não suporta este formato de mídia.",
+  "errors.transfer_channel_unavailable": "Esta operação requer um canal de transferência direto que não está disponível",
+  "errors.operation_timed_out": "Operação de arquivo expirou",
+  "errors.operation_failed": "Operação de arquivo falhou",
+  "errors.terminal_upload_timed_out": "Upload de arquivo do terminal expirou",
+  "errors.terminal_channel_closed": "Canal de arquivo WebRTC do terminal não está aberto",
+  "errors.terminal_upload_failed": "Upload de arquivo do terminal falhou",
+  "errors.files_channel_closed": "Canal WebRTC de arquivos não está aberto",
+  "errors.signaling_unavailable": "Conexão de sinalização indisponível"
 }

@@ -24,5 +24,8 @@
   "menu.remove_starred": "즐겨찾기에서 제거",
   "menu.star_folder": "이 폴더 즐겨찾기에 추가",
   "menu.starred_folders": "즐겨찾는 폴더",
-  "menu.refresh": "새로고침"
+  "menu.refresh": "새로고침",
+  "default_name": "작업 공간",
+  "session.file_browser_title": "파일 브라우저",
+  "session.shell_title": "셸 {{id}}"
 }

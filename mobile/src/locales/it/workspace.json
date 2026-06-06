@@ -24,5 +24,8 @@
   "menu.remove_starred": "Rimuovi dai preferiti",
   "menu.star_folder": "Aggiungi cartella ai preferiti",
   "menu.starred_folders": "Cartelle preferite",
-  "menu.refresh": "Aggiorna"
+  "menu.refresh": "Aggiorna",
+  "default_name": "Spazio di lavoro",
+  "session.file_browser_title": "Browser file",
+  "session.shell_title": "Shell {{id}}"
 }
