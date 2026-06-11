@@ -112,7 +112,7 @@
   "pro_gate.alerts.title": "更多警报",
   "pro_gate.alerts.message": "免费账户最多可有 {{count}} 个活动警报。升级到 PocketShell Pro 享受无限警报。",
   "pro_gate.chat_history.title": "完整聊天历史",
-  "pro_gate.chat_history.message": "免费账户可访问最近 {{count}} 个聊天会话。升级到 PocketShell Pro 查看所有会话。",
+  "pro_gate.chat_history.message": "免费账户可访问最近 {{days}} 天的聊天会话。升级到 PocketShell Pro 即可查看全部历史记录。",
   "pro_gate.host_limit.title": "已达到主机限制",
   "pro_gate.host_limit.message": "Pro 账户最多可配对 {{proCount}} 个主机。移除现有主机以配对新主机,如需更多请联系支持。",
   "pro_gate.generic.title": "已达到限制",

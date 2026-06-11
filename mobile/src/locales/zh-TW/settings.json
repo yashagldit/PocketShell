@@ -112,7 +112,7 @@
   "pro_gate.alerts.title": "更多警示",
   "pro_gate.alerts.message": "免費帳戶最多可有 {{count}} 個有效警示。升級到 PocketShell Pro 享受無限警示。",
   "pro_gate.chat_history.title": "完整聊天歷史",
-  "pro_gate.chat_history.message": "免費帳戶可存取最近 {{count}} 個聊天工作階段。升級到 PocketShell Pro 查看所有工作階段。",
+  "pro_gate.chat_history.message": "免費帳戶可存取最近 {{days}} 天的聊天工作階段。升級至 PocketShell Pro 即可檢視完整歷史記錄。",
   "pro_gate.host_limit.title": "已達主機上限",
   "pro_gate.host_limit.message": "Pro 帳戶最多可配對 {{proCount}} 個主機。移除現有主機以配對新主機,如需更多請聯絡支援。",
   "pro_gate.generic.title": "已達上限",

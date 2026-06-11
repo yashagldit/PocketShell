@@ -112,7 +112,7 @@
   "pro_gate.alerts.title": "Mais alertas",
   "pro_gate.alerts.message": "Contas gratuitas podem ter até {{count}} alertas ativos. Atualize para o PocketShell Pro para alertas ilimitados.",
   "pro_gate.chat_history.title": "Histórico de chat completo",
-  "pro_gate.chat_history.message": "Contas gratuitas podem acessar as {{count}} sessões de chat mais recentes. Atualize para o PocketShell Pro para ver todas as sessões.",
+  "pro_gate.chat_history.message": "Contas gratuitas podem acessar sessões de chat dos últimos {{days}} dias. Faça upgrade para o PocketShell Pro para ver todo o histórico.",
   "pro_gate.host_limit.title": "Limite de hosts atingido",
   "pro_gate.host_limit.message": "Contas Pro podem parear até {{proCount}} hosts. Remova um host existente para parear um novo, ou contate o suporte se precisar de mais.",
   "pro_gate.generic.title": "Limite atingido",
