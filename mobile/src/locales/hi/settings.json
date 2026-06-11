@@ -112,7 +112,7 @@
   "pro_gate.alerts.title": "अधिक अलर्ट",
   "pro_gate.alerts.message": "मुफ्त खातों में {{count}} सक्रिय अलर्ट तक हो सकते हैं। असीमित अलर्ट के लिए PocketShell Pro में अपग्रेड करें।",
   "pro_gate.chat_history.title": "पूर्ण चैट इतिहास",
-  "pro_gate.chat_history.message": "मुफ्त खाते सबसे हाल के {{count}} चैट सत्रों तक पहुँच सकते हैं। सभी सत्र देखने के लिए PocketShell Pro में अपग्रेड करें।",
+  "pro_gate.chat_history.message": "मुफ़्त खाते पिछले {{days}} दिनों के चैट सत्र देख सकते हैं। पूरा इतिहास देखने के लिए PocketShell Pro में अपग्रेड करें।",
   "pro_gate.host_limit.title": "होस्ट सीमा पहुँच गई",
   "pro_gate.host_limit.message": "Pro खाते {{proCount}} होस्ट तक जोड़ सकते हैं। नया जोड़ने के लिए मौजूदा होस्ट हटाएँ, या अधिक चाहिए तो समर्थन से संपर्क करें।",
   "pro_gate.generic.title": "सीमा पहुँच गई",

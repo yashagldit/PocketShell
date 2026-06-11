@@ -90,6 +90,50 @@ fn unknown_flag_exits_non_zero() {
 }
 
 #[test]
+fn remote_terminal_env_blocks_cli_subcommands() {
+    let tmp = TempDir::new().unwrap();
+    cmd(&tmp)
+        .env("POCKETSHELL_REMOTE_TERMINAL", "1")
+        .arg("status")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "running the pocketshell CLI/TUI from a PocketShell mobile terminal is blocked",
+        ));
+}
+
+#[test]
+fn remote_terminal_env_blocks_tui_interactive_menu() {
+    let tmp = TempDir::new().unwrap();
+    cmd(&tmp)
+        .env("POCKETSHELL_REMOTE_TERMINAL", "1")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "running the pocketshell CLI/TUI from a PocketShell mobile terminal is blocked",
+        ));
+}
+
+#[test]
+fn remote_terminal_env_allows_update_command() {
+    let tmp = TempDir::new().unwrap();
+    cmd(&tmp)
+        .env("POCKETSHELL_REMOTE_TERMINAL", "1")
+        .args([
+            "update",
+            "--check",
+            "--version",
+            "0.0.0",
+            "--base-url",
+            "https://example.invalid/pocketshell-test",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("checking for updates"))
+        .stdout(predicate::str::contains("update available"));
+}
+
+#[test]
 fn pair_help_succeeds() {
     let tmp = TempDir::new().unwrap();
     cmd(&tmp)

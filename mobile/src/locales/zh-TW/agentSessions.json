@@ -39,5 +39,13 @@
   "badge.running": "執行中",
   "project.showAll": "顯示更多 ({{count}})",
   "project.showLess": "顯示更少",
-  "badge.terminal": ">_"
+  "badge.terminal": ">_",
+  "list.no_project": "無專案",
+  "list.untitled": "助手聊天",
+  "list.load_active_failed": "無法載入作用中的工作階段",
+  "list.list_failed": "無法列出程式碼工作階段",
+  "list.timed_out": "{{label}} 於 {{ms}}ms 後逾時",
+  "list.timeout_label.active": "作用中的工作階段",
+  "list.timeout_label.scan": "程式碼工作階段掃描",
+  "list.timeout_label.page": "程式碼工作階段頁面"
 }

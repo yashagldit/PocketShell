@@ -1,0 +1,68 @@
+{
+  "badge.demo": "DEMO",
+  "status.online": "在线",
+
+  "cta.title": "感觉不错？",
+  "cta.subtitle": "配对您自己的主机，真实体验全部功能。",
+  "cta.pair": "配对您自己的主机",
+
+  "hero.subtitle": "试试终端、文件和实时监控——无需任何配置。",
+  "hero.explore": "探索演示",
+  "mini.cpu": "cpu",
+  "mini.ram": "ram",
+
+  "row.title": "探索演示",
+  "row.subtitle": "终端 · 文件 · 监控——全部模拟",
+  "row.dismiss": "关闭",
+
+  "hub.note": "此处所有内容均为模拟，运行在您的设备上。不会连接到任何真实机器。",
+  "hub.terminal.title": "终端",
+  "hub.terminal.desc": "在加密 Shell 中运行命令",
+  "hub.monitor.title": "监控",
+  "hub.monitor.desc": "实时 CPU、内存、磁盘和网络",
+  "hub.files.title": "文件",
+  "hub.files.desc": "浏览、查看和传输文件",
+  "hub.workspace.title": "工作区",
+  "hub.workspace.desc": "终端与文件并排显示",
+
+  "terminal.hint": "点击命令试试，或自己输入：",
+  "terminal.host_only": "配对您自己的主机后方可使用。",
+
+  "monitor.cpu": "CPU",
+  "monitor.ram": "内存",
+  "monitor.disk": "磁盘",
+  "monitor.load": "平均负载",
+  "monitor.recv": "下载",
+  "monitor.send": "上传",
+  "monitor.cores": "每核心使用率",
+  "monitor.core": "核心",
+  "monitor.note": "模拟实时指标——配对主机后可查看真实数据。",
+
+  "metric.cpu": "CPU",
+  "metric.memory": "内存",
+  "metric.disk": "磁盘",
+  "metric.network": "网络",
+  "metric.avg": "平均",
+  "metric.peak": "峰值",
+  "metric.min": "最小",
+  "metric.down": "下载",
+  "metric.up": "上传",
+  "metric.breakdown": "详细分布",
+  "metric.subtitle": "{{host}} · 最近 {{range}} · {{count}} 个数据点",
+
+  "files.transfer_blocked": "配对您自己的主机以进行真实文件传输。",
+  "files.back": "文件",
+  "files.upload": "上传",
+  "files.download": "下载",
+  "files.empty": "空目录",
+
+  "workspace.terminal_tab": "终端",
+  "workspace.files_tab": "文件",
+
+  "nav.host": "Demo",
+  "nav.terminal": "Demo 终端",
+  "nav.monitor": "Demo 监控",
+  "nav.metric": "统计",
+  "nav.files": "Demo 文件",
+  "nav.workspace": "Demo 工作区"
+}

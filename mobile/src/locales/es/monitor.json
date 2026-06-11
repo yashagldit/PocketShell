@@ -132,7 +132,7 @@
   "alerts.cooldown_minutes": "Espera (minutos)",
   "alerts.save_rule": "Guardar regla",
   "alerts.add_rule": "Añadir regla",
-  "alerts.actual": "Actual:",
+  "alerts.actual": "Real:",
   "alerts.threshold_prefix": "Umbral:",
   "alerts.acknowledged": "confirmada",
   "alerts.tap_to_acknowledge": "Toca para confirmar",
@@ -234,5 +234,6 @@
   "labels.net_time_wait": "TWAIT",
   "labels.net_close_wait": "CWAIT",
   "labels.net_listen": "LISTEN",
-  "labels.net_total": "TOTAL"
+  "labels.net_total": "TOTAL",
+  "section.fleet": "FLOTA"
 }

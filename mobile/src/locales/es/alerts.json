@@ -34,7 +34,7 @@
   "history.empty": "Aún no hay alertas",
   "history.emptySub": "Las alertas activadas aparecerán aquí.",
   "history.acknowledge": "Toca para confirmar",
-  "history.actual": "Actual:",
+  "history.actual": "Real:",
   "history.threshold": "Umbral:",
   "badge.acknowledged": "confirmada",
   "permission.title": "Notificaciones desactivadas",

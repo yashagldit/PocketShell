@@ -39,5 +39,13 @@
   "badge.running": "In esecuzione",
   "project.showAll": "Vedi altri {{count}}",
   "project.showLess": "Vedi meno",
-  "badge.terminal": ">_"
+  "badge.terminal": ">_",
+  "list.no_project": "nessun progetto",
+  "list.untitled": "Chat agente",
+  "list.load_active_failed": "Impossibile caricare le sessioni attive",
+  "list.list_failed": "Impossibile elencare le sessioni di codifica",
+  "list.timed_out": "{{label}} timeout dopo {{ms}}ms",
+  "list.timeout_label.active": "sessioni attive",
+  "list.timeout_label.scan": "scansione sessioni di codifica",
+  "list.timeout_label.page": "pagina sessioni di codifica"
 }

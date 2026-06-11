@@ -326,19 +326,19 @@ impl StateStore {
         });
     }
 
-    /// Remove stale sessions from local state.
+    /// Remove stale terminal-state records from local state.
     ///
-    /// Returns `(native_detached_to_close, all_expired_session_ids)`:
-    /// - `native_detached_to_close`: persistent native sessions whose PTY should be killed
-    /// - `all_expired_session_ids`: all expired detached sessions that should be ended on the backend
+    /// Detached sessions are intentionally kept indefinitely: they represent
+    /// user-resumable work and must only be ended by an explicit close/kill
+    /// command (or host-wide close-all/restart).
     pub fn clear_ended_sessions(
         &mut self,
         stale_after_secs: i64,
-        detach_max_secs: i64,
+        _detach_max_secs: i64,
     ) -> (Vec<String>, Vec<String>) {
         let now = Utc::now();
-        let mut native_detached_to_close = Vec::new();
-        let mut all_expired = Vec::new();
+        let native_detached_to_close = Vec::new();
+        let all_expired = Vec::new();
         self.state.sessions.retain(|s| {
             let age = (now - s.updated_at).num_seconds();
             // Clear ended/failed sessions after stale threshold
@@ -348,18 +348,6 @@ impl StateStore {
                     crate::models::SessionState::Ended | crate::models::SessionState::Failed
                 )
             {
-                return false;
-            }
-            // Clear detached sessions older than max detach time.
-            if age > detach_max_secs && matches!(s.state, crate::models::SessionState::Detached) {
-                all_expired.push(s.session_id.clone());
-                if let Some(ref tmux_name) = s.tmux_session_name {
-                    let _ = std::process::Command::new("tmux")
-                        .args(["kill-session", "-t", tmux_name])
-                        .status();
-                } else if s.persistent {
-                    native_detached_to_close.push(s.session_id.clone());
-                }
                 return false;
             }
             true
@@ -978,23 +966,21 @@ mod tests {
     }
 
     #[test]
-    fn clear_ended_sessions_expires_old_detached_non_persistent() {
+    fn clear_ended_sessions_keeps_old_detached_non_persistent() {
         let mut store = make_store(PathBuf::from("/tmp/unused"));
         let mut s = session_record("det", SessionState::Detached, 500);
         s.persistent = false;
         store.upsert_session(s);
 
         let (native, expired) = store.clear_ended_sessions(300, 100);
-        assert!(
-            native.is_empty(),
-            "non-persistent should not request PTY kill"
-        );
-        assert_eq!(expired, vec!["det".to_string()]);
-        assert!(store.state.sessions.is_empty());
+        assert!(native.is_empty());
+        assert!(expired.is_empty());
+        assert_eq!(store.state.sessions.len(), 1);
+        assert_eq!(store.state.sessions[0].session_id, "det");
     }
 
     #[test]
-    fn clear_ended_sessions_expires_old_detached_persistent_native() {
+    fn clear_ended_sessions_keeps_old_detached_persistent_native() {
         let mut store = make_store(PathBuf::from("/tmp/unused"));
         let mut s = session_record("det", SessionState::Detached, 500);
         s.persistent = true;
@@ -1002,8 +988,10 @@ mod tests {
         store.upsert_session(s);
 
         let (native, expired) = store.clear_ended_sessions(300, 100);
-        assert_eq!(native, vec!["det".to_string()]);
-        assert_eq!(expired, vec!["det".to_string()]);
+        assert!(native.is_empty());
+        assert!(expired.is_empty());
+        assert_eq!(store.state.sessions.len(), 1);
+        assert_eq!(store.state.sessions[0].session_id, "det");
     }
 
     #[test]

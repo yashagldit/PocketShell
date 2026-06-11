@@ -8,7 +8,7 @@
   "tab.live": "Живой",
   "tab.history": "История",
   "tab.advanced": "Дополнительно",
-  "badge.p2p_live": "P2P Живой",
+  "badge.p2p_live": "P2P Live",
   "badge.connecting": "Подключение...",
   "badge.fallback": "Резерв",
   "badge.polling": "Опрос",
@@ -234,5 +234,6 @@
   "labels.net_time_wait": "TWAIT",
   "labels.net_close_wait": "CWAIT",
   "labels.net_listen": "LISTEN",
-  "labels.net_total": "ВСЕГО"
+  "labels.net_total": "ВСЕГО",
+  "section.fleet": "ФЛОТ"
 }

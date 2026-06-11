@@ -53,5 +53,10 @@
   "splash.stage.session_ready": "сессия готова — запуск",
   "splash.stage.no_session": "нет сохраненной сессии",
   "actions.close": "Закрыть",
-  "actions.retry": "Повторить"
+  "actions.retry": "Повторить",
+  "update.title": "Доступно обновление",
+  "update.body": "Новая версия готова. Перезапустите, чтобы обновить сейчас, или примените позже.",
+  "update.restart": "Перезапустить",
+  "update.later": "Позже",
+  "boot.error_prefix": "ошибка:"
 }

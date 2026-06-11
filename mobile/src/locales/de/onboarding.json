@@ -73,5 +73,14 @@
   "preview.metric_cpu": "CPU",
   "preview.metric_mem": "MEM",
   "preview.metric_disk": "DISK",
-  "preview.metric_net": "NET"
+  "preview.metric_net": "NET",
+  "fork.title": "Du bist dabei",
+  "fork.subtitle": "Wähle, wie du starten möchtest – das andere kannst du später jederzeit machen.",
+  "fork.demo.title": "Demo-Host ausprobieren",
+  "fork.demo.body": "Erkunde eine simulierte Maschine – echtes Terminal, Dateien und Live-Metriken. Keine Einrichtung, sofort auf deinem Handy.",
+  "fork.demo.cta": "Demo erkunden",
+  "fork.demo.badge": "Empfohlen",
+  "fork.pair.title": "Echten Host koppeln",
+  "fork.pair.body": "Verbinde deine eigene Maschine. Du brauchst einen Computer mit Terminal – dauert etwa eine Minute.",
+  "fork.pair.cta": "Host koppeln"
 }

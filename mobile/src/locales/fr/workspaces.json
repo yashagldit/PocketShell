@@ -24,5 +24,6 @@
   "tab_label_terminal": "Terminal sur {{host}}",
   "tab_label_files": "Fichiers sur {{host}}",
   "on_host": "sur {{host}}",
-  "errors.load_failed": "Échec du chargement des espaces de travail"
+  "errors.load_failed": "Échec du chargement des espaces de travail",
+  "default_name": "Espace de travail {{index}}"
 }

@@ -53,5 +53,10 @@
   "splash.stage.session_ready": "sessão pronta — iniciando",
   "splash.stage.no_session": "nenhuma sessão salva",
   "actions.close": "Fechar",
-  "actions.retry": "Tentar novamente"
+  "actions.retry": "Tentar novamente",
+  "update.title": "Atualização disponível",
+  "update.body": "Uma nova versão está pronta. Reinicie para atualizar agora ou será aplicada mais tarde.",
+  "update.restart": "Reiniciar agora",
+  "update.later": "Mais tarde",
+  "boot.error_prefix": "erro:"
 }

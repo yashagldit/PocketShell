@@ -73,5 +73,14 @@
   "preview.metric_cpu": "CPU",
   "preview.metric_mem": "MEM",
   "preview.metric_disk": "DISK",
-  "preview.metric_net": "NET"
+  "preview.metric_net": "NET",
+  "fork.title": "आप तैयार हैं",
+  "fork.subtitle": "चुनें कि आप कैसे शुरू करना चाहते हैं — दूसरा विकल्प आप बाद में कभी भी कर सकते हैं।",
+  "fork.demo.title": "डेमो होस्ट आज़माएँ",
+  "fork.demo.body": "एक सिम्युलेटेड मशीन देखें — असली टर्मिनल, फ़ाइलें और लाइव मेट्रिक्स। कोई सेटअप नहीं, अभी अपने फ़ोन पर।",
+  "fork.demo.cta": "डेमो देखें",
+  "fork.demo.badge": "अनुशंसित",
+  "fork.pair.title": "असली होस्ट पेयर करें",
+  "fork.pair.body": "अपनी मशीन कनेक्ट करें। आपको टर्मिनल वाले कंप्यूटर की ज़रूरत होगी — इसमें लगभग एक मिनट लगता है।",
+  "fork.pair.cta": "होस्ट पेयर करें"
 }

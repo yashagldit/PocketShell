@@ -128,13 +128,30 @@ impl AppConfig {
     }
 
     pub fn default_shell() -> String {
-        std::env::var("SHELL").unwrap_or_else(|_| {
-            if cfg!(target_os = "macos") {
-                "/bin/zsh".to_string()
-            } else {
-                "/bin/bash".to_string()
+        // Explicit override wins on every platform.
+        if let Ok(s) = std::env::var("POCKETSHELL_SHELL") {
+            if !s.is_empty() {
+                return s;
             }
-        })
+        }
+
+        #[cfg(windows)]
+        {
+            // PowerShell ships on all supported Windows versions and gives a
+            // far better remote-terminal experience than cmd.exe. `cmd.exe`
+            // remains reachable via POCKETSHELL_SHELL for users who prefer it.
+            "powershell.exe".to_string()
+        }
+        #[cfg(not(windows))]
+        {
+            std::env::var("SHELL").unwrap_or_else(|_| {
+                if cfg!(target_os = "macos") {
+                    "/bin/zsh".to_string()
+                } else {
+                    "/bin/bash".to_string()
+                }
+            })
+        }
     }
 }
 
@@ -165,6 +182,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)] // POSIX-only behavior; not meaningful on Windows
     #[test]
     fn from_env_uses_documented_defaults() {
         let _g = ENV_LOCK.lock().unwrap();
@@ -186,6 +204,7 @@ mod tests {
         assert_eq!(cfg.trusted_devices_interval_secs, 300);
     }
 
+    #[cfg(unix)] // POSIX-only behavior; not meaningful on Windows
     #[test]
     fn from_env_custom_overrides() {
         let _g = ENV_LOCK.lock().unwrap();
@@ -220,6 +239,7 @@ mod tests {
         clear_all();
     }
 
+    #[cfg(unix)] // POSIX-only behavior; not meaningful on Windows
     #[test]
     fn from_env_invalid_numeric_falls_back_to_default() {
         let _g = ENV_LOCK.lock().unwrap();
@@ -234,6 +254,7 @@ mod tests {
         clear_all();
     }
 
+    #[cfg(unix)] // POSIX-only behavior; not meaningful on Windows
     #[test]
     fn paths_builds_under_home_dir() {
         let _g = ENV_LOCK.lock().unwrap();
@@ -270,6 +291,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)] // POSIX-only behavior; not meaningful on Windows
     #[test]
     fn default_shell_honors_env() {
         let _g = ENV_LOCK.lock().unwrap();

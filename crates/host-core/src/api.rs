@@ -562,7 +562,10 @@ impl BackendClient {
         token: &str,
         host_id: &str,
     ) -> Result<Vec<BackendSessionInfo>> {
-        let url = format!("{}/api/v1/sessions/host/{}/active", self.base_url, host_id);
+        let url = format!(
+            "{}/api/v1/sessions/host/{}/active?include_pending=true",
+            self.base_url, host_id
+        );
         let res = self
             .client
             .get(url)

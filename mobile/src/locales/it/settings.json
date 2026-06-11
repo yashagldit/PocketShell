@@ -112,7 +112,7 @@
   "pro_gate.alerts.title": "Più avvisi",
   "pro_gate.alerts.message": "Gli account gratuiti possono avere fino a {{count}} avvisi attivi. Passa a PocketShell Pro per avvisi illimitati.",
   "pro_gate.chat_history.title": "Cronologia chat completa",
-  "pro_gate.chat_history.message": "Gli account gratuiti possono accedere alle {{count}} sessioni di chat più recenti. Passa a PocketShell Pro per vedere tutte le sessioni.",
+  "pro_gate.chat_history.message": "Gli account gratuiti possono accedere alle sessioni di chat degli ultimi {{days}} giorni. Passa a PocketShell Pro per vedere tutta la cronologia.",
   "pro_gate.host_limit.title": "Limite host raggiunto",
   "pro_gate.host_limit.message": "Gli account Pro possono accoppiare fino a {{proCount}} host. Rimuovi un host esistente per accoppiarne uno nuovo, o contatta il supporto se ne servono di più.",
   "pro_gate.generic.title": "Limite raggiunto",
@@ -130,7 +130,7 @@
   "feedback.message_label": "Messaggio",
   "feedback.message_placeholder": "Dicci cosa hai in mente…",
   "feedback.contact_label": "Email di risposta (facoltativa)",
-  "feedback.contact_placeholder": "tu@esempio.com",
+  "feedback.contact_placeholder": "you@example.com",
   "feedback.submit": "Invia",
   "feedback.submit_success": "Grazie — il tuo feedback è in viaggio!",
   "feedback.submit_failed": "Impossibile inviare il feedback. Riprova."

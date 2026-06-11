@@ -112,7 +112,7 @@
   "pro_gate.alerts.title": "Mehr Benachrichtigungen",
   "pro_gate.alerts.message": "Kostenlose Konten können bis zu {{count}} aktive Benachrichtigungen haben. Upgrade auf PocketShell Pro für unbegrenzte Benachrichtigungen.",
   "pro_gate.chat_history.title": "Vollständiger Chatverlauf",
-  "pro_gate.chat_history.message": "Kostenlose Konten können auf die letzten {{count}} Chat-Sitzungen zugreifen. Upgrade auf PocketShell Pro, um alle Sitzungen anzuzeigen.",
+  "pro_gate.chat_history.message": "Kostenlose Konten können auf Chat-Sitzungen der letzten {{days}} Tage zugreifen. Upgrade auf PocketShell Pro, um den gesamten Verlauf zu sehen.",
   "pro_gate.host_limit.title": "Host-Limit erreicht",
   "pro_gate.host_limit.message": "Pro-Konten können bis zu {{proCount}} Hosts koppeln. Entferne einen vorhandenen Host, um einen neuen zu koppeln, oder kontaktiere den Support, wenn du mehr benötigst.",
   "pro_gate.generic.title": "Limit erreicht",

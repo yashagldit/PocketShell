@@ -595,8 +595,11 @@ const MAX_ACTIVE_UPLOADS_PER_DEVICE: usize = 3;
 
 /// Sentinel prefix for challenge-response authentication messages on WebRTC channels.
 const AUTH_SENTINEL: &[u8] = b"\x00PSAU";
+/// Sentinel prefix for terminal keepalive / latency messages.
+const TERMINAL_KEEPALIVE_SENTINEL: &[u8] = b"\x00PSKA";
 /// Per-send timeout for streaming downloads to detect dead channels.
 const DOWNLOAD_SEND_TIMEOUT: Duration = Duration::from_secs(10);
+const WEBRTC_POLL_TIMEOUT: Duration = Duration::from_secs(5);
 const DIRECT_TRANSFER_BUFFER_HIGH_WATER: usize = 256 * 1024;
 const DIRECT_TRANSFER_BUFFER_POLL: Duration = Duration::from_millis(10);
 
@@ -627,9 +630,59 @@ enum LocalClientEvent {
     Disconnected { client_id: u64 },
 }
 
+// Local-attach IPC transport. On Unix this is a Unix-domain socket; on other
+// platforms (Windows) the local CLI-attach feature is not wired up yet, so the
+// listener is always `None` and never accepts. The half types below only need
+// to satisfy the `AsyncRead`/`AsyncWrite` bounds used by the shared daemon
+// loop — on non-Unix they alias throwaway in-memory pipe halves that are never
+// constructed. Mobile sessions over WebRTC are unaffected on every platform.
+#[cfg(unix)]
+type LocalReadHalf = tokio::net::unix::OwnedReadHalf;
+#[cfg(unix)]
+type LocalWriteHalf = tokio::net::unix::OwnedWriteHalf;
+#[cfg(unix)]
+type LocalAttachListener = tokio::net::UnixListener;
+
+#[cfg(not(unix))]
+type LocalReadHalf = tokio::io::ReadHalf<tokio::io::DuplexStream>;
+#[cfg(not(unix))]
+type LocalWriteHalf = tokio::io::WriteHalf<tokio::io::DuplexStream>;
+#[cfg(not(unix))]
+type LocalAttachListener = DisabledLocalListener;
+
+/// Stand-in listener for platforms where local attach is not available.
+#[cfg(not(unix))]
+struct DisabledLocalListener;
+
+/// Wait for the next local-attach client and return its split halves. On
+/// platforms without a listener the returned future never resolves, so the
+/// owning `select!` arm simply stays parked.
+#[cfg(unix)]
+async fn local_accept(
+    listener: Option<&LocalAttachListener>,
+) -> Option<(LocalReadHalf, LocalWriteHalf)> {
+    match listener {
+        Some(l) => match l.accept().await {
+            Ok((stream, _addr)) => Some(stream.into_split()),
+            Err(e) => {
+                warn!("local attach accept failed: {e}");
+                None
+            }
+        },
+        None => std::future::pending().await,
+    }
+}
+
+#[cfg(not(unix))]
+async fn local_accept(
+    _listener: Option<&LocalAttachListener>,
+) -> Option<(LocalReadHalf, LocalWriteHalf)> {
+    std::future::pending().await
+}
+
 /// Tracks write halves of locally attached clients, keyed by session_id.
 struct LocalAttachClients {
-    clients: HashMap<u64, (String, tokio::net::unix::OwnedWriteHalf)>,
+    clients: HashMap<u64, (String, LocalWriteHalf)>,
 }
 
 impl LocalAttachClients {
@@ -639,12 +692,7 @@ impl LocalAttachClients {
         }
     }
 
-    fn add(
-        &mut self,
-        client_id: u64,
-        session_id: String,
-        writer: tokio::net::unix::OwnedWriteHalf,
-    ) {
+    fn add(&mut self, client_id: u64, session_id: String, writer: LocalWriteHalf) {
         self.clients.insert(client_id, (session_id, writer));
     }
 
@@ -805,11 +853,23 @@ async fn send_files_stream_frame(
     payload: &[u8],
 ) -> Result<()> {
     let bytes = bytes::Bytes::from(encode_files_stream_frame(header, payload));
-    channel
-        .send(&bytes)
-        .await
-        .map_err(|e| HostError::Backend(format!("files stream send failed: {e}")))?;
+    send_files_channel_bytes(&channel, bytes, "files stream send").await?;
     Ok(())
+}
+
+async fn send_files_channel_bytes(
+    channel: &std::sync::Arc<webrtc::data_channel::RTCDataChannel>,
+    bytes: bytes::Bytes,
+    label: &str,
+) -> Result<()> {
+    match tokio::time::timeout(DOWNLOAD_SEND_TIMEOUT, channel.send(&bytes)).await {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(e)) => Err(HostError::Backend(format!("{label} failed: {e}"))),
+        Err(_) => Err(HostError::Backend(format!(
+            "{label} timed out after {:?}",
+            DOWNLOAD_SEND_TIMEOUT
+        ))),
+    }
 }
 
 /// Serialize an RPC response and send it on the control channel, logging
@@ -879,10 +939,7 @@ async fn send_framed_files_response(
         ]
         .concat(),
     );
-    channel
-        .send(&start_bytes)
-        .await
-        .map_err(|e| HostError::Backend(format!("files response start send failed: {e}")))?;
+    send_files_channel_bytes(&channel, start_bytes, "files response start send").await?;
 
     for (index, chunk) in json.as_bytes().chunks(FILES_MESSAGE_CHUNK_SIZE).enumerate() {
         let chunk_value = serde_json::json!({
@@ -900,10 +957,7 @@ async fn send_framed_files_response(
             ]
             .concat(),
         );
-        channel
-            .send(&chunk_bytes)
-            .await
-            .map_err(|e| HostError::Backend(format!("files response chunk send failed: {e}")))?;
+        send_files_channel_bytes(&channel, chunk_bytes, "files response chunk send").await?;
         if index == 0 || index + 1 == total_chunks {
             info!(
                 "files WebRTC frame send chunk response_to={} chunk={}/{} bytes={}",
@@ -926,10 +980,7 @@ async fn send_framed_files_response(
         ]
         .concat(),
     );
-    channel
-        .send(&end_bytes)
-        .await
-        .map_err(|e| HostError::Backend(format!("files response end send failed: {e}")))?;
+    send_files_channel_bytes(&channel, end_bytes, "files response end send").await?;
     info!(
         "files WebRTC frame send end response_to={} chunks={}",
         response_to, total_chunks
@@ -1832,7 +1883,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
     let (local_event_tx, mut local_event_rx) =
         tokio::sync::mpsc::unbounded_channel::<LocalClientEvent>();
     let mut local_clients = LocalAttachClients::new();
-    let mut local_pending_writers: HashMap<u64, tokio::net::unix::OwnedWriteHalf> = HashMap::new();
+    let mut local_pending_writers: HashMap<u64, LocalWriteHalf> = HashMap::new();
     let mut local_client_counter: u64 = 0;
 
     // Singleton flock on pid_file so a second `daemon run` fails fast
@@ -1849,34 +1900,58 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
     };
 
     let local_sock_path = local_attach::socket_path()
-        .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/pocketshell-daemon.sock"));
-    // Safe to drop the stale socket: pid_lock above ensures we're the sole owner.
-    let _ = std::fs::remove_file(&local_sock_path);
-    let local_listener = match tokio::net::UnixListener::bind(&local_sock_path) {
-        Ok(l) => {
-            info!(
-                "local attach socket listening at {}",
-                local_sock_path.display()
-            );
-            // Make socket accessible only to current user
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(
-                    &local_sock_path,
-                    std::fs::Permissions::from_mode(0o600),
+        .unwrap_or_else(|_| std::env::temp_dir().join("pocketshell-daemon.sock"));
+
+    #[cfg(unix)]
+    let local_listener: Option<LocalAttachListener> = {
+        // Safe to drop the stale socket: pid_lock above ensures we're the sole
+        // owner. Unix-only — on other platforms nothing is ever bound here, so
+        // removing a file at this path would only risk clobbering an unrelated
+        // one.
+        let _ = std::fs::remove_file(&local_sock_path);
+        match tokio::net::UnixListener::bind(&local_sock_path) {
+            Ok(l) => {
+                info!(
+                    "local attach socket listening at {}",
+                    local_sock_path.display()
                 );
+                // Make socket accessible only to current user
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(
+                        &local_sock_path,
+                        std::fs::Permissions::from_mode(0o600),
+                    );
+                }
+                Some(l)
             }
-            Some(l)
-        }
-        Err(e) => {
-            warn!(
-                "failed to bind local attach socket: {} — local attach will be unavailable",
-                e
-            );
-            None
+            Err(e) => {
+                warn!(
+                    "failed to bind local attach socket: {} — local attach will be unavailable",
+                    e
+                );
+                None
+            }
         }
     };
+    // Local CLI attach over a Unix-domain socket isn't available on non-Unix
+    // platforms yet; the daemon runs normally and mobile WebRTC sessions are
+    // unaffected. `local_sock_path` is still referenced by the shared cleanup
+    // paths below, but nothing is created or removed at it here.
+    #[cfg(not(unix))]
+    let local_listener: Option<LocalAttachListener> = {
+        let _ = &local_sock_path;
+        debug!("local attach socket disabled on this platform");
+        None
+    };
+
+    // Clear any stale graceful-stop sentinel from a previous run so it can't
+    // immediately shut down this freshly-started daemon (Windows stop channel;
+    // see the shutdown future below).
+    #[cfg(not(unix))]
+    if let Ok(p) = AppConfig::paths() {
+        let _ = std::fs::remove_file(p.state_dir.join("daemon.stop"));
+    }
 
     info!("daemon starting for host_id={}", host_id);
     let _ = write_audit_event_with_store(AuditEvent::new("daemon_started"), &store);
@@ -2006,8 +2081,24 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
             }
             #[cfg(not(unix))]
             {
-                tokio::signal::ctrl_c().await.ok();
-                "SIGINT"
+                // Windows has no SIGTERM. `pocketshell daemon stop` requests a
+                // graceful shutdown by creating this sentinel file; poll for it
+                // alongside Ctrl-C. Returning "SIGTERM" routes into the same
+                // clean-shutdown arm (mark offline + audit + state save) the
+                // Unix signal path uses.
+                let stop_sentinel = AppConfig::paths()
+                    .ok()
+                    .map(|p| p.state_dir.join("daemon.stop"));
+                loop {
+                    tokio::select! {
+                        _ = tokio::signal::ctrl_c() => break "SIGINT",
+                        _ = tokio::time::sleep(Duration::from_millis(250)) => {
+                            if stop_sentinel.as_ref().is_some_and(|s| s.exists()) {
+                                break "SIGTERM";
+                            }
+                        }
+                    }
+                }
             }
         });
 
@@ -2372,18 +2463,12 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                         debug!("sent stats_minute_batch with {} snapshots", batch.len());
                     }
                 }
-                // Accept new local attach connections
-                result = async {
-                    match local_listener.as_ref() {
-                        Some(l) => l.accept().await.map(Some),
-                        None => { std::future::pending::<()>().await; unreachable!() }
-                    }
-                } => {
-                    if let Ok(Some((stream, _addr))) = result {
+                // Accept new local attach connections (Unix only for now)
+                maybe_client = local_accept(local_listener.as_ref()) => {
+                    if let Some((read_half, write_half)) = maybe_client {
                         local_client_counter += 1;
                         let client_id = local_client_counter;
                         let tx = local_event_tx.clone();
-                        let (read_half, write_half) = stream.into_split();
                         tokio::spawn(local_attach_reader(client_id, read_half, tx));
                         local_pending_writers.insert(client_id, write_half);
                     }
@@ -2432,16 +2517,26 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                         local_clients.send_output(&chunk.session_id, &chunk.bytes).await;
 
                         // Primary path: deliver to any viewer with a live data channel.
-                        let _ = webrtc_mgr.send_output(&chunk.session_id, &chunk.bytes).await;
+                        // `delivered` is true only if the bytes were actually sent over
+                        // at least one channel (send_output → broadcast returns false on
+                        // empty/failed/timed-out sends and prunes dead channels).
+                        let delivered =
+                            webrtc_mgr.send_output(&chunk.session_id, &chunk.bytes).await;
 
-                        // Skip the WS fallback only when the session has exactly one
-                        // WebRTC channel AND that channel is authenticated. Multi-viewer
-                        // sessions (Vec<RTCDataChannel> per session_id) keep WS flowing
-                        // because `authenticated_channels` is session-keyed and can't
-                        // tell us whether every viewer's channel is auth'd — a second
-                        // viewer in the post-open/pre-auth window would otherwise be
-                        // starved. Single-viewer is the 95% case and gets the win.
-                        if webrtc_mgr.channel_count(&chunk.session_id) == 1
+                        // Skip the WS fallback only when the channel actually took the
+                        // bytes AND the session has exactly one authenticated WebRTC
+                        // channel. Previously the send result was ignored, so when a
+                        // channel send failed or timed out the WS fallback was skipped
+                        // too and the output was lost on every transport. Gating on
+                        // `delivered` keeps WS flowing whenever the channel didn't take
+                        // the bytes — with no duplication, since WS only fires on a
+                        // channel miss. Multi-viewer sessions (Vec<RTCDataChannel> per
+                        // session_id) keep WS flowing because `authenticated_channels` is
+                        // session-keyed and can't tell us whether every viewer's channel
+                        // is auth'd — a second viewer in the post-open/pre-auth window
+                        // would otherwise be starved. Single-viewer is the 95% case.
+                        if delivered
+                            && webrtc_mgr.channel_count(&chunk.session_id) == 1
                             && authenticated_channels.contains(&chunk.session_id)
                         {
                             continue;
@@ -2452,6 +2547,10 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                             session_id: Some(chunk.session_id),
                             payload: Some(serde_json::json!({
                                 "channel": "terminal",
+                                // Absolute stream offset of these bytes. v2 clients
+                                // dedup the snapshot→live seam against it; old
+                                // clients ignore the unknown field.
+                                "offset": chunk.offset,
                                 "data_b64": base64::engine::general_purpose::STANDARD.encode(chunk.bytes)
                             })),
                             state: None,
@@ -2606,7 +2705,21 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                     }
                 }
                 _ = turn_usage_tick.tick() => {
-                    let delta = webrtc_mgr.collect_relay_delta().await;
+                    let delta = match tokio::time::timeout(
+                        WEBRTC_POLL_TIMEOUT,
+                        webrtc_mgr.collect_relay_delta(),
+                    )
+                    .await
+                    {
+                        Ok(delta) => delta,
+                        Err(_) => {
+                            warn!(
+                                "webrtc relay accounting timed out after {:?}; skipping this report",
+                                WEBRTC_POLL_TIMEOUT
+                            );
+                            0
+                        }
+                    };
                     if delta > 0 {
                         if let Ok(token) = store.access_token().map(|s| s.to_string()) {
                             let backend = backend.clone();
@@ -2619,7 +2732,14 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                     }
                 }
                 _ = webrtc_poll_tick.tick() => {
-                    webrtc_mgr.poll_events().await;
+                    let poll_result =
+                        tokio::time::timeout(WEBRTC_POLL_TIMEOUT, webrtc_mgr.poll_events()).await;
+                    if poll_result.is_err() {
+                        warn!(
+                            "webrtc poll_events timed out after {:?}; continuing control loop",
+                            WEBRTC_POLL_TIMEOUT
+                        );
+                    }
                     for (transfer_id, transfer) in &mut outbound_host_transfers {
                         while let Ok(candidate) = transfer.peer.ice_tx.try_recv() {
                             if let Ok(json) = candidate.to_json() {
@@ -2822,8 +2942,12 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                             } else if !authenticated_channels.contains(&session_id) {
                                 warn!("dropping unauthenticated input on session {} from device {}", session_id, mobile_device_id);
                             } else {
-                                if data.len() >= 5 && data[0] == 0x00 && &data[1..5] == b"PSKA" {
-                                    trace!("terminal keepalive received for session {}", session_id);
+                                if data.starts_with(TERMINAL_KEEPALIVE_SENTINEL) {
+                                    if let Some(response) = build_terminal_keepalive_pong(&data) {
+                                        webrtc_mgr.send_output(&session_id, &response).await;
+                                    } else {
+                                        trace!("terminal keepalive received for session {}", session_id);
+                                    }
                                 } else if data.len() > 5 && data[0] == 0x00 && &data[1..5] == b"PSFT" {
                                     if let Ok(json_str) = std::str::from_utf8(&data[5..]) {
                                         if let Some(update) =
@@ -2897,6 +3021,21 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                             webrtc_mgr.prune_session_channels(&session_id);
                             authenticated_channels.remove(&session_id);
                             pending_auth.remove(&session_id);
+                            if !webrtc_mgr.has_channel(&session_id) {
+                                let should_detach = store.state.sessions.iter().any(|session| {
+                                    session.session_id == session_id
+                                        && !matches!(
+                                            session.state,
+                                            SessionState::Detached
+                                                | SessionState::Ended
+                                                | SessionState::Failed
+                                        )
+                                });
+                                if should_detach {
+                                    store.touch_session_state(&session_id, SessionState::Detached);
+                                    store.save()?;
+                                }
+                            }
                         }
                         WebRtcEvent::StatsChannelOpened { host_id, mobile_device_id, channel } => {
                             info!("stats WebRTC channel opened for host {} from device {}", host_id, mobile_device_id);
@@ -3913,6 +4052,42 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                                 );
                                             }
                                         }
+                                    } else if msg_type == "host_update_agent" {
+                                        // Self-update over the Ed25519-authenticated stats
+                                        // channel — same trust anchor as kill_process/reboot
+                                        // above: the device proved key possession in the
+                                        // channel auth handshake (verify_device_auth), so a
+                                        // compromised backend cannot forge this. Origin and
+                                        // version are pinned inside install_agent_update —
+                                        // always the latest signed build from our own repo.
+                                        if !require_device_permission(&store, &mobile_device_id, "shell", "host_update_agent") {
+                                            continue;
+                                        }
+                                        info!(
+                                            "host_update_agent request received from mobile {} (stats channel)",
+                                            mobile_device_id
+                                        );
+                                        let current_version = config.app_version.clone();
+                                        if try_spawn_self_update(current_version.clone()) {
+                                            let _ = write_audit_event_with_store(
+                                                AuditEvent {
+                                                    mobile_device_id: Some(mobile_device_id.clone()),
+                                                    details: Some(serde_json::json!({
+                                                        "from_version": current_version,
+                                                        "base_url": crate::update::DEFAULT_BASE_URL,
+                                                        "target_version": "latest",
+                                                        "channel": "stats",
+                                                    })),
+                                                    ..AuditEvent::new("self_update")
+                                                },
+                                                &store,
+                                            );
+                                        } else {
+                                            warn!(
+                                                "host_update_agent ignored: an update is already in progress (stats channel, mobile {})",
+                                                mobile_device_id
+                                            );
+                                        }
                                     }
                                 }
                             }
@@ -3994,7 +4169,63 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                 let method = req.method.clone();
                                 let req_id = req.id.clone();
                                 let ch = Arc::clone(&channel);
-                                if crate::rpc::is_stateful_method(&method) {
+                                if method == "host/update_agent" {
+                                    // Self-update over the Ed25519-authenticated control
+                                    // channel. The channel auth handshake already proved
+                                    // device-key possession, but re-check the permission
+                                    // per-call (auth is one-time at open, so a mid-session
+                                    // revoke must still take effect — same reason audit/list
+                                    // re-checks below). Origin/version are pinned inside
+                                    // install_agent_update; the backend has no device key and
+                                    // cannot forge this. Mirrors the reboot/kill trust model.
+                                    let resp = if let Err(reason) =
+                                        device_permission_result(&store, &mobile_device_id, "shell")
+                                    {
+                                        audit_authz_denied(
+                                            &store,
+                                            &mobile_device_id,
+                                            "host/update_agent",
+                                            &reason,
+                                            None,
+                                        );
+                                        crate::rpc::RpcResponse::err(
+                                            req_id.clone(),
+                                            crate::rpc::RpcError::permission_denied(reason),
+                                        )
+                                    } else {
+                                        let current_version = config.app_version.clone();
+                                        if try_spawn_self_update(current_version.clone()) {
+                                            let _ = write_audit_event_with_store(
+                                                AuditEvent {
+                                                    mobile_device_id: Some(mobile_device_id.clone()),
+                                                    details: Some(serde_json::json!({
+                                                        "from_version": current_version,
+                                                        "base_url": crate::update::DEFAULT_BASE_URL,
+                                                        "target_version": "latest",
+                                                        "channel": "control",
+                                                    })),
+                                                    ..AuditEvent::new("self_update")
+                                                },
+                                                &store,
+                                            );
+                                            crate::rpc::RpcResponse::ok(
+                                                req_id.clone(),
+                                                serde_json::json!({ "scheduled": true }),
+                                            )
+                                        } else {
+                                            // An update is already running — idempotent, not an
+                                            // error. Report it so the client doesn't double-trigger.
+                                            crate::rpc::RpcResponse::ok(
+                                                req_id.clone(),
+                                                serde_json::json!({
+                                                    "scheduled": false,
+                                                    "already_in_progress": true,
+                                                }),
+                                            )
+                                        }
+                                    };
+                                    send_control_rpc_response(ch, &resp, &method, &req_id).await;
+                                } else if crate::rpc::is_stateful_method(&method) {
                                     // Borrow the daemon's warm StatsCollector to keep CPU%
                                     // accurate (the 2s stream tick has just refreshed it).
                                     // Worst case ~30 ms on a 1000-process host briefly delays
@@ -4651,14 +4882,23 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                 // account revocation, abuse takedown). Replaces the
                                 // old HeartbeatAction::Kill HTTP path.
                                 let reason = msg
-                                    .extra
-                                    .get("reason")
-                                    .and_then(|v| v.as_str())
+                                    .reason
+                                    .as_deref()
+                                    .or_else(|| msg.extra.get("reason").and_then(|v| v.as_str()))
                                     .unwrap_or("backend_kill")
                                     .to_string();
                                 info!("backend requested shutdown ({}) — stopping daemon", reason);
-                                sessions.close_all();
-                                webrtc_mgr.close_all().await;
+                                close_all_active_sessions(
+                                    &mut store,
+                                    &backend,
+                                    &mut peer_session_routes,
+                                    &mut session_ciphers,
+                                    &mut sessions,
+                                    &mut webrtc_mgr,
+                                    &mut agent_ws_pumps,
+                                    &agent_router,
+                                )
+                                .await;
                                 if let Ok(token) = store.access_token().map(|s| s.to_string()) {
                                     let _ = tokio::time::timeout(
                                         Duration::from_secs(3),
@@ -4675,6 +4915,11 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                     &store,
                                 );
                                 store.save()?;
+                                // Server-initiated stops are policy decisions
+                                // (free idle sleep, revocation, abuse). Disable
+                                // the boot service before exiting, otherwise
+                                // launchd/systemd Restart=always resurrects us.
+                                let _ = crate::service::uninstall();
                                 return Ok(());
                             } else if msg.message_type == "summary_subscribe" {
                                 if !summary_active {
@@ -4753,8 +4998,17 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                 }
                 sig = &mut shutdown => {
                     info!("shutdown signal received, closing sessions ({})", sig);
-                    sessions.close_all();
-                    webrtc_mgr.close_all().await;
+                    close_all_active_sessions(
+                        &mut store,
+                        &backend,
+                        &mut peer_session_routes,
+                        &mut session_ciphers,
+                        &mut sessions,
+                        &mut webrtc_mgr,
+                        &mut agent_ws_pumps,
+                        &agent_router,
+                    )
+                    .await;
                     if let Ok(token) = store.access_token().map(|s| s.to_string()) {
                         if let Err(e) = tokio::time::timeout(
                             Duration::from_secs(3),
@@ -4845,24 +5099,25 @@ impl Drop for DaemonPidLock {
 }
 
 fn acquire_daemon_pid_lock() -> Result<DaemonPidLock> {
-    use std::os::unix::io::AsRawFd;
-
     let paths = AppConfig::paths()?;
     if !paths.state_dir.exists() {
         std::fs::create_dir_all(&paths.state_dir)?;
     }
     let pid_path = paths.pid_file.clone();
-    let file = OpenOptions::new()
+    // Held mutably so the pid stamp below can write through this SAME handle
+    // (avoids a try_clone() that would sit outside the per-handle lock on
+    // Windows, where fs2 uses LockFileEx).
+    let mut file = OpenOptions::new()
         .create(true)
         .read(true)
         .write(true)
         .truncate(false)
         .open(&pid_path)?;
 
-    // SAFETY: `flock` only inspects the fd we pass; `file` outlives the call.
-    let rc = unsafe { nix::libc::flock(file.as_raw_fd(), nix::libc::LOCK_EX | nix::libc::LOCK_NB) };
-    if rc != 0 {
-        let err = std::io::Error::last_os_error();
+    // Non-blocking exclusive lock; if another daemon already holds it, fail
+    // fast rather than racing on the local-attach socket. Released when the
+    // handle inside the returned guard drops.
+    if let Err(err) = crate::platform::try_lock_exclusive(&file) {
         return Err(HostError::Config(format!(
             "another pocketshell daemon is running (pid file {}): {}",
             pid_path.display(),
@@ -4870,18 +5125,18 @@ fn acquire_daemon_pid_lock() -> Result<DaemonPidLock> {
         )));
     }
 
-    // Stamp our pid so external tools (`daemon stop`, status checks) see the live owner.
+    // Stamp our pid so external tools (`daemon stop`, status checks) see the
+    // live owner. Write through the SAME handle we locked: on Windows fs2 uses
+    // LockFileEx, whose lock is per-handle, so a `try_clone()`d handle's writes
+    // would sit outside the lock. Reusing `file` keeps lock + write on one
+    // handle on every platform.
     let pid = std::process::id().to_string();
     {
-        use std::io::Write as _;
-        let mut writable = file
-            .try_clone()
-            .map_err(|e| HostError::Config(format!("dup pid_file fd: {e}")))?;
-        writable
-            .set_len(0)
+        file.set_len(0)
             .map_err(|e| HostError::Config(format!("truncate pid_file: {e}")))?;
-        writable
-            .write_all(pid.as_bytes())
+        file.seek(SeekFrom::Start(0))
+            .map_err(|e| HostError::Config(format!("seek pid_file: {e}")))?;
+        file.write_all(pid.as_bytes())
             .map_err(|e| HostError::Config(format!("write pid_file: {e}")))?;
     }
 
@@ -6478,7 +6733,7 @@ async fn handle_signal(
             if let Some(handle) = agent_ws_pumps.remove(&agent_id) {
                 handle.abort();
             }
-            agent_router.detach(&agent_id).await;
+            agent_router.close(&agent_id).await;
         }
         "host_control" => {
             // Direct backend-pushed host-management action. The backend
@@ -6549,6 +6804,25 @@ async fn handle_signal(
                         tokio::time::sleep(Duration::from_millis(250)).await;
                         exit_for_restart(crate::service::restart());
                     });
+                }
+                "host_update_agent" => {
+                    // Self-update has been REMOVED from this unsigned backend WS
+                    // path. host_control is not Ed25519-signed (see
+                    // `ws_auth_required`), so a compromised backend could forge
+                    // it — and a binary swap is the one host_control action with a
+                    // consequence beyond DoS. Updates now travel ONLY over the
+                    // Ed25519-authenticated P2P stats/control channels (the
+                    // `host_update_agent` stats handler and the
+                    // `host/update_agent` control RPC), exactly like reboot and
+                    // kill_process, so the command is cryptographically bound to
+                    // the paired device and the backend cannot trigger a binary
+                    // swap. Reject forged/legacy requests here instead of acting.
+                    warn!(
+                        "host_update_agent over host_control is no longer supported \
+                         (moved to the authenticated P2P channel); ignoring request \
+                         from mobile={}",
+                        mobile_device_id
+                    );
                 }
                 other => {
                     warn!("host_control rejected: unknown action {:?}", other);
@@ -6626,7 +6900,7 @@ async fn handle_signal(
                         };
 
                     // Check for file transfer sentinel via signaling relay
-                    if bytes.len() >= 5 && bytes[0] == 0x00 && &bytes[1..5] == b"PSKA" {
+                    if bytes.starts_with(TERMINAL_KEEPALIVE_SENTINEL) {
                         trace!(
                             "terminal keepalive received via signaling for session {}",
                             session_id
@@ -6952,6 +7226,14 @@ async fn handle_signal(
                 .and_then(|v| v.as_u64())
                 .unwrap_or(120) as u16;
             let rows = msg.extra.get("rows").and_then(|v| v.as_u64()).unwrap_or(30) as u16;
+            // Capability negotiation: snapshot-resume clients advertise
+            // `resume_protocol: 2` in `extra`. Absent (old clients) => 1 => the
+            // legacy raw-scrollback replay path below.
+            let resume_protocol = msg
+                .extra
+                .get("resume_protocol")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(1);
 
             if !store.is_trusted(&mobile_device_id) {
                 audit_authz_denied(
@@ -7023,8 +7305,44 @@ async fn handle_signal(
                 };
                 let _ = send_signal(ws, &event).await;
 
-                // Send scrollback replay ONLY to the joining device (not all viewers)
-                if let Ok(scrollback) = sessions.capture_scrollback(&session_id) {
+                // Resume payload, sent ONLY to the joining device (not all viewers).
+                if resume_protocol >= 2 {
+                    // v2: a canonical screen snapshot (recent scrollback + visible
+                    // screen + cursor) from the terminal mirror. The client resets
+                    // its terminal and writes this — correct for TUI apps, with no
+                    // duplication or garbled escapes (unlike the raw blob below).
+                    if let Ok(snap) = sessions.capture_snapshot(&session_id) {
+                        info!(
+                            "session_join: sending session_snapshot for {} ({} bytes, alt_screen={})",
+                            session_id,
+                            snap.data.len(),
+                            snap.alt_screen
+                        );
+                        let mut extra = std::collections::HashMap::new();
+                        extra.insert(
+                            "target_mobile_device_id".to_string(),
+                            serde_json::json!(mobile_device_id),
+                        );
+                        let snapshot_msg = SignalEnvelope {
+                            message_type: "session_snapshot".to_string(),
+                            session_id: Some(session_id.clone()),
+                            payload: Some(serde_json::json!({
+                                "version": snap.version,
+                                "cols": snap.cols,
+                                "rows": snap.rows,
+                                "alt_screen": snap.alt_screen,
+                                "base_offset": snap.base_offset,
+                                "data_b64": base64::engine::general_purpose::STANDARD.encode(&snap.data),
+                            })),
+                            state: None,
+                            accepted: None,
+                            reason: None,
+                            extra,
+                        };
+                        let _ = send_signal(ws, &snapshot_msg).await;
+                    }
+                } else if let Ok(scrollback) = sessions.capture_scrollback(&session_id) {
+                    // Legacy clients: raw scrollback replay blob (unchanged).
                     if !scrollback.is_empty() {
                         let mut extra = std::collections::HashMap::new();
                         extra.insert(
@@ -7981,7 +8299,7 @@ async fn handle_signal(
 /// Reads framed messages from a local attach client and sends events to the daemon loop.
 async fn local_attach_reader(
     client_id: u64,
-    mut reader: tokio::net::unix::OwnedReadHalf,
+    mut reader: LocalReadHalf,
     tx: tokio::sync::mpsc::UnboundedSender<LocalClientEvent>,
 ) {
     use tokio::io::AsyncReadExt;
@@ -8070,6 +8388,31 @@ fn build_auth_message(json: &serde_json::Value) -> Vec<u8> {
     msg
 }
 
+fn build_terminal_keepalive_pong(data: &[u8]) -> Option<Vec<u8>> {
+    if data.len() <= TERMINAL_KEEPALIVE_SENTINEL.len()
+        || !data.starts_with(TERMINAL_KEEPALIVE_SENTINEL)
+    {
+        return None;
+    }
+
+    let msg =
+        serde_json::from_slice::<serde_json::Value>(&data[TERMINAL_KEEPALIVE_SENTINEL.len()..])
+            .ok()?;
+    if msg.get("type").and_then(|v| v.as_str()) != Some("ping") {
+        return None;
+    }
+
+    let response = serde_json::json!({
+        "type": "pong",
+        "id": msg.get("id").cloned().unwrap_or(serde_json::Value::Null),
+    });
+    let json_bytes = serde_json::to_vec(&response).ok()?;
+    let mut out = Vec::with_capacity(TERMINAL_KEEPALIVE_SENTINEL.len() + json_bytes.len());
+    out.extend_from_slice(TERMINAL_KEEPALIVE_SENTINEL);
+    out.extend_from_slice(&json_bytes);
+    Some(out)
+}
+
 /// Tear down every active session on this host: kill PTYs, drop WebRTC
 /// peers, stop agent pumps, and mark the corresponding backend rows
 /// `ended`. Shared by the legacy `signal → channel=control` path and
@@ -8148,6 +8491,84 @@ fn exit_for_restart(result: Result<crate::service::RestartStatus>) -> ! {
                 err
             );
             std::process::exit(1);
+        }
+    }
+}
+
+/// Single-flight guard for self-update. The install (download → atomic binary
+/// swap, see `update::download_and_install`) stages into a per-PID directory
+/// and renames over the running executable; two concurrent installs in the same
+/// process would race that swap and could leave a partial/absent binary. The
+/// old code awaited the install inline on the daemon's main loop, which
+/// serialized it for free; now that both the stats and control channels spawn it
+/// as a detached task, this flag restores the one-at-a-time invariant.
+static UPDATE_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+/// Acquire [`UPDATE_IN_FLIGHT`] and spawn the install on success. Returns
+/// `false` (without spawning) if an update is already running, so callers can
+/// reject the duplicate. On a *successful* install the spawned task never
+/// returns (it `exit_for_restart`s); on failure / already-up-to-date it releases
+/// the guard so a later update can be attempted. Origin and version are pinned
+/// to the latest signed build from our own repo — never taken from the message.
+fn try_spawn_self_update(current_version: String) -> bool {
+    if UPDATE_IN_FLIGHT
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return false;
+    }
+    tokio::spawn(async move {
+        if install_agent_update(
+            current_version,
+            crate::update::DEFAULT_BASE_URL.to_string(),
+            None,
+        )
+        .await
+        {
+            exit_for_restart(crate::service::restart());
+        }
+        // Install failed or already up to date — release so a future request
+        // can retry. (On success the line above never returns.)
+        UPDATE_IN_FLIGHT.store(false, Ordering::SeqCst);
+    });
+    true
+}
+
+async fn install_agent_update(
+    current_version: String,
+    base_url: String,
+    requested_version: Option<String>,
+) -> bool {
+    let info = match crate::update::check(&base_url, &current_version, requested_version.as_deref())
+        .await
+    {
+        Ok(info) => info,
+        Err(err) => {
+            warn!("host_update_agent check failed: {}", err);
+            return false;
+        }
+    };
+
+    if info.up_to_date {
+        info!(
+            "host_update_agent: already up to date at {}",
+            info.current_version
+        );
+        return false;
+    }
+
+    match crate::update::download_and_install(&info).await {
+        Ok(installed) => {
+            info!(
+                "host_update_agent installed {} at {}; restarting",
+                info.target_version,
+                installed.display()
+            );
+            true
+        }
+        Err(err) => {
+            warn!("host_update_agent install failed: {}", err);
+            false
         }
     }
 }

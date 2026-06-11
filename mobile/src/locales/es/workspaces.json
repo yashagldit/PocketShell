@@ -24,5 +24,6 @@
   "tab_label_terminal": "Terminal en {{host}}",
   "tab_label_files": "Archivos en {{host}}",
   "on_host": "en {{host}}",
-  "errors.load_failed": "No se pudieron cargar los espacios de trabajo"
+  "errors.load_failed": "No se pudieron cargar los espacios de trabajo",
+  "default_name": "Espacio de trabajo {{index}}"
 }

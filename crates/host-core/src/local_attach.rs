@@ -75,6 +75,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)] // POSIX-only behavior; not meaningful on Windows
     #[test]
     fn socket_path_ends_with_daemon_sock_under_pocketshell_dir() {
         let _g = crate::test_support::HOME_LOCK

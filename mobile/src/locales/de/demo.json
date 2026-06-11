@@ -1,0 +1,68 @@
+{
+  "badge.demo": "DEMO",
+  "status.online": "online",
+
+  "cta.title": "Gefällt dir, was du siehst?",
+  "cta.subtitle": "Koppele deinen eigenen Host, um all das wirklich zu nutzen.",
+  "cta.pair": "Eigenen Host koppeln",
+
+  "hero.subtitle": "Probiere Terminal, Dateien und Live-Monitor — ganz ohne Einrichtung.",
+  "hero.explore": "Demo erkunden",
+  "mini.cpu": "cpu",
+  "mini.ram": "ram",
+
+  "row.title": "Demo erkunden",
+  "row.subtitle": "Terminal · Dateien · Monitor — alles simuliert",
+  "row.dismiss": "Schließen",
+
+  "hub.note": "Alles hier ist simuliert und läuft auf deinem Gerät. Es wird keine Verbindung zu einem echten Rechner hergestellt.",
+  "hub.terminal.title": "Terminal",
+  "hub.terminal.desc": "Befehle in einer verschlüsselten Shell ausführen",
+  "hub.monitor.title": "Monitor",
+  "hub.monitor.desc": "Live-CPU, Arbeitsspeicher, Festplatte & Netzwerk",
+  "hub.files.title": "Dateien",
+  "hub.files.desc": "Dateien durchsuchen, ansehen & übertragen",
+  "hub.workspace.title": "Arbeitsbereich",
+  "hub.workspace.desc": "Terminal und Dateien nebeneinander",
+
+  "terminal.hint": "Tippe auf einen Befehl, um ihn auszuprobieren, oder gib deinen eigenen ein:",
+  "terminal.host_only": "Koppele deinen eigenen Host, um dies zu nutzen.",
+
+  "monitor.cpu": "CPU",
+  "monitor.ram": "Arbeitsspeicher",
+  "monitor.disk": "Festplatte",
+  "monitor.load": "Systemlast",
+  "monitor.recv": "Empfang",
+  "monitor.send": "Senden",
+  "monitor.cores": "Auslastung pro Kern",
+  "monitor.core": "Kern",
+  "monitor.note": "Simulierte Live-Metriken — koppele einen Host, um echte zu sehen.",
+
+  "metric.cpu": "CPU",
+  "metric.memory": "Arbeitsspeicher",
+  "metric.disk": "Festplatte",
+  "metric.network": "Netzwerk",
+  "metric.avg": "Durchschnitt",
+  "metric.peak": "Spitzenwert",
+  "metric.min": "Min",
+  "metric.down": "Download",
+  "metric.up": "Upload",
+  "metric.breakdown": "Aufschlüsselung",
+  "metric.subtitle": "{{host}} · letzte {{range}} · {{count}} Punkte",
+
+  "files.transfer_blocked": "Koppele deinen eigenen Host für echte Dateiübertragungen.",
+  "files.back": "Dateien",
+  "files.upload": "Hochladen",
+  "files.download": "Herunterladen",
+  "files.empty": "Leeres Verzeichnis",
+
+  "workspace.terminal_tab": "Terminal",
+  "workspace.files_tab": "Dateien",
+
+  "nav.host": "Demo",
+  "nav.terminal": "Demo-Terminal",
+  "nav.monitor": "Demo-Monitor",
+  "nav.metric": "Statistiken",
+  "nav.files": "Demo-Dateien",
+  "nav.workspace": "Demo-Arbeitsbereich"
+}

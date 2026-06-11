@@ -181,7 +181,12 @@ fn parse_claude_session(file_path: &Path) -> Option<SessionInfo> {
 
     let mut session_id = String::new();
     let mut cwd = String::new();
-    let mut title: Option<String> = None;
+    // Claude emits a dedicated `{"type":"ai-title","aiTitle":...}` line — a
+    // concise LLM-generated summary. Prefer it; fall back to the first
+    // non-meta user message for sessions that have no ai-title yet (brand-new
+    // or pre-feature sessions).
+    let mut ai_title: Option<String> = None;
+    let mut user_title: Option<String> = None;
 
     for (i, line) in reader.lines().enumerate() {
         if i >= CLAUDE_SCAN_LINE_CAP {
@@ -210,19 +215,27 @@ fn parse_claude_session(file_path: &Path) -> Option<SessionInfo> {
             }
         }
 
-        if title.is_none() {
+        if ai_title.is_none() {
+            if let Some(t) = raw.get("aiTitle").and_then(|v| v.as_str()) {
+                ai_title = normalize_title(t);
+            }
+        }
+
+        if user_title.is_none() {
             let is_user = raw.get("type").and_then(|v| v.as_str()) == Some("user");
             let is_meta = raw.get("isMeta").and_then(|v| v.as_bool()).unwrap_or(false);
             if is_user && !is_meta {
                 if let Some(content) = raw.get("message").and_then(|m| m.get("content")) {
                     if let Some(t) = extract_title(content) {
-                        title = Some(t);
+                        user_title = Some(t);
                     }
                 }
             }
         }
 
-        if title.is_some() && !session_id.is_empty() && !cwd.is_empty() {
+        // The ai-title is the best source — once we have it plus identity and
+        // location, stop. Sessions without one fall through to the line cap.
+        if ai_title.is_some() && !session_id.is_empty() && !cwd.is_empty() {
             break;
         }
     }
@@ -235,11 +248,15 @@ fn parse_claude_session(file_path: &Path) -> Option<SessionInfo> {
             .to_string();
     }
 
+    let title = ai_title
+        .or(user_title)
+        .unwrap_or_else(|| "Untitled Session".to_string());
+
     Some(SessionInfo {
         session_id,
         source: Source::Claude,
         file_path: file_path.to_string_lossy().into_owned(),
-        title: title.unwrap_or_else(|| "Untitled Session".to_string()),
+        title,
         project_path: cwd,
         size_bytes,
         mtime: format_mtime(mtime_system),
@@ -450,6 +467,13 @@ fn extract_title(content: &serde_json::Value) -> Option<String> {
         return None;
     };
 
+    normalize_title(&raw)
+}
+
+/// Collapse whitespace, reject system/IDE noise, and truncate to
+/// `TITLE_MAX_CHARS` on a word boundary. Shared by the user-message and
+/// `ai-title` title sources.
+fn normalize_title(raw: &str) -> Option<String> {
     let cleaned = raw
         .replace('\n', " ")
         .split_whitespace()
@@ -751,6 +775,25 @@ not json
         assert_eq!(info.session_id, "sess-a");
         assert_eq!(info.project_path, "/work");
         assert_eq!(info.title, "first real user text");
+    }
+
+    #[test]
+    fn parse_claude_session_prefers_ai_title_over_user_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("claude-ai-title.jsonl");
+        // The first user turn appears before the ai-title line, but the
+        // generated title must win.
+        std::fs::write(
+            &p,
+            r#"{"type":"system","sessionId":"sess-b","cwd":"/work"}
+{"type":"user","message":{"content":"the gatepass page is throwing errors"}}
+{"type":"ai-title","aiTitle":"Debug employee gatepass page errors","sessionId":"sess-b"}
+"#,
+        )
+        .unwrap();
+        let info = parse_claude_session(&p).unwrap();
+        assert_eq!(info.session_id, "sess-b");
+        assert_eq!(info.title, "Debug employee gatepass page errors");
     }
 
     #[test]

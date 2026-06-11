@@ -14,7 +14,7 @@
   "rule.form.threshold_with_unit": "Soglia ({{unit}})",
   "rule.form.threshold_placeholder": "es: 80",
   "rule.form.cooldown": "Cooldown (min)",
-  "rule.form.cooldown_value": "Cooldown: {{minutes}}m",
+  "rule.form.cooldown_value": "Pausa: {{minutes}}m",
   "rule.form.cooldown_chip": "{{minutes}}m",
   "rule.form.save": "Salva regola",
   "rule.form.cancel": "Annulla",

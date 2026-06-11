@@ -33,7 +33,7 @@
   "list.st": "ST",
   "list.no_match": "Sin procesos que coincidan",
   "list.no_data": "Sin datos de procesos",
-  "list.error": "Couldn't load processes: {{message}}",
-  "list.retry": "Retry",
-  "list.truncated": "Showing {{count}} of {{total}} (host cap reached)"
+  "list.error": "No se pudieron cargar los procesos: {{message}}",
+  "list.retry": "Reintentar",
+  "list.truncated": "Mostrando {{count}} de {{total}} (límite del host alcanzado)"
 }

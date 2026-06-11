@@ -17,7 +17,7 @@ hkdf.workspace = true
 sha2.workspace = true
 x25519-dalek.workspace = true
 futures-util.workspace = true
-nix.workspace = true
+fs2.workspace = true
 portable-pty.workspace = true
 rand.workspace = true
 reqwest.workspace = true
@@ -33,6 +33,13 @@ uuid.workspace = true
 regex.workspace = true
 keyring.workspace = true
 zeroize = "1"
+alacritty_terminal.workspace = true
+
+# `nix` is POSIX-only and does not build on Windows. Every use of it in this
+# crate is behind `#[cfg(unix)]`; the cross-platform fallbacks live in
+# `src/platform.rs`.
+[target.'cfg(unix)'.dependencies]
+nix.workspace = true
 
 [features]
 default = ["webrtc"]

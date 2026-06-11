@@ -13,6 +13,7 @@ use tokio::time::{timeout, Duration};
 /// to reach `Failed`, but long enough that a transient network blip or mobile
 /// ICE-restart attempt can recover without losing the peer.
 const DISCONNECTED_GRACE: Duration = Duration::from_secs(20);
+const RELAY_STATS_TIMEOUT: Duration = Duration::from_secs(3);
 use tracing::{info, warn};
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
 use webrtc::data_channel::RTCDataChannel;
@@ -584,7 +585,7 @@ impl WebRtcManager {
 
     pub async fn close_peer(&mut self, peer_key: &str) {
         if let Some(mut peer) = self.peers.remove(peer_key) {
-            let tail = peer.collect_relay_delta().await;
+            let tail = Self::collect_peer_relay_delta(peer_key, &mut peer).await;
             self.pending_relay_bytes = self.pending_relay_bytes.saturating_add(tail);
             // webrtc-rs's RTCPeerConnection::close() can hang indefinitely when
             // the ICE agent is already in a Failed state. Fire-and-forget with a
@@ -688,13 +689,27 @@ impl WebRtcManager {
     /// the previous call, plus any tail bytes carried over from peers that were
     /// closed in the meantime.
     pub async fn collect_relay_delta(&mut self) -> u64 {
-        let mut total = self.pending_relay_bytes;
-        self.pending_relay_bytes = 0;
-        for peer in self.peers.values_mut() {
-            let d = peer.collect_relay_delta().await;
+        let mut total: u64 = 0;
+        for (peer_key, peer) in self.peers.iter_mut() {
+            let d = Self::collect_peer_relay_delta(peer_key, peer).await;
             total = total.saturating_add(d);
         }
+        total = total.saturating_add(self.pending_relay_bytes);
+        self.pending_relay_bytes = 0;
         total
+    }
+
+    async fn collect_peer_relay_delta(peer_key: &str, peer: &mut WebRtcPeer) -> u64 {
+        match timeout(RELAY_STATS_TIMEOUT, peer.collect_relay_delta()).await {
+            Ok(delta) => delta,
+            Err(_) => {
+                warn!(
+                    "collect_relay_delta timed out for peer_key={} after {:?}; skipping relay accounting",
+                    peer_key, RELAY_STATS_TIMEOUT
+                );
+                0
+            }
+        }
     }
 
     async fn handle_new_channel(&mut self, peer_key: &str, dc_event: DataChannelEvent) {

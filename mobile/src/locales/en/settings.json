@@ -112,7 +112,7 @@
   "pro_gate.alerts.title": "More alerts",
   "pro_gate.alerts.message": "Free accounts can have up to {{count}} active alerts. Upgrade to PocketShell Pro for unlimited alerts.",
   "pro_gate.chat_history.title": "Full chat history",
-  "pro_gate.chat_history.message": "Free accounts can access the most recent {{count}} chat sessions. Upgrade to PocketShell Pro to view all sessions.",
+  "pro_gate.chat_history.message": "Free accounts can access chat sessions from the last {{days}} days. Upgrade to PocketShell Pro to view your full history.",
   "pro_gate.host_limit.title": "Host limit reached",
   "pro_gate.host_limit.message": "Pro accounts can pair up to {{proCount}} hosts. Remove an existing host to pair a new one, or contact support if you need more.",
   "pro_gate.generic.title": "Limit reached",

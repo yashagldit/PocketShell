@@ -33,7 +33,7 @@
   "list.st": "ST",
   "list.no_match": "Keine Prozesse entsprechen deiner Suche",
   "list.no_data": "Keine Prozessdaten verfügbar",
-  "list.error": "Couldn't load processes: {{message}}",
-  "list.retry": "Retry",
-  "list.truncated": "Showing {{count}} of {{total}} (host cap reached)"
+  "list.error": "Prozesse konnten nicht geladen werden: {{message}}",
+  "list.retry": "Erneut versuchen",
+  "list.truncated": "{{count}} von {{total}} angezeigt (Host-Limit erreicht)"
 }

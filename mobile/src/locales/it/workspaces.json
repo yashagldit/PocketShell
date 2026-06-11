@@ -24,5 +24,6 @@
   "tab_label_terminal": "Terminale su {{host}}",
   "tab_label_files": "File su {{host}}",
   "on_host": "su {{host}}",
-  "errors.load_failed": "Caricamento workspace non riuscito"
+  "errors.load_failed": "Caricamento workspace non riuscito",
+  "default_name": "Spazio di lavoro {{index}}"
 }

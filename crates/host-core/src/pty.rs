@@ -1,4 +1,5 @@
 use crate::error::{HostError, Result};
+use crate::terminal::TerminalMirror;
 use crate::terminal_marks::{
     AttentionKind, AttentionTracker, PendingAttention, DEFAULT_QUIET_PERIOD,
 };
@@ -11,6 +12,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const MAX_SCROLLBACK_BYTES: usize = 512 * 1024;
+const REMOTE_TERMINAL_ENV: &str = "POCKETSHELL_REMOTE_TERMINAL";
 
 /// Dummy child process for PTY relay sessions (the real process is owned by `pocketshell rc`).
 #[derive(Debug)]
@@ -35,10 +37,23 @@ impl portable_pty::Child for DummyChild {
     fn process_id(&self) -> Option<u32> {
         None
     }
+    // On Windows the `Child` trait additionally requires exposing the
+    // underlying OS process handle. `DummyChild` owns no real process (the
+    // actual one lives in the `pocketshell rc` relay), so there is no handle —
+    // mirrors `process_id` returning `None`.
+    #[cfg(windows)]
+    fn as_raw_handle(&self) -> Option<std::os::windows::io::RawHandle> {
+        None
+    }
 }
 
 pub struct SessionOutputChunk {
     pub session_id: String,
+    /// Absolute start offset of `bytes` in the session's output stream — equal
+    /// to the mirror's `bytes_fed` just before these bytes were folded in.
+    /// Lets the client dedup the snapshot→live seam (drop frames whose end is
+    /// ≤ the snapshot `base_offset`).
+    pub offset: u64,
     pub bytes: Vec<u8>,
 }
 
@@ -64,7 +79,7 @@ impl SessionAttentionEvent {
 struct PtySession {
     input_tx: mpsc::Sender<Vec<u8>>,
     resize_tx: mpsc::Sender<(u16, u16)>,
-    output_rx: mpsc::Receiver<Vec<u8>>,
+    output_rx: mpsc::Receiver<(u64, Vec<u8>)>,
     stop: Arc<AtomicBool>,
     child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
     scrollback: Arc<Mutex<VecDeque<u8>>>,
@@ -75,11 +90,25 @@ struct PtySession {
     /// OSC 133 + BEL detector with 10 s debounce. Updated by the read
     /// thread on every chunk; drained by the daemon each output tick.
     attention: Arc<Mutex<AttentionTracker>>,
+    /// Passive headless terminal emulator fed every PTY byte by the read
+    /// thread. Source of the canonical screen snapshot used for resume.
+    mirror: Arc<Mutex<TerminalMirror>>,
 }
 
 pub struct SessionManager {
     sessions: HashMap<String, PtySession>,
     limit: usize,
+    /// Windows Job Object that kills every spawned PTY child if the daemon dies
+    /// for any reason — prevents orphaned, CPU-spinning `conhost.exe` backends.
+    /// `None` if the job couldn't be created (the daemon still runs, unguarded).
+    /// No-op on non-Windows targets. Held for the lifetime of the manager (i.e.
+    /// the daemon process) so the kill-on-close guarantee stays armed.
+    ///
+    /// Read only on Windows (the assign-on-spawn block); construct-only
+    /// elsewhere, so the dead-code allow is scoped to non-Windows targets —
+    /// keeping it unconditional would mask a genuine unused field on Windows.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    job: Option<crate::job_object::JobObjectGuard>,
 }
 
 impl SessionManager {
@@ -87,6 +116,7 @@ impl SessionManager {
         Self {
             sessions: HashMap::new(),
             limit,
+            job: crate::job_object::JobObjectGuard::new(),
         }
     }
 
@@ -131,6 +161,24 @@ impl SessionManager {
             .lock()
             .map_err(|_| HostError::Pty(format!("scrollback lock poisoned: {session_id}")))?;
         Ok(scrollback.iter().copied().collect())
+    }
+
+    /// Capture a canonical screen snapshot from the session's terminal mirror.
+    ///
+    /// This is the resume payload for the rewrite: it reflects the *current
+    /// rendered screen* (including alt-screen TUIs), independent of how many
+    /// bytes a reconnecting client missed. Not yet wired into the daemon's
+    /// resume path — see `docs/terminal-rewrite-design.md` (Phase 2).
+    pub fn capture_snapshot(&self, session_id: &str) -> Result<crate::terminal::Snapshot> {
+        let session = self
+            .sessions
+            .get(session_id)
+            .ok_or_else(|| HostError::Pty(format!("unknown session: {session_id}")))?;
+        let mirror = session
+            .mirror
+            .lock()
+            .map_err(|_| HostError::Pty(format!("mirror lock poisoned: {session_id}")))?;
+        Ok(mirror.snapshot())
     }
 
     /// Check if a session is persistent.
@@ -244,6 +292,13 @@ impl SessionManager {
     }
 
     /// Relay I/O to/from an existing PTY device (used by `pocketshell rc` exposed sessions).
+    ///
+    /// Unix-only: it opens a real `/dev/pts/*` device and verifies it with
+    /// `isatty(3)`. Relaying an externally-owned terminal has no portable
+    /// equivalent on Windows (ConPTY pseudoconsoles aren't filesystem device
+    /// nodes), so on non-Unix hosts this returns an error. Fresh sessions
+    /// spawned by the daemon itself still work everywhere via `portable-pty`.
+    #[cfg(unix)]
     pub fn create_pty_relay_session(&mut self, session_id: String, pty_path: &str) -> Result<()> {
         use std::fs::OpenOptions;
 
@@ -303,7 +358,11 @@ impl SessionManager {
         )));
         let (input_tx, input_rx) = mpsc::channel::<Vec<u8>>();
         let (resize_tx, _resize_rx) = mpsc::channel::<(u16, u16)>();
-        let (output_tx, output_rx) = mpsc::sync_channel::<Vec<u8>>(1024);
+        let (output_tx, output_rx) = mpsc::sync_channel::<(u64, Vec<u8>)>(1024);
+        // Passive mirror for snapshot-based resume. Relay sessions attach to an
+        // externally-owned PTY of unknown size; default to 80×24 and let the
+        // client's first resize correct it.
+        let mirror = Arc::new(Mutex::new(TerminalMirror::new(80, 24)));
 
         // Writer thread — sends mobile input to the host's PTY
         {
@@ -327,7 +386,9 @@ impl SessionManager {
             Arc::clone(&stop),
             Arc::clone(&scrollback),
             Arc::clone(&attention),
+            Arc::clone(&mirror),
             output_tx,
+            input_tx.clone(),
         );
 
         // Use a dummy child — the PTY is owned by the rc process, not us
@@ -346,10 +407,20 @@ impl SessionManager {
                 persistent: false,
                 tmux_session_name: None,
                 attention,
+                mirror,
             },
         );
 
         Ok(())
+    }
+
+    /// Non-Unix stub: relaying an existing PTY device isn't supported.
+    #[cfg(not(unix))]
+    pub fn create_pty_relay_session(&mut self, _session_id: String, _pty_path: &str) -> Result<()> {
+        Err(HostError::Pty(
+            "PTY relay (`pocketshell rc` exposed sessions) is not supported on this platform"
+                .to_string(),
+        ))
     }
 
     fn create_session_with_command(
@@ -389,11 +460,22 @@ impl SessionManager {
             cmd.arg(arg);
         }
         cmd.env("TERM", "xterm-256color");
+        cmd.env(REMOTE_TERMINAL_ENV, "1");
 
         let child = pair
             .slave
             .spawn_command(cmd)
             .map_err(|e| HostError::Pty(format!("spawn shell failed: {e}")))?;
+
+        // Assign the freshly spawned child to the kill-on-close job object so
+        // an ungraceful daemon death can't leave an orphaned, spinning conhost
+        // behind. Best-effort and Windows-only; a no-op elsewhere.
+        #[cfg(windows)]
+        if let Some(job) = &self.job {
+            if let Some(h) = child.as_raw_handle() {
+                job.assign(h);
+            }
+        }
 
         let child = Arc::new(Mutex::new(child));
         let scrollback = Arc::new(Mutex::new(VecDeque::new()));
@@ -416,7 +498,10 @@ impl SessionManager {
 
         let (input_tx, input_rx) = mpsc::channel::<Vec<u8>>();
         let (resize_tx, resize_rx) = mpsc::channel::<(u16, u16)>();
-        let (output_tx, output_rx) = mpsc::sync_channel::<Vec<u8>>(1024);
+        let (output_tx, output_rx) = mpsc::sync_channel::<(u64, Vec<u8>)>(1024);
+        // Passive mirror fed every PTY byte (see terminal::TerminalMirror) so we
+        // can serve a canonical screen snapshot on resume.
+        let mirror = Arc::new(Mutex::new(TerminalMirror::new(cols, rows)));
 
         {
             let stop = Arc::clone(&stop);
@@ -456,8 +541,16 @@ impl SessionManager {
             Arc::clone(&stop),
             Arc::clone(&scrollback),
             Arc::clone(&attention),
+            Arc::clone(&mirror),
             output_tx,
+            input_tx.clone(),
         );
+
+        // Windows/ConPTY only: kick the pseudoconsole so it flushes the initial
+        // prompt frame into the read pipe instead of staying blank until a
+        // manual reconnect. No-op elsewhere.
+        #[cfg(windows)]
+        nudge_conpty_initial_frame(Arc::clone(&master), Arc::clone(&stop), cols, rows);
 
         self.sessions.insert(
             session_id,
@@ -471,6 +564,7 @@ impl SessionManager {
                 persistent,
                 tmux_session_name,
                 attention,
+                mirror,
             },
         );
 
@@ -500,6 +594,11 @@ impl SessionManager {
             .sessions
             .get(session_id)
             .ok_or_else(|| HostError::Pty(format!("unknown session: {session_id}")))?;
+        // Keep the snapshot mirror's dimensions in lock-step with the PTY so a
+        // resume taken after a resize reflows at the correct width.
+        if let Ok(mut mir) = session.mirror.lock() {
+            mir.resize(cols, rows);
+        }
         session
             .resize_tx
             .send((cols, rows))
@@ -509,9 +608,10 @@ impl SessionManager {
     pub fn drain_output(&self) -> Vec<SessionOutputChunk> {
         let mut out = Vec::new();
         for (session_id, session) in &self.sessions {
-            while let Ok(bytes) = session.output_rx.try_recv() {
+            while let Ok((offset, bytes)) = session.output_rx.try_recv() {
                 out.push(SessionOutputChunk {
                     session_id: session_id.clone(),
+                    offset,
                     bytes,
                 });
             }
@@ -651,15 +751,72 @@ fn append_scrollback(scrollback: &mut VecDeque<u8>, chunk: &[u8]) {
     }
 }
 
+/// Force a freshly-created Windows ConPTY to emit its initial frame (the shell
+/// prompt). A new pseudoconsole frequently won't flush its first frame until it
+/// receives a resize it actually honors, and a resize landing too close to the
+/// client attach is dropped (microsoft/terminal#10400). portable-pty also
+/// doesn't set `PSEUDOCONSOLE_RESIZE_QUIRK`, so a size change forces a full
+/// buffer repaint. We nudge the size (a transient +1-row wiggle) shortly after
+/// spawn so the prompt lands in the read pipe → the mirror + live stream,
+/// instead of the terminal staying blank until a manual reconnect. Only invoked
+/// on Windows (Unix PTYs emit immediately); the body is platform-agnostic so it
+/// type-checks on every target.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn nudge_conpty_initial_frame(
+    master: Arc<Mutex<Box<dyn portable_pty::MasterPty + Send>>>,
+    stop: Arc<AtomicBool>,
+    cols: u16,
+    rows: u16,
+) {
+    if cols == 0 || rows == 0 {
+        return;
+    }
+    thread::spawn(move || {
+        let resize_to = |r: u16| {
+            if let Ok(m) = master.lock() {
+                let _ = m.resize(PtySize {
+                    rows: r,
+                    cols,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                });
+            }
+        };
+        // Wait past the attach window (and give the shell time to print its
+        // prompt into ConPTY's buffer), then wiggle the row count to force a
+        // repaint, then restore. The client's own resize settles the final size.
+        thread::sleep(Duration::from_millis(500));
+        if stop.load(Ordering::Relaxed) {
+            return;
+        }
+        resize_to(rows.saturating_add(1));
+        thread::sleep(Duration::from_millis(60));
+        if stop.load(Ordering::Relaxed) {
+            return;
+        }
+        resize_to(rows);
+        tracing::info!("conpty: applied initial-frame nudge for fresh session");
+    });
+}
+
 /// Read PTY output in a dedicated thread: append to scrollback, feed the
-/// attention parser, forward to the daemon's output channel. Used by both
-/// native and relay session paths.
+/// attention parser, feed the headless terminal mirror, and forward to the
+/// daemon's output channel. Used by both native and relay session paths.
+///
+/// `output_tx` is a bounded `SyncSender`; when the daemon falls behind, `send`
+/// blocks here, which stalls the read loop and propagates backpressure to the
+/// PTY (the child blocks on write) rather than dropping output.
 fn spawn_pty_reader_thread<R: Read + Send + 'static>(
     mut reader: R,
     stop: Arc<AtomicBool>,
     scrollback: Arc<Mutex<VecDeque<u8>>>,
     attention: Arc<Mutex<AttentionTracker>>,
-    output_tx: mpsc::SyncSender<Vec<u8>>,
+    mirror: Arc<Mutex<TerminalMirror>>,
+    output_tx: mpsc::SyncSender<(u64, Vec<u8>)>,
+    // Back-channel to the PTY's input writer. The mirror answers device queries
+    // (e.g. PowerShell's `\x1b[6n` cursor-position request) and those replies are
+    // written here so query-driven shells unblock and render their prompt.
+    reply_tx: mpsc::Sender<Vec<u8>>,
 ) {
     thread::spawn(move || {
         let mut buf = vec![0_u8; 4096];
@@ -674,7 +831,41 @@ fn spawn_pty_reader_thread<R: Read + Send + 'static>(
                     if let Ok(mut tracker) = attention.lock() {
                         tracker.on_bytes(chunk, Instant::now());
                     }
-                    let _ = output_tx.send(chunk.to_vec());
+                    // Read the chunk's absolute start offset under the SAME lock
+                    // that folds it into the mirror, so it matches a snapshot cut
+                    // at this instant: base_offset == bytes_fed BEFORE this feed.
+                    // Capture and feed cannot interleave within one chunk, so live
+                    // offsets are strictly contiguous with the snapshot boundary.
+                    let (offset, replies) = if let Ok(mut mir) = mirror.lock() {
+                        let off = mir.bytes_fed();
+                        mir.feed(chunk);
+                        // Drain under the same lock so a reply can't be split across
+                        // two feeds: the emulator generated it from exactly the bytes
+                        // just fed.
+                        (off, mir.take_replies())
+                    } else {
+                        // Mirror lock poisoned (alacritty panicked): emit a sentinel
+                        // so the client treats this frame as untagged / always-apply
+                        // rather than mis-deduping against a wrong offset.
+                        (u64::MAX, Vec::new())
+                    };
+                    // Write any device-query replies (cursor-position report, device
+                    // attributes, …) back to the PTY — Windows only. PowerShell/
+                    // PSReadLine blocks on its `\x1b[6n` query before drawing the
+                    // prompt, and the pure-viewer mobile can't reliably answer
+                    // (deduped on resume / suppressed during snapshot apply), so the
+                    // host must. On macOS/Linux the shell doesn't gate its prompt on
+                    // the reply AND the mobile xterm.js already answers, so writing
+                    // here too would double the report and leak stray input — keep the
+                    // existing (client-answers) behavior there. `take_replies` is still
+                    // drained above on every platform so the buffer can't grow.
+                    #[cfg(windows)]
+                    if !replies.is_empty() {
+                        let _ = reply_tx.send(replies);
+                    }
+                    #[cfg(not(windows))]
+                    let _ = (&reply_tx, replies);
+                    let _ = output_tx.send((offset, chunk.to_vec()));
                 }
                 Err(_) => break,
             }
@@ -823,6 +1014,7 @@ mod tests {
         assert!(m.create_pty_relay_session("s1".into(), "").is_err());
     }
 
+    #[cfg(unix)]
     #[test]
     fn create_pty_relay_nonexistent_path_errors() {
         let mut m = SessionManager::new(4);

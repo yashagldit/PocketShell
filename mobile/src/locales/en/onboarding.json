@@ -73,5 +73,14 @@
   "welcome.tips.alerts.body": "Get pushed the moment CPU spikes, disk fills up, or a host drops offline.",
   "welcome.tips.workspaces.title": "Organize with workspaces",
   "welcome.tips.workspaces.body": "Group terminals and files per project so you can switch context without losing your place.",
-  "welcome.cta": "Get started"
+  "welcome.cta": "Get started",
+  "fork.title": "You're in",
+  "fork.subtitle": "Pick how you'd like to start — you can always do the other later.",
+  "fork.demo.title": "Try a demo host",
+  "fork.demo.body": "Explore a simulated machine — real terminal, files, and live metrics. No setup, right now on your phone.",
+  "fork.demo.cta": "Explore the demo",
+  "fork.demo.badge": "Recommended",
+  "fork.pair.title": "Pair a real host",
+  "fork.pair.body": "Connect your own machine. You'll need a computer with a terminal handy — it takes about a minute.",
+  "fork.pair.cta": "Pair a host"
 }

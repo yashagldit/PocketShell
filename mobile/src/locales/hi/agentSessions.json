@@ -39,5 +39,13 @@
   "badge.running": "चल रहा है",
   "project.showAll": "{{count}} और दिखाएँ",
   "project.showLess": "कम दिखाएँ",
-  "badge.terminal": ">_"
+  "badge.terminal": ">_",
+  "list.no_project": "कोई प्रोजेक्ट नहीं",
+  "list.untitled": "Agent चैट",
+  "list.load_active_failed": "सक्रिय सत्र लोड करने में विफल",
+  "list.list_failed": "कोडिंग सत्र सूची बनाने में विफल",
+  "list.timed_out": "{{label}} {{ms}}ms के बाद समय समाप्त हो गया",
+  "list.timeout_label.active": "सक्रिय सत्र",
+  "list.timeout_label.scan": "कोडिंग सत्र स्कैन",
+  "list.timeout_label.page": "कोडिंग सत्र पृष्ठ"
 }

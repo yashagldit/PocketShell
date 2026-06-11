@@ -39,5 +39,13 @@
   "badge.running": "実行中",
   "project.showAll": "さらに{{count}}件を表示",
   "project.showLess": "表示を減らす",
-  "badge.terminal": ">_"
+  "badge.terminal": ">_",
+  "list.no_project": "プロジェクトなし",
+  "list.untitled": "エージェントチャット",
+  "list.load_active_failed": "アクティブセッションを読み込めませんでした",
+  "list.list_failed": "コーディングセッションを一覧表示できませんでした",
+  "list.timed_out": "{{label}} は {{ms}}ms 後にタイムアウトしました",
+  "list.timeout_label.active": "アクティブセッション",
+  "list.timeout_label.scan": "コーディングセッションスキャン",
+  "list.timeout_label.page": "コーディングセッションページ"
 }

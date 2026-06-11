@@ -38,6 +38,7 @@ function resolvePackageName() {
       ? '@pocketshell/linux-x64-musl'
       : '@pocketshell/linux-x64-gnu';
   }
+  if (platform === 'win32' && arch === 'x64') return '@pocketshell/win32-x64-msvc';
   return null;
 }
 
@@ -45,7 +46,7 @@ const pkgName = resolvePackageName();
 if (!pkgName) {
   console.error(
     `pocketshell: no prebuilt binary for ${process.platform}/${process.arch}.\n` +
-      `Supported: darwin/arm64, linux/x64 (gnu+musl), linux/arm64.\n` +
+      `Supported: darwin/arm64, linux/x64 (gnu+musl), linux/arm64, win32/x64.\n` +
       `See https://pocketshell.app for manual install options.`
   );
   process.exit(1);
@@ -64,7 +65,8 @@ try {
   process.exit(1);
 }
 
-const binPath = path.join(pkgRoot, 'bin', 'pocketshell');
+const binName = process.platform === 'win32' ? 'pocketshell.exe' : 'pocketshell';
+const binPath = path.join(pkgRoot, 'bin', binName);
 const result = spawnSync(binPath, process.argv.slice(2), { stdio: 'inherit' });
 
 if (result.error) {

@@ -55,10 +55,14 @@ pub struct StatsCollector {
     prev_cpu_jiffies: Option<(u64, u64, u64, u64, u64)>, // user, system, idle, iowait, total
 }
 
-/// Filter disks to only count real, unique physical storage.
-/// Deduplicates APFS container siblings and excludes virtual/snapshot mounts.
-fn real_disks(disks: &[Disk]) -> Vec<&Disk> {
-    let skip_prefixes: &[&str] = &[
+/// True for mounts that are firmware/helper/backup/simulator volumes which are
+/// never real, user-navigable storage. Shared by the disk-usage collector
+/// (`real_disks`) and the file-browser drive picker (`files::list_drives`) so the
+/// macOS noise list lives in exactly one place. Note: this deliberately does NOT
+/// cover the APFS "/" vs "/System/Volumes/Data" dedup — each caller handles that
+/// per its own semantics (stats merges them; the picker hides the Data sibling).
+pub(crate) fn is_noise_mount(mount: &str) -> bool {
+    const SKIP_PREFIXES: &[&str] = &[
         "/System/Volumes/VM",
         "/System/Volumes/Preboot",
         "/System/Volumes/Update",
@@ -66,22 +70,22 @@ fn real_disks(disks: &[Disk]) -> Vec<&Disk> {
         "/System/Volumes/iSCPreboot",
         "/System/Volumes/Hardware",
     ];
+    SKIP_PREFIXES.iter().any(|p| mount.starts_with(p))
+        || mount.contains(".timemachine")
+        || mount.contains(".backup")
+        || mount.contains("CoreSimulator")
+}
 
+/// Filter disks to only count real, unique physical storage.
+/// Deduplicates APFS container siblings and excludes virtual/snapshot mounts.
+fn real_disks(disks: &[Disk]) -> Vec<&Disk> {
     let mut seen_devices = HashSet::new();
     let mut result = Vec::new();
 
     for disk in disks {
         let mount = disk.mount_point().to_string_lossy();
 
-        if skip_prefixes.iter().any(|p| mount.starts_with(p)) {
-            continue;
-        }
-
-        if mount.contains(".timemachine") || mount.contains(".backup") {
-            continue;
-        }
-
-        if mount.contains("CoreSimulator") {
+        if is_noise_mount(&mount) {
             continue;
         }
 

@@ -53,5 +53,10 @@
   "splash.stage.session_ready": "会话就绪 — 正在启动",
   "splash.stage.no_session": "无已保存的会话",
   "actions.close": "关闭",
-  "actions.retry": "重试"
+  "actions.retry": "重试",
+  "update.title": "有可用更新",
+  "update.body": "新版本已就绪。立即重启以更新，或稍后再应用。",
+  "update.restart": "立即重启",
+  "update.later": "稍后",
+  "boot.error_prefix": "错误:"
 }

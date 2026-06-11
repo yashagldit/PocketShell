@@ -6,7 +6,6 @@ use host_core::auth::safe_refresh_if_needed;
 use host_core::config::AppConfig;
 use host_core::daemon;
 use host_core::discovery::SessionDiscovery;
-use host_core::exposed_ports::ExposedPortsStore;
 use host_core::models::{AgentState, AuthState, HostIdentity, HostInitiatedPollOutcome};
 // PAIRING CODE DISABLED 2026-05-24 — typed-code flow quarantined; QR remains.
 // `PairingValidateRequest` and `sign_pair_attestation` are only used by the
@@ -16,8 +15,6 @@ use host_core::models::{AgentState, AuthState, HostIdentity, HostInitiatedPollOu
 use host_core::secure::parse_jwt_exp;
 use host_core::stats::StatsCollector;
 use host_core::store::StateStore;
-use nix::sys::signal::{kill, Signal};
-use nix::unistd::Pid;
 use rand::rngs::OsRng;
 use std::fs;
 use std::io::{self, Write};
@@ -25,6 +22,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing_subscriber::EnvFilter;
+
+const REMOTE_TERMINAL_ENV: &str = "POCKETSHELL_REMOTE_TERMINAL";
 
 #[derive(Parser, Debug)]
 #[command(name = "pocketshell", version)]
@@ -139,27 +138,6 @@ enum Commands {
         #[arg(long, short)]
         remove: bool,
     },
-    /// Allow the paired mobile to tunnel HTTP requests to a local dev server
-    /// on this host (e.g. `npm run dev` on port 3000). Without an explicit
-    /// `expose`, the daemon refuses to open `127.0.0.1:<port>` even though
-    /// the paired user has sudo via the terminal — so a stolen phone can't
-    /// silently start probing local services.
-    Expose {
-        /// TCP port the dev server is listening on (1–65535).
-        port: u16,
-        /// Drop this exposure on the next daemon restart. Recommended for
-        /// `npm run dev` and similar short-lived servers.
-        #[arg(long)]
-        ephemeral: bool,
-    },
-    /// Remove a port from the dev-server allowlist. The next forward attempt
-    /// from mobile will be rejected with PORT_NOT_EXPOSED.
-    Unexpose {
-        /// TCP port to remove from the allowlist.
-        port: u16,
-    },
-    /// List ports currently allowed to be tunneled from mobile.
-    Exposed,
 }
 
 #[derive(Subcommand, Debug)]
@@ -185,14 +163,30 @@ enum DaemonCommands {
     Stop,
     /// Stop the daemon (if running) and start it again.
     Restart,
-    Run,
+    Run {
+        /// Internal: set by the OS service manager (Windows Scheduled Task)
+        /// when it launches the daemon. Detaches the console so the agent runs
+        /// windowless and redirects logging to the daemon log file.
+        #[arg(long, hide = true)]
+        service: bool,
+    },
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    init_logging();
     let cli = Cli::parse();
+    // `daemon run --service` is launched headless by the OS service manager, so
+    // it logs to a file and (on Windows) detaches its console rather than
+    // writing to a stderr nobody can see.
+    let service_mode = matches!(
+        &cli.command,
+        Some(Commands::Daemon {
+            command: DaemonCommands::Run { service: true },
+        })
+    );
+    init_logging(service_mode);
     ensure_supported_platform()?;
+    reject_remote_terminal_invocation(&cli.command)?;
     let config = AppConfig::from_env();
 
     match cli.command {
@@ -249,24 +243,79 @@ async fn main() -> Result<()> {
             list,
             remove,
         }) => remote_cmd(name, detached, list, remove),
-        Some(Commands::Expose { port, ephemeral }) => expose_cmd(port, ephemeral),
-        Some(Commands::Unexpose { port }) => unexpose_cmd(port),
-        Some(Commands::Exposed) => exposed_cmd(),
     }
 }
 
-fn ensure_supported_platform() -> Result<()> {
-    if cfg!(target_os = "linux") || cfg!(target_os = "macos") {
+fn reject_remote_terminal_invocation(command: &Option<Commands>) -> Result<()> {
+    if !matches!(std::env::var(REMOTE_TERMINAL_ENV).as_deref(), Ok("1")) {
         return Ok(());
     }
+    if matches!(command, Some(Commands::Update { .. })) {
+        return Ok(());
+    }
+
     Err(anyhow!(
-        "unsupported host OS; only linux and macos are supported"
+        "running the pocketshell CLI/TUI from a PocketShell mobile terminal is blocked"
     ))
 }
 
-fn init_logging() {
+fn ensure_supported_platform() -> Result<()> {
+    if cfg!(target_os = "linux") || cfg!(target_os = "macos") || cfg!(target_os = "windows") {
+        return Ok(());
+    }
+    Err(anyhow!(
+        "unsupported host OS; only linux, macos, and windows are supported"
+    ))
+}
+
+fn init_logging(service_mode: bool) {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+
+    if service_mode {
+        // On Windows the Scheduled Task launches our console-subsystem binary in
+        // the interactive session, which pops a console window the user could
+        // close (killing the daemon). Detach from it so the agent runs
+        // windowless, like the launchd/systemd services on the other platforms.
+        #[cfg(windows)]
+        detach_console();
+
+        // No console/journal is attached, so write to the same log file the
+        // launchd plist / detached-process fallback use.
+        if let Ok(paths) = AppConfig::paths() {
+            let _ = fs::create_dir_all(&paths.state_dir);
+            if let Ok(file) = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&paths.log_file)
+            {
+                tracing_subscriber::fmt()
+                    .with_env_filter(filter)
+                    .with_ansi(false)
+                    .with_writer(std::sync::Mutex::new(file))
+                    .init();
+                return;
+            }
+        }
+    }
+
     tracing_subscriber::fmt().with_env_filter(filter).init();
+}
+
+/// Detach from the console that Task Scheduler allocates for our
+/// console-subsystem binary so the daemon runs windowless (and can't be killed
+/// by a user closing a stray console window). `kernel32` is implicitly linked
+/// on the MSVC target, so a bare extern declaration resolves without adding a
+/// Windows API crate.
+#[cfg(windows)]
+fn detach_console() {
+    extern "system" {
+        fn FreeConsole() -> i32;
+    }
+    // SAFETY: FreeConsole takes no arguments and only detaches this process from
+    // its console; it is safe to call even when no console is attached.
+    unsafe {
+        FreeConsole();
+    }
 }
 
 // PAIRING CODE DISABLED 2026-05-24 — typed 6-char code flow is quarantined.
@@ -496,7 +545,7 @@ async fn pair(config: AppConfig, code: Option<String>, reset: bool) -> Result<()
     Ok(())
 }
 */
- // end PAIRING CODE DISABLED 2026-05-24
+// end PAIRING CODE DISABLED 2026-05-24
 
 /// Add only the mobile device from this pairing to the local trust store.
 /// The daemon's periodic backend sync never adds devices; it only revokes or
@@ -982,7 +1031,7 @@ async fn logout(reset: bool) -> Result<()> {
     let paths = AppConfig::paths()?;
     if let Some(pid) = read_pid(&paths.pid_file) {
         if pid_running(pid) {
-            let _ = kill(Pid::from_raw(pid), Signal::SIGTERM);
+            terminate_pid(pid);
             for _ in 0..20 {
                 if !pid_running(pid) {
                     break;
@@ -1137,7 +1186,7 @@ async fn uninstall_cmd(yes: bool, keep_data: bool, keep_binary: bool) -> Result<
     if let Ok(paths) = AppConfig::paths() {
         if let Some(pid) = read_pid(&paths.pid_file) {
             if pid_running(pid) {
-                let _ = kill(Pid::from_raw(pid), Signal::SIGTERM);
+                terminate_pid(pid);
                 for _ in 0..20 {
                     if !pid_running(pid) {
                         break;
@@ -1387,7 +1436,7 @@ async fn daemon_cmd(config: AppConfig, command: DaemonCommands) -> Result<()> {
         DaemonCommands::Start => daemon_start(),
         DaemonCommands::Stop => daemon_stop(),
         DaemonCommands::Restart => daemon_restart(),
-        DaemonCommands::Run => daemon::run_foreground(config)
+        DaemonCommands::Run { service: _ } => daemon::run_foreground(config)
             .await
             .map_err(|e| anyhow!(e.to_string())),
     }
@@ -1457,7 +1506,7 @@ fn daemon_stop() -> Result<()> {
     let paths = AppConfig::paths()?;
     if let Some(pid) = read_pid(&paths.pid_file) {
         if pid_running(pid) {
-            let _ = kill(Pid::from_raw(pid), Signal::SIGTERM);
+            terminate_pid(pid);
             for _ in 0..20 {
                 if !pid_running(pid) {
                     break;
@@ -1494,7 +1543,7 @@ fn daemon_restart() -> Result<()> {
     let service_running = host_core::service::is_service_running();
     if let Some(p) = pid {
         if !service_running {
-            let _ = kill(Pid::from_raw(p), Signal::SIGTERM);
+            terminate_pid(p);
             for _ in 0..50 {
                 if !pid_running(p) {
                     break;
@@ -1771,6 +1820,7 @@ fn print_sessions_overview(
     }
 }
 
+#[cfg(unix)]
 async fn sessions_attach(session_id: String) -> Result<()> {
     use host_core::local_attach;
     use nix::sys::termios;
@@ -1925,6 +1975,17 @@ async fn sessions_attach(session_id: String) -> Result<()> {
     result
 }
 
+/// Local attach relies on a Unix-domain socket plus raw-mode termios, neither
+/// of which is wired up on non-Unix hosts yet. Mobile session resume is
+/// unaffected.
+#[cfg(not(unix))]
+async fn sessions_attach(_session_id: String) -> Result<()> {
+    Err(anyhow!(
+        "`pocketshell sessions attach` is not supported on this platform yet; resume the session from the mobile app instead"
+    ))
+}
+
+#[cfg(unix)]
 fn term_size() -> (u16, u16) {
     use nix::libc;
     unsafe {
@@ -1983,97 +2044,12 @@ fn remote_cmd(name: String, _detached: bool, list: bool, remove: bool) -> Result
     Ok(())
 }
 
-fn expose_cmd(port: u16, ephemeral: bool) -> Result<()> {
-    let entry = ExposedPortsStore::add(port, ephemeral)
-        .map_err(|e| anyhow!("could not add port {} to allowlist: {}", port, e))?;
-    let suffix = if entry.ephemeral {
-        " (ephemeral — clears on daemon restart)"
-    } else {
-        ""
-    };
-    println!("exposed port {}{}", port, suffix);
-    println!(
-        "mobile can now reach http://localhost:{} via the HTTP-forward channel.",
-        port
-    );
-
-    // Best-effort attribution: load state if possible so the audit event
-    // carries host_id / user_id. First-run users (no pairing yet) still get
-    // the event, just without attribution.
-    let mut ev = AuditEvent::new("ports.exposed");
-    ev.target = Some(port.to_string());
-    ev.details = Some(serde_json::json!({
-        "port": port,
-        "ephemeral": entry.ephemeral,
-        "source": "cli",
-    }));
-    match StateStore::load() {
-        Ok(store) => {
-            let _ = write_audit_event_with_store(ev, &store);
-        }
-        Err(_) => {
-            let _ = write_audit_event(ev);
-        }
-    }
-
-    Ok(())
-}
-
-fn unexpose_cmd(port: u16) -> Result<()> {
-    let removed = ExposedPortsStore::remove(port)
-        .map_err(|e| anyhow!("could not remove port {} from allowlist: {}", port, e))?;
-    if removed {
-        println!("unexposed port {}", port);
-    } else {
-        println!("port {} was not in the allowlist", port);
-    }
-
-    if removed {
-        let mut ev = AuditEvent::new("ports.unexposed");
-        ev.target = Some(port.to_string());
-        ev.details = Some(serde_json::json!({ "port": port, "source": "cli" }));
-        match StateStore::load() {
-            Ok(store) => {
-                let _ = write_audit_event_with_store(ev, &store);
-            }
-            Err(_) => {
-                let _ = write_audit_event(ev);
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn exposed_cmd() -> Result<()> {
-    let ports =
-        ExposedPortsStore::list().map_err(|e| anyhow!("could not read allowlist: {}", e))?;
-    if ports.is_empty() {
-        println!("no ports are currently exposed.");
-        println!(
-            "run `pocketshell expose <port>` to allow mobile HTTP forwarding to a dev server."
-        );
-        return Ok(());
-    }
-    println!("{:<8} {:<10} {}", "PORT", "EPHEMERAL", "ADDED");
-    for p in &ports {
-        println!(
-            "{:<8} {:<10} {}",
-            p.port,
-            if p.ephemeral { "yes" } else { "no" },
-            p.added_at,
-        );
-    }
-    Ok(())
-}
-
 #[derive(Clone, Copy, PartialEq)]
 enum MenuAction {
     PairQr,
     TrustedDevices,
     PendingDevices,
     Sessions,
-    ExposedPorts,
     Status,
     DaemonStart,
     DaemonStop,
@@ -2091,7 +2067,6 @@ impl MenuAction {
             Self::TrustedDevices => "Trusted devices",
             Self::PendingDevices => "Pending devices",
             Self::Sessions => "Active terminal sessions",
-            Self::ExposedPorts => "Exposed dev ports",
             Self::Status => "Show status",
             Self::DaemonStart => "Daemon: start",
             Self::DaemonStop => "Daemon: stop",
@@ -2133,7 +2108,6 @@ async fn interactive_menu(config: AppConfig) -> Result<()> {
                 MenuAction::TrustedDevices,
                 MenuAction::PendingDevices,
                 MenuAction::Sessions,
-                MenuAction::ExposedPorts,
                 MenuAction::Status,
                 MenuAction::DaemonStart,
                 MenuAction::DaemonStop,
@@ -2179,7 +2153,6 @@ async fn interactive_menu(config: AppConfig) -> Result<()> {
                 devices(config.clone(), DeviceCommands::ListPending).await
             }
             MenuAction::Sessions => menu_sessions(&theme, &config, &store).await,
-            MenuAction::ExposedPorts => menu_exposed_ports(&theme),
             MenuAction::Status => status(config.clone()).await,
             MenuAction::DaemonStart => daemon_start(),
             MenuAction::DaemonStop => daemon_stop(),
@@ -2370,94 +2343,6 @@ async fn menu_sessions(
     sessions_attach(attachable[idx].name.clone()).await
 }
 
-/// Manage the dev-server port allowlist. Lists currently exposed ports,
-/// lets the user allow a new one (with an optional `ephemeral` flag) or deny
-/// (remove) an existing entry. Wraps the same `expose_cmd` / `unexpose_cmd`
-/// the subcommand path uses, so auditing and ephemeral semantics are identical.
-fn menu_exposed_ports(theme: &dialoguer::theme::ColorfulTheme) -> Result<()> {
-    use console::style;
-    use dialoguer::{Confirm, Input};
-
-    loop {
-        let ports =
-            ExposedPortsStore::list().map_err(|e| anyhow!("could not read allowlist: {}", e))?;
-
-        if ports.is_empty() {
-            println!("{}", style("no ports are currently exposed.").dim());
-            println!(
-                "{}",
-                style("mobile HTTP forwarding will be rejected until you allow a port.").dim()
-            );
-        } else {
-            println!("{}", style("Currently exposed:").bold());
-            for p in &ports {
-                let tag = if p.ephemeral {
-                    style("[ephemeral]").yellow()
-                } else {
-                    style("[persistent]").green()
-                };
-                println!(
-                    "  {}  {}  {}",
-                    style(format!("{:>5}", p.port)).cyan().bold(),
-                    tag,
-                    style(format!("added {}", p.added_at)).dim(),
-                );
-            }
-        }
-        println!();
-
-        // Build menu: one "Deny" row per existing port, then an "Allow" row.
-        // Indices < ports.len() map back to the port being denied.
-        let mut items: Vec<String> = ports
-            .iter()
-            .map(|p| {
-                let suffix = if p.ephemeral { " (ephemeral)" } else { "" };
-                format!("Deny port {}{}", p.port, suffix)
-            })
-            .collect();
-        items.push(style("+ Allow a new port").green().to_string());
-
-        let Some(idx) = select_with_back(theme, "Manage exposed dev ports", &items)? else {
-            return Ok(());
-        };
-
-        if idx == ports.len() {
-            let port_input: String = Input::with_theme(theme)
-                .with_prompt("Port (1-65535)")
-                .interact_text()
-                .map_err(|e| anyhow!("input error: {e}"))?;
-            let port: u16 = match port_input.trim().parse() {
-                Ok(p) if p > 0 => p,
-                _ => {
-                    eprintln!("{}", style("not a valid port number (1-65535)").red());
-                    continue;
-                }
-            };
-            let ephemeral = Confirm::with_theme(theme)
-                .with_prompt("Ephemeral? (drops on next daemon restart — recommended for `npm run dev`)")
-                .default(true)
-                .interact_opt()
-                .map_err(|e| anyhow!("confirm error: {e}"))?
-                .unwrap_or(false);
-            expose_cmd(port, ephemeral)?;
-        } else {
-            let port = ports[idx].port;
-            let confirm = Confirm::with_theme(theme)
-                .with_prompt(format!(
-                    "Deny port {port}? Mobile will be rejected on next forward."
-                ))
-                .default(false)
-                .interact_opt()
-                .map_err(|e| anyhow!("confirm error: {e}"))?
-                .unwrap_or(false);
-            if confirm {
-                unexpose_cmd(port)?;
-            }
-        }
-        println!();
-    }
-}
-
 async fn menu_update(theme: &dialoguer::theme::ColorfulTheme) -> Result<()> {
     use dialoguer::Confirm;
     use host_core::update;
@@ -2550,8 +2435,7 @@ fn print_boot_persistence_warning() {
 /// If invoked as root (sudo), ask the user whether to continue. Returns true
 /// to proceed, false if the user declined.
 fn confirm_root_install() -> bool {
-    use nix::unistd::Uid;
-    if !Uid::effective().is_root() {
+    if !host_core::platform::is_root() {
         return true;
     }
     eprintln!("warning: you are running PocketShell as root.");
@@ -2624,6 +2508,60 @@ fn cli_audit(mut event: AuditEvent) {
     let _ = write_audit_event(event);
 }
 
+/// Whether a process with `pid` currently exists.
+#[cfg(unix)]
 fn pid_running(pid: i32) -> bool {
+    use nix::sys::signal::kill;
+    use nix::unistd::Pid;
+    // signal 0 probes existence/permission without delivering a signal.
     kill(Pid::from_raw(pid), None).is_ok()
+}
+
+#[cfg(windows)]
+fn pid_running(pid: i32) -> bool {
+    // CSV output quotes each column, so the PID appears as `"1234"` only in the
+    // PID field — matching the whole quoted token avoids the false positives a
+    // bare substring search hits (e.g. the "12,345 K" Mem-Usage column, or
+    // another process whose PID merely contains these digits). When the filter
+    // matches nothing, tasklist prints a plain "INFO:" line with no CSV row.
+    let needle = format!("\"{pid}\"");
+    std::process::Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains(&needle))
+        .unwrap_or(false)
+}
+
+/// Ask a process to terminate (SIGTERM on Unix; `taskkill` on Windows).
+#[cfg(unix)]
+fn terminate_pid(pid: i32) {
+    use nix::sys::signal::{kill, Signal};
+    use nix::unistd::Pid;
+    let _ = kill(Pid::from_raw(pid), Signal::SIGTERM);
+}
+
+#[cfg(windows)]
+fn terminate_pid(pid: i32) {
+    // Windows has no SIGTERM, so a bare `taskkill /F` would hard-kill the daemon
+    // before it could mark itself offline, emit the `daemon_stopped` audit event,
+    // and flush state. Instead drop a stop-sentinel the daemon polls for (see the
+    // shutdown future in host-core daemon.rs) to let it exit cleanly, and only
+    // force-kill the process tree as a backstop if it doesn't exit in time.
+    if let Ok(paths) = AppConfig::paths() {
+        let sentinel = paths.state_dir.join("daemon.stop");
+        if std::fs::write(&sentinel, b"stop").is_ok() {
+            for _ in 0..30 {
+                if !pid_running(pid) {
+                    let _ = std::fs::remove_file(&sentinel);
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            let _ = std::fs::remove_file(&sentinel);
+        }
+    }
+    // Force-terminate the process and its children as a last resort.
+    let _ = std::process::Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .output();
 }

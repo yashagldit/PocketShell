@@ -39,5 +39,13 @@
   "badge.running": "运行中",
   "project.showAll": "显示更多 ({{count}})",
   "project.showLess": "显示更少",
-  "badge.terminal": ">_"
+  "badge.terminal": ">_",
+  "list.no_project": "无项目",
+  "list.untitled": "Agent 对话",
+  "list.load_active_failed": "加载活跃会话失败",
+  "list.list_failed": "列出编码会话失败",
+  "list.timed_out": "{{label}} 在 {{ms}}ms 后超时",
+  "list.timeout_label.active": "活跃会话",
+  "list.timeout_label.scan": "编码会话扫描",
+  "list.timeout_label.page": "编码会话页面"
 }

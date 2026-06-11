@@ -48,7 +48,7 @@
   "login.terms_suffix": ".",
   "login.email.title": "Quel est votre email ?",
   "login.email.subtitle": "Nous vous enverrons un code à 6 chiffres.",
-  "login.email.placeholder": "vous@exemple.com",
+  "login.email.placeholder": "you@example.com",
   "login.email.send": "Envoyer le code",
   "login.otp.title": "Vérifiez {{email}}",
   "login.otp.subtitle": "Entrez le code à 6 chiffres que nous venons d'envoyer.",
@@ -73,5 +73,14 @@
   "preview.metric_cpu": "CPU",
   "preview.metric_mem": "MÉM",
   "preview.metric_disk": "DISQUE",
-  "preview.metric_net": "RÉSEAU"
+  "preview.metric_net": "RÉSEAU",
+  "fork.title": "Vous y êtes",
+  "fork.subtitle": "Choisissez par où commencer — vous pourrez toujours faire l'autre plus tard.",
+  "fork.demo.title": "Essayer un hôte de démo",
+  "fork.demo.body": "Explorez une machine simulée — vrai terminal, fichiers et métriques en direct. Sans installation, tout de suite sur votre téléphone.",
+  "fork.demo.cta": "Explorer la démo",
+  "fork.demo.badge": "Recommandé",
+  "fork.pair.title": "Associer un hôte réel",
+  "fork.pair.body": "Connectez votre propre machine. Il vous faudra un ordinateur avec un terminal — cela prend environ une minute.",
+  "fork.pair.cta": "Associer un hôte"
 }

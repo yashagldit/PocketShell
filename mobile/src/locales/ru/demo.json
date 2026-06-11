@@ -1,0 +1,68 @@
+{
+  "badge.demo": "DEMO",
+  "status.online": "онлайн",
+
+  "cta.title": "Понравилось?",
+  "cta.subtitle": "Привяжите свой хост, чтобы использовать всё это по-настоящему.",
+  "cta.pair": "Привязать свой хост",
+
+  "hero.subtitle": "Попробуйте терминал, файлы и монитор в реальном времени — без настройки.",
+  "hero.explore": "Открыть демо",
+  "mini.cpu": "cpu",
+  "mini.ram": "ram",
+
+  "row.title": "Изучите демо",
+  "row.subtitle": "Терминал · Файлы · Монитор — всё симулировано",
+  "row.dismiss": "Скрыть",
+
+  "hub.note": "Всё здесь симулировано и работает на вашем устройстве. Ни с каким реальным компьютером соединения нет.",
+  "hub.terminal.title": "Терминал",
+  "hub.terminal.desc": "Выполняйте команды в зашифрованной оболочке",
+  "hub.monitor.title": "Монитор",
+  "hub.monitor.desc": "CPU, память, диск и сеть в реальном времени",
+  "hub.files.title": "Файлы",
+  "hub.files.desc": "Просмотр и передача файлов",
+  "hub.workspace.title": "Рабочее пространство",
+  "hub.workspace.desc": "Терминал и файлы рядом",
+
+  "terminal.hint": "Нажмите на команду, чтобы попробовать, или введите свою:",
+  "terminal.host_only": "Привяжите свой хост, чтобы использовать это.",
+
+  "monitor.cpu": "CPU",
+  "monitor.ram": "Память",
+  "monitor.disk": "Диск",
+  "monitor.load": "Средняя нагрузка",
+  "monitor.recv": "Вниз",
+  "monitor.send": "Вверх",
+  "monitor.cores": "Использование по ядрам",
+  "monitor.core": "ядро",
+  "monitor.note": "Симулированные метрики — привяжите хост для просмотра реальных данных.",
+
+  "metric.cpu": "CPU",
+  "metric.memory": "Память",
+  "metric.disk": "Диск",
+  "metric.network": "Сеть",
+  "metric.avg": "Среднее",
+  "metric.peak": "Пик",
+  "metric.min": "Мин",
+  "metric.down": "Загрузка",
+  "metric.up": "Отдача",
+  "metric.breakdown": "Детализация",
+  "metric.subtitle": "{{host}} · за {{range}} · {{count}} точек",
+
+  "files.transfer_blocked": "Привяжите свой хост для реальной передачи файлов.",
+  "files.back": "Файлы",
+  "files.upload": "Загрузить",
+  "files.download": "Скачать",
+  "files.empty": "Пустая директория",
+
+  "workspace.terminal_tab": "Терминал",
+  "workspace.files_tab": "Файлы",
+
+  "nav.host": "Demo",
+  "nav.terminal": "Demo Терминал",
+  "nav.monitor": "Demo Монитор",
+  "nav.metric": "Статистика",
+  "nav.files": "Demo Файлы",
+  "nav.workspace": "Demo Рабочее пространство"
+}

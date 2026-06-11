@@ -5,7 +5,7 @@
   "backend.codex.subtitle": "OpenAI App-Server",
   "backend.claude": "Claude",
   "backend.claude.subtitle": "Anthropic stream-json",
-  "source.title": "Start",
+  "source.title": "Starten",
   "source.chat": "Claude-Chat starten",
   "source.subtitle": "Wähle, wie du starten möchtest",
   "source.project": "Projekt",

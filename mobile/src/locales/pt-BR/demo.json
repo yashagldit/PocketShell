@@ -1,0 +1,68 @@
+{
+  "badge.demo": "DEMO",
+  "status.online": "online",
+
+  "cta.title": "Gostou do que viu?",
+  "cta.subtitle": "Pareie seu próprio host para usar tudo isso de verdade.",
+  "cta.pair": "Parear seu próprio host",
+
+  "hero.subtitle": "Experimente o terminal, arquivos e monitor ao vivo — sem configuração.",
+  "hero.explore": "Explorar demo",
+  "mini.cpu": "cpu",
+  "mini.ram": "ram",
+
+  "row.title": "Explore a demo",
+  "row.subtitle": "Terminal · Arquivos · Monitor — tudo simulado",
+  "row.dismiss": "Fechar",
+
+  "hub.note": "Tudo aqui é simulado e roda no seu dispositivo. Nada se conecta a uma máquina real.",
+  "hub.terminal.title": "Terminal",
+  "hub.terminal.desc": "Execute comandos em um shell criptografado",
+  "hub.monitor.title": "Monitor",
+  "hub.monitor.desc": "CPU, memória, disco e rede ao vivo",
+  "hub.files.title": "Arquivos",
+  "hub.files.desc": "Navegue, visualize e transfira arquivos",
+  "hub.workspace.title": "Workspace",
+  "hub.workspace.desc": "Terminal e arquivos lado a lado",
+
+  "terminal.hint": "Toque em um comando para experimentar, ou digite o seu:",
+  "terminal.host_only": "Pareie seu próprio host para usar isso.",
+
+  "monitor.cpu": "CPU",
+  "monitor.ram": "Memória",
+  "monitor.disk": "Disco",
+  "monitor.load": "Carga média",
+  "monitor.recv": "Download",
+  "monitor.send": "Upload",
+  "monitor.cores": "Uso por núcleo",
+  "monitor.core": "núcleo",
+  "monitor.note": "Métricas ao vivo simuladas — pareie um host para ver as reais.",
+
+  "metric.cpu": "CPU",
+  "metric.memory": "Memória",
+  "metric.disk": "Disco",
+  "metric.network": "Rede",
+  "metric.avg": "Média",
+  "metric.peak": "Pico",
+  "metric.min": "Mín",
+  "metric.down": "Download",
+  "metric.up": "Upload",
+  "metric.breakdown": "Detalhamento",
+  "metric.subtitle": "{{host}} · últimos {{range}} · {{count}} pontos",
+
+  "files.transfer_blocked": "Pareie seu próprio host para transferir arquivos de verdade.",
+  "files.back": "Arquivos",
+  "files.upload": "Enviar",
+  "files.download": "Baixar",
+  "files.empty": "Diretório vazio",
+
+  "workspace.terminal_tab": "Terminal",
+  "workspace.files_tab": "Arquivos",
+
+  "nav.host": "Demo",
+  "nav.terminal": "Terminal Demo",
+  "nav.monitor": "Monitor Demo",
+  "nav.metric": "Estatísticas",
+  "nav.files": "Arquivos Demo",
+  "nav.workspace": "Workspace Demo"
+}

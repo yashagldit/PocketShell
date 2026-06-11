@@ -567,13 +567,17 @@ impl AgentSession {
             let mut guard = self.tasks.lock().await;
             std::mem::take(&mut *guard)
         };
-        for h in taken.drain(..) {
-            if tokio::time::timeout(Duration::from_millis(3_000), h)
+        for mut h in taken.drain(..) {
+            if tokio::time::timeout(Duration::from_millis(3_000), &mut h)
                 .await
-                .is_err()
+                .is_ok()
             {
-                debug!(session = %self.id, "agent task did not finish in time");
+                continue;
             }
+
+            debug!(session = %self.id, "agent task did not finish in time; aborting");
+            h.abort();
+            let _ = tokio::time::timeout(Duration::from_millis(500), h).await;
         }
     }
 }
@@ -1185,9 +1189,31 @@ fn send_sigterm(pid: u32) {
 }
 
 #[cfg(not(unix))]
-fn send_sigterm(_pid: u32) {
-    // Windows needs `taskkill /pid X /t /f` to handle the cmd.exe wrapper case
-    // (see remodex codex-transport.js). Deferred until we ship a Windows host.
+fn send_sigterm(pid: u32) {
+    let taskkill = std::env::var_os("WINDIR")
+        .map(|windir| std::path::PathBuf::from(windir).join("System32\\taskkill.exe"))
+        .filter(|path| path.exists())
+        .unwrap_or_else(|| std::path::PathBuf::from("taskkill"));
+    let output = std::process::Command::new(taskkill)
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .output();
+    match output {
+        Ok(out) if out.status.success() => {
+            debug!(pid, "taskkill sent to agent child tree");
+        }
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            debug!(
+                pid,
+                status = ?out.status,
+                stderr = %stderr.trim(),
+                "taskkill failed for agent child tree"
+            );
+        }
+        Err(e) => {
+            debug!(pid, ?e, "taskkill failed to spawn for agent child tree");
+        }
+    }
 }
 
 /// Registry of live Claude sessions. Owned by the daemon via `AgentRouter`.
@@ -1198,8 +1224,8 @@ fn send_sigterm(_pid: u32) {
 /// reopens rebind instead of respawning, saving the ~1s Claude cold-start.
 ///
 /// Lookups prefer `resume_id` (the Claude-minted session uuid) since mobile
-/// generates fresh `agent_id` values per open. An idle-TTL sweep reaps
-/// sessions that have been detached longer than the configured window.
+/// generates fresh `agent_id` values per open. Detached sessions stay alive
+/// for resume until the user explicitly closes them, or until the child exits.
 #[derive(Default)]
 pub struct AgentManager {
     state: Mutex<ManagerState>,
@@ -1326,8 +1352,8 @@ impl AgentManager {
         })
     }
 
-    /// Channel closed — drop the sink and mark the session as idle. The child
-    /// keeps running; `sweep_idle` reaps it eventually.
+    /// Channel closed — drop the sink and mark the session detached. The child
+    /// keeps running so the user can resume later.
     pub async fn detach(&self, agent_id: &str) {
         let session = {
             let mut state = self.state.lock().await;
@@ -1341,29 +1367,22 @@ impl AgentManager {
         }
     }
 
-    /// Agent ids that should be reaped — sessions detached longer than `ttl`
-    /// or whose child has already exited (crashed / completed). We collect
+    /// Agent ids that should be reaped because their child already exited
+    /// (crashed / completed). We collect
     /// session handles under the lock and check `exit_reason` afterwards so
     /// we don't hold the map mutex across async session calls.
-    pub async fn stale_ids(&self, ttl: Duration) -> Vec<String> {
-        let now = Instant::now();
-        let candidates: Vec<(String, Arc<AgentSession>, bool)> = {
+    pub async fn stale_ids(&self, _ttl: Duration) -> Vec<String> {
+        let candidates: Vec<(String, Arc<AgentSession>)> = {
             let state = self.state.lock().await;
             state
                 .by_id
                 .iter()
-                .map(|(id, e)| {
-                    let idle = e
-                        .last_detached_at
-                        .map(|t| now.duration_since(t) >= ttl)
-                        .unwrap_or(false);
-                    (id.clone(), e.session.clone(), idle)
-                })
+                .map(|(id, e)| (id.clone(), e.session.clone()))
                 .collect()
         };
         let mut out = Vec::new();
-        for (id, session, idle) in candidates {
-            if idle || session.exit_reason().await.is_some() {
+        for (id, session) in candidates {
+            if session.exit_reason().await.is_some() {
                 out.push(id);
             }
         }
@@ -1562,8 +1581,7 @@ impl AgentRouter {
     }
 
     /// Channel-close hook. Codex keeps its singleton alive and drops the
-    /// sink. Claude also keeps its per-session process alive but marks it
-    /// for eventual reaping via `sweep_idle_claude`.
+    /// sink. Claude also keeps its per-session process alive for resume.
     pub async fn detach(&self, agent_id: &str) {
         let backend = self.backends.lock().await.remove(agent_id);
         match backend {
@@ -1573,9 +1591,21 @@ impl AgentRouter {
         }
     }
 
-    /// Close any Claude sessions that are idle longer than `ttl` or have
-    /// exited on their own, and drop the matching `backends` entries so the
-    /// router's index tracks the manager.
+    /// Explicit close hook. Unlike [`detach`], this terminates the backing
+    /// child process and forgets the routing entry.
+    pub async fn close(&self, agent_id: &str) {
+        let backend = self.backends.lock().await.remove(agent_id);
+        match backend {
+            Some(Backend::Codex) => self.codex.shutdown().await,
+            Some(Backend::Claude) => {
+                let _ = self.manager.close(agent_id).await;
+            }
+            None => {}
+        }
+    }
+
+    /// Drop Claude sessions whose child exited on its own, and drop the
+    /// matching `backends` entries so the router's index tracks the manager.
     pub async fn sweep_idle_claude(&self, ttl: Duration) {
         let stale = self.manager.stale_ids(ttl).await;
         if stale.is_empty() {
@@ -1588,7 +1618,7 @@ impl AgentRouter {
             }
         }
         for id in stale {
-            info!(agent_id = %id, "claude idle/crashed reap");
+            info!(agent_id = %id, "claude exited reap");
             self.manager.close(&id).await;
         }
     }
@@ -2335,6 +2365,7 @@ mod tests {
         assert!(err.contains("path not found") || err.contains("No such"));
     }
 
+    #[cfg(unix)] // POSIX-only behavior; not meaningful on Windows
     #[test]
     fn agent_localpath_rejects_protected_paths() {
         let input = SendUserMessageInput {
@@ -2409,6 +2440,7 @@ mod tests {
         .unwrap();
     }
 
+    #[cfg(unix)] // POSIX-only behavior; not meaningful on Windows
     #[test]
     fn validate_codex_stdin_frame_rejects_protected_localimage_path() {
         // The headline exploit: mobile builds the JSON-RPC frame itself and

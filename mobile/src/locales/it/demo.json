@@ -1,0 +1,68 @@
+{
+  "badge.demo": "DEMO",
+  "status.online": "online",
+
+  "cta.title": "Ti piace quello che vedi?",
+  "cta.subtitle": "Associa il tuo host per usare tutto questo per davvero.",
+  "cta.pair": "Associa il tuo host",
+
+  "hero.subtitle": "Prova il terminale, i file e il monitor live — senza configurazione.",
+  "hero.explore": "Esplora la demo",
+  "mini.cpu": "cpu",
+  "mini.ram": "ram",
+
+  "row.title": "Esplora la demo",
+  "row.subtitle": "Terminale · File · Monitor — tutto simulato",
+  "row.dismiss": "Chiudi",
+
+  "hub.note": "Tutto qui è simulato e gira sul tuo dispositivo. Nulla si connette a una macchina reale.",
+  "hub.terminal.title": "Terminale",
+  "hub.terminal.desc": "Esegui comandi in una shell cifrata",
+  "hub.monitor.title": "Monitor",
+  "hub.monitor.desc": "CPU, memoria, disco e rete in tempo reale",
+  "hub.files.title": "File",
+  "hub.files.desc": "Sfoglia, visualizza e trasferisci file",
+  "hub.workspace.title": "Workspace",
+  "hub.workspace.desc": "Terminale e file, fianco a fianco",
+
+  "terminal.hint": "Tocca un comando per provarlo, o digita il tuo:",
+  "terminal.host_only": "Associa il tuo host per usare questa funzione.",
+
+  "monitor.cpu": "CPU",
+  "monitor.ram": "Memoria",
+  "monitor.disk": "Disco",
+  "monitor.load": "Carico medio",
+  "monitor.recv": "Giù",
+  "monitor.send": "Su",
+  "monitor.cores": "Utilizzo per core",
+  "monitor.core": "core",
+  "monitor.note": "Metriche live simulate — associa un host per vedere quelle reali.",
+
+  "metric.cpu": "CPU",
+  "metric.memory": "Memoria",
+  "metric.disk": "Disco",
+  "metric.network": "Rete",
+  "metric.avg": "Media",
+  "metric.peak": "Picco",
+  "metric.min": "Min",
+  "metric.down": "Download",
+  "metric.up": "Upload",
+  "metric.breakdown": "Dettaglio",
+  "metric.subtitle": "{{host}} · ultimi {{range}} · {{count}} punti",
+
+  "files.transfer_blocked": "Associa il tuo host per il trasferimento file reale.",
+  "files.back": "File",
+  "files.upload": "Carica",
+  "files.download": "Scarica",
+  "files.empty": "Directory vuota",
+
+  "workspace.terminal_tab": "Terminale",
+  "workspace.files_tab": "File",
+
+  "nav.host": "Demo",
+  "nav.terminal": "Terminale Demo",
+  "nav.monitor": "Monitor Demo",
+  "nav.metric": "Statistiche",
+  "nav.files": "File Demo",
+  "nav.workspace": "Workspace Demo"
+}

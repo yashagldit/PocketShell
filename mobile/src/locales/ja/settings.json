@@ -112,7 +112,7 @@
   "pro_gate.alerts.title": "より多くのアラート",
   "pro_gate.alerts.message": "無料アカウントは最大{{count}}件のアクティブなアラートを持てます。無制限のアラートにはPocketShell Proにアップグレードしてください。",
   "pro_gate.chat_history.title": "完全なチャット履歴",
-  "pro_gate.chat_history.message": "無料アカウントは最新の{{count}}件のチャットセッションにアクセスできます。すべてのセッションを表示するにはPocketShell Proにアップグレードしてください。",
+  "pro_gate.chat_history.message": "無料アカウントでは過去{{days}}日間のチャットセッションにアクセスできます。すべての履歴を見るには PocketShell Pro にアップグレードしてください。",
   "pro_gate.host_limit.title": "ホスト上限に達しました",
   "pro_gate.host_limit.message": "Proアカウントは最大{{proCount}}台のホストをペアリングできます。新しいホストをペアリングするには既存のホストを削除するか、それ以上必要な場合はサポートにお問い合わせください。",
   "pro_gate.generic.title": "上限に達しました",

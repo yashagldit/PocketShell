@@ -15,7 +15,6 @@ base64.workspace = true
 chrono.workspace = true
 clap.workspace = true
 host-core = { path = "../host-core" }
-nix.workspace = true
 rand.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
@@ -26,6 +25,10 @@ ed25519-dalek.workspace = true
 qrcode = "0.14.1"
 dialoguer = "0.11"
 console = "0.15"
+
+# `nix` is POSIX-only; all uses in main.rs are behind `#[cfg(unix)]`.
+[target.'cfg(unix)'.dependencies]
+nix.workspace = true
 
 [dev-dependencies]
 assert_cmd = "2"

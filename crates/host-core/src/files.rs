@@ -29,16 +29,11 @@ const DENIED_HOME_PREFIXES: &[&str] = &[
     ".pypirc",
 ];
 
-/// Specific files (not just directories) that must be denied. Shell
-/// histories often contain pasted secrets; the rest are credentials.
-const DENIED_HOME_FILES: &[&str] = &[
-    ".bash_history",
-    ".zsh_history",
-    ".python_history",
-    ".node_repl_history",
-    ".lesshst",
-    ".netrc",
-];
+/// Specific files (not just directories) that must be denied.
+/// `.netrc` holds plaintext login credentials. Shell histories are
+/// intentionally NOT in this list — the mobile terminal needs them for
+/// the History tab, and a paired user already has shell access anyway.
+const DENIED_HOME_FILES: &[&str] = &[".netrc"];
 
 /// Home-relative directories that are ALWAYS allowed, even when they
 /// would otherwise be caught by the absolute denylist (e.g. `/root` for
@@ -63,6 +58,7 @@ const ALLOWED_HOME_PREFIXES: &[&str] = &[".claude", ".codex"];
 /// `/tmp`, `/usr` (outside `/usr/local/etc`), `/opt`, and `/var/tmp` /
 /// `/var/folders` are intentionally NOT denied — legitimate scratch /
 /// build / install locations.
+#[cfg(not(windows))]
 const DENIED_ABSOLUTE_PREFIXES: &[&str] = &[
     "/etc",
     "/root",
@@ -88,6 +84,21 @@ const DENIED_ABSOLUTE_PREFIXES: &[&str] = &[
     "/private/var/audit",
 ];
 
+/// Windows counterpart to the absolute denylist. This is best-effort
+/// defense-in-depth: `Path::starts_with` comparison is case-sensitive and
+/// drive-letter-specific, so it's a backstop layered on top of the per-user
+/// home scoping rather than a hard boundary (the same is true of the Unix
+/// list, which the daemon's non-root requirement already fronts). Most user
+/// data lives under the profile directory, which the home-relative rules
+/// already protect.
+#[cfg(windows)]
+const DENIED_ABSOLUTE_PREFIXES: &[&str] = &[
+    r"C:\Windows",
+    r"C:\Program Files",
+    r"C:\Program Files (x86)",
+    r"C:\ProgramData",
+];
+
 /// Resolved denylist entries against a specific home dir + the global
 /// absolute denylist.
 struct DeniedPaths {
@@ -98,23 +109,86 @@ struct DeniedPaths {
 }
 
 fn build_denied_paths(home: &Path) -> DeniedPaths {
+    // `mut` is only needed on Windows, where the block below pushes
+    // env-resolved system dirs; on Unix the binding is never mutated.
+    #[cfg_attr(not(windows), allow(unused_mut))]
+    let mut absolute_prefixes: Vec<PathBuf> =
+        DENIED_ABSOLUTE_PREFIXES.iter().map(PathBuf::from).collect();
+    // On Windows the real system directories may live on a non-C: drive (or a
+    // relocated ProgramData), so resolve them from the environment instead of
+    // pinning the denylist to a hardcoded `C:\`. Falls back to the static list
+    // above when a variable is unset.
+    #[cfg(windows)]
+    {
+        for var in [
+            "windir",
+            "SystemRoot",
+            "ProgramFiles",
+            "ProgramFiles(x86)",
+            "ProgramW6432",
+            "ProgramData",
+        ] {
+            if let Some(v) = std::env::var_os(var) {
+                let p = PathBuf::from(v);
+                if !p.as_os_str().is_empty() {
+                    absolute_prefixes.push(p);
+                }
+            }
+        }
+    }
     DeniedPaths {
         prefixes: DENIED_HOME_PREFIXES.iter().map(|p| home.join(p)).collect(),
         files: DENIED_HOME_FILES.iter().map(|f| home.join(f)).collect(),
-        absolute_prefixes: DENIED_ABSOLUTE_PREFIXES.iter().map(PathBuf::from).collect(),
+        absolute_prefixes,
         allowed_prefixes: ALLOWED_HOME_PREFIXES.iter().map(|p| home.join(p)).collect(),
     }
+}
+
+/// `Path::starts_with`, but case-insensitive on Windows. Rust's std comparison
+/// is always case-sensitive, so on a case-insensitive NTFS/ReFS volume a
+/// `C:\Windows` denylist entry would otherwise be trivially bypassed with
+/// `c:\windows`. Unix keeps the exact component-wise comparison.
+#[cfg(windows)]
+fn denied_prefix_match(path: &Path, prefix: &Path) -> bool {
+    let norm = |p: &Path| p.to_string_lossy().to_lowercase().replace('/', "\\");
+    let p = norm(path);
+    let pre = norm(prefix);
+    // `==` covers the dir itself; the trailing separator keeps `C:\Windows`
+    // from matching a sibling like `C:\WindowsApps`.
+    p == pre || p.starts_with(&format!("{pre}\\"))
+}
+#[cfg(not(windows))]
+fn denied_prefix_match(path: &Path, prefix: &Path) -> bool {
+    path.starts_with(prefix)
+}
+
+/// Case-insensitive path equality on Windows; exact elsewhere.
+#[cfg(windows)]
+fn denied_path_eq(a: &Path, b: &Path) -> bool {
+    a.to_string_lossy().to_lowercase().replace('/', "\\")
+        == b.to_string_lossy().to_lowercase().replace('/', "\\")
+}
+#[cfg(not(windows))]
+fn denied_path_eq(a: &Path, b: &Path) -> bool {
+    a == b
 }
 
 fn is_path_denied_against(path: &Path, denied: &DeniedPaths) -> bool {
     // Explicit allowlist (~/.claude, ~/.codex) overrides every deny rule so
     // root-installed daemons can still serve coding-agent session history.
-    if denied.allowed_prefixes.iter().any(|p| path.starts_with(p)) {
+    if denied
+        .allowed_prefixes
+        .iter()
+        .any(|p| denied_prefix_match(path, p))
+    {
         return false;
     }
-    denied.prefixes.iter().any(|p| path.starts_with(p))
-        || denied.files.iter().any(|f| path == f)
-        || denied.absolute_prefixes.iter().any(|p| path.starts_with(p))
+    denied.prefixes.iter().any(|p| denied_prefix_match(path, p))
+        || denied.files.iter().any(|f| denied_path_eq(path, f))
+        || denied
+            .absolute_prefixes
+            .iter()
+            .any(|p| denied_prefix_match(path, p))
 }
 
 /// Check whether `path` (already absolute, ideally canonicalized) lands
@@ -177,7 +251,20 @@ fn default_file_home() -> PathBuf {
         }
     }
 
-    dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"))
+    dirs::home_dir().unwrap_or_else(default_home_fallback)
+}
+
+/// Last-resort home directory when `dirs::home_dir()` yields nothing. On Unix
+/// the root `/` keeps the historical denylist semantics; on Windows there's no
+/// meaningful root, so fall back to the temp directory.
+#[cfg(not(windows))]
+fn default_home_fallback() -> PathBuf {
+    PathBuf::from("/")
+}
+
+#[cfg(windows)]
+fn default_home_fallback() -> PathBuf {
+    std::env::temp_dir()
 }
 
 #[cfg(unix)]
@@ -316,6 +403,7 @@ pub async fn handle_files_action_with_context(
                 read_file(&path_str, offset, limit)
             }
             "stat" => stat_path(&path_str),
+            "list_drives" => list_drives(),
             "mkdir" => audit_mutation(&ctx, "file.mkdir", &path_str, None, None, mkdir(&path_str)),
             "delete" => {
                 // Capture recursive flag before the operation so the audit record
@@ -845,6 +933,112 @@ fn stat_path(path_str: &str) -> Result<serde_json::Value> {
         "created_at": created_at,
         "is_symlink": is_symlink,
         "symlink_target": symlink_target,
+    }))
+}
+
+/// Enumerate the host's drives/volumes plus the current user's well-known
+/// folders for the mobile "This PC" (Windows) / "Computer" (Unix) view, in a
+/// single request. Replaces the client-side A–Z `stat` probing (26 round-trips,
+/// most of them failing) with one host-side call: `sysinfo` reports the real
+/// mount points and `dirs` resolves the actual Known Folder locations — correct
+/// even when Documents/Downloads are redirected (e.g. to OneDrive), which the
+/// `~/Documents` guess can't see. Read-only; denylisted volumes/folders are
+/// filtered out so the picker matches what `list_dir`/`stat` will actually open.
+fn list_drives() -> Result<serde_json::Value> {
+    use sysinfo::Disks;
+
+    // Drives: real mount points. On Windows these are drive roots (`C:\`, `D:\`);
+    // on Unix they are filesystem mounts. Deduplicated by mount, then sorted for
+    // a stable, predictable order ("/" sorts first; volumes alphabetical).
+    let mut drives: Vec<FileEntry> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for disk in Disks::new_with_refreshed_list().list() {
+        let mount_path = disk.mount_point();
+        let mount = mount_path.to_string_lossy().to_string();
+        // macOS firmware/helper/backup volumes (shared with the stats collector),
+        // plus the APFS data sibling that collapses into "/".
+        if crate::stats::is_noise_mount(&mount) || mount == "/System/Volumes/Data" {
+            continue;
+        }
+        // Container/virtual filesystems that aren't user storage. sysinfo already
+        // drops snap/squashfs, proc, sysfs, tmpfs and /proc,/sys,/run mounts; it
+        // does NOT drop Docker `overlay` or FUSE/AppImage mounts, so skip those.
+        let fs_type = disk.file_system().to_string_lossy();
+        if fs_type == "overlay" || fs_type.starts_with("fuse") {
+            continue;
+        }
+        // Stay consistent with list_dir/stat: don't surface a volume the denylist
+        // would reject on tap (otherwise it shows but errors when opened).
+        if is_path_denied(mount_path) {
+            continue;
+        }
+        if !seen.insert(mount.clone()) {
+            continue;
+        }
+        let trimmed = mount.trim_end_matches(['\\', '/']);
+        let name = if trimmed.is_empty() {
+            mount.clone() // root "/" trims to empty — keep it visible
+        } else if trimmed.ends_with(':') {
+            trimmed.to_string() // Windows drive letter ("C:")
+        } else {
+            // Friendly volume name from the last path component ("USB", "boot").
+            mount_path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| trimmed.to_string())
+        };
+        drives.push(FileEntry {
+            name,
+            path: mount,
+            is_dir: true,
+            size: 0,
+            permissions: String::new(),
+            modified_at: None,
+            is_symlink: false,
+        });
+    }
+    drives.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+
+    // Quick-access folders: the user's actual Known Folders, in Explorer's pin
+    // order. Skip any the platform doesn't define or that don't exist on disk.
+    let mut folders: Vec<FileEntry> = Vec::new();
+    let candidates = [
+        dirs::desktop_dir(),
+        dirs::download_dir(),
+        dirs::document_dir(),
+        dirs::picture_dir(),
+    ];
+    for candidate in candidates.into_iter().flatten() {
+        // Same denylist consistency as the drives above — never surface a folder
+        // the denylist would reject when the user taps it.
+        if is_path_denied(&candidate) {
+            continue;
+        }
+        let metadata = match fs::metadata(&candidate) {
+            Ok(m) if m.is_dir() => m,
+            _ => continue,
+        };
+        let name = candidate
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        folders.push(FileEntry {
+            name,
+            path: candidate.to_string_lossy().to_string(),
+            is_dir: true,
+            size: 0,
+            permissions: get_permissions(&metadata),
+            modified_at: modified_iso(&metadata),
+            is_symlink: false,
+        });
+    }
+
+    Ok(serde_json::json!({
+        "drives": drives,
+        "folders": folders,
+        // Authoritative host platform so the client labels the view ("This PC"
+        // vs "Computer") without inferring Windows-vs-Unix from drive-path shapes.
+        "platform": if cfg!(windows) { "windows" } else { "unix" },
     }))
 }
 
@@ -1598,6 +1792,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)] // POSIX-only behavior; not meaningful on Windows
     #[test]
     fn safe_resolve_dest_errors_when_ancestor_unresolvable() {
         // Paths containing `..` in a non-existent segment cause the
@@ -1933,6 +2128,7 @@ mod tests {
         assert_eq!(res["total"], 1);
     }
 
+    #[cfg(unix)] // POSIX-only behavior; not meaningful on Windows
     #[test]
     fn search_files_matches_path_shaped_queries() {
         // Used to return 0 hits because the substring matcher only saw
@@ -2033,6 +2229,33 @@ mod tests {
         assert_eq!(res["is_dir"], false);
     }
 
+    #[tokio::test]
+    async fn handle_files_action_dispatches_list_drives() {
+        let v = serde_json::json!({ "action": "list_drives" });
+        let router = crate::agent_session::AgentRouter::new();
+        let res = handle_files_action(&v, &router).await.unwrap();
+        // Both keys are always present as arrays. We deliberately do NOT assert a
+        // minimum drive count: a sandboxed/containerized CI runner can legitimately
+        // report zero mounts, and that must not fail this dispatch test.
+        let drives = res["drives"].as_array().expect("drives array");
+        assert!(res["folders"].is_array(), "folders should be an array");
+        assert!(
+            matches!(res["platform"].as_str(), Some("windows") | Some("unix")),
+            "platform should be reported as windows or unix"
+        );
+        for d in drives {
+            // Each drive is a navigable directory entry with a non-empty path.
+            assert_eq!(d["is_dir"], true);
+            let path = d["path"].as_str().unwrap_or("");
+            assert!(!path.is_empty());
+            // macOS firmware/APFS-helper volumes must be filtered out.
+            assert!(
+                !path.starts_with("/System/Volumes/"),
+                "synthetic volume leaked into drives: {path}"
+            );
+        }
+    }
+
     #[test]
     fn denylist_blocks_protected_dirs() {
         // Test against an explicit fake home so the result doesn't
@@ -2054,13 +2277,16 @@ mod tests {
             &home.join(".config/gh/hosts.yml"),
             &d
         ));
-        assert!(is_path_denied_against(&home.join(".bash_history"), &d));
         assert!(is_path_denied_against(&home.join(".netrc"), &d));
         assert!(!is_path_denied_against(
             &home.join("Documents/file.txt"),
             &d
         ));
         assert!(!is_path_denied_against(&home.join(".bashrc"), &d));
+        // Shell histories are intentionally readable so the mobile
+        // terminal's History tab can populate.
+        assert!(!is_path_denied_against(&home.join(".bash_history"), &d));
+        assert!(!is_path_denied_against(&home.join(".zsh_history"), &d));
     }
 
     #[test]
@@ -2076,6 +2302,7 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)] // POSIX-only behavior; not meaningful on Windows
     #[test]
     fn denylist_blocks_system_paths() {
         // Defense-in-depth for the case where the daemon ends up running with
@@ -2164,6 +2391,7 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)] // POSIX-only behavior; not meaningful on Windows
     #[test]
     fn denylist_blocks_subpath_under_protected_root() {
         // `.starts_with` matches component-by-component, so an attacker can't
@@ -2190,6 +2418,7 @@ mod tests {
         assert!(!is_path_denied_against(Path::new("/var/loghub/file"), &d));
     }
 
+    #[cfg(unix)] // POSIX-only behavior; not meaningful on Windows
     #[test]
     fn allowlist_overrides_root_absolute_deny_for_coding_agents() {
         // Root-installed daemons keep coding-agent session history at
@@ -2247,6 +2476,7 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)] // POSIX-only behavior; not meaningful on Windows
     #[test]
     fn allowlist_does_not_apply_when_path_outside_home() {
         // A `.claude` dir somewhere weird (not the resolved HOME) is NOT
