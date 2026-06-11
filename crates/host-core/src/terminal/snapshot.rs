@@ -133,7 +133,11 @@ fn serialize<T>(term: &Term<T>, scrollback_lines: usize) -> Vec<u8> {
                     .contains(Flags::WRAPLINE);
             // A wrapped row always occupies the full width; otherwise stop at
             // the last significant cell so we don't paint trailing blanks.
-            let line_len = if wrapped { cols } else { row_len(term, line, cols) };
+            let line_len = if wrapped {
+                cols
+            } else {
+                row_len(term, line, cols)
+            };
 
             let mut c = 0;
             while c < line_len {
@@ -329,7 +333,10 @@ mod tests {
     #[test]
     fn plain_text_is_present_with_home_and_cursor() {
         let s = snap(80, 24, b"hello");
-        assert!(s.starts_with("\x1b[H\x1b[0m"), "starts homed + reset: {s:?}");
+        assert!(
+            s.starts_with("\x1b[H\x1b[0m"),
+            "starts homed + reset: {s:?}"
+        );
         assert!(s.contains("hello"), "contains text: {s:?}");
         assert!(s.ends_with("\x1b[1;6H"), "cursor restored: {s:?}");
     }
@@ -376,14 +383,20 @@ mod tests {
     #[test]
     fn alt_screen_prefixes_restore() {
         let s = snap(80, 24, b"\x1b[?1049hfullscreen");
-        assert!(s.starts_with("\x1b[?1049h"), "enters alt buffer first: {s:?}");
+        assert!(
+            s.starts_with("\x1b[?1049h"),
+            "enters alt buffer first: {s:?}"
+        );
         assert!(s.contains("fullscreen"), "alt content present: {s:?}");
     }
 
     #[test]
     fn hidden_cursor_is_restored_hidden() {
         let s = snap(80, 24, b"\x1b[?25lmenu");
-        assert!(s.contains("\x1b[?25l"), "cursor hidden flag restored: {s:?}");
+        assert!(
+            s.contains("\x1b[?25l"),
+            "cursor hidden flag restored: {s:?}"
+        );
     }
 
     #[test]
@@ -434,7 +447,11 @@ mod tests {
         let mut m = TerminalMirror::new(80, 24);
         m.feed(b"hello");
         m.feed(b" world");
-        assert_eq!(m.snapshot().base_offset, 11, "base_offset == total bytes fed");
+        assert_eq!(
+            m.snapshot().base_offset,
+            11,
+            "base_offset == total bytes fed"
+        );
     }
 
     #[test]

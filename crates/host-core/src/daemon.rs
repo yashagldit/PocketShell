@@ -2988,6 +2988,21 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                             webrtc_mgr.prune_session_channels(&session_id);
                             authenticated_channels.remove(&session_id);
                             pending_auth.remove(&session_id);
+                            if !webrtc_mgr.has_channel(&session_id) {
+                                let should_detach = store.state.sessions.iter().any(|session| {
+                                    session.session_id == session_id
+                                        && !matches!(
+                                            session.state,
+                                            SessionState::Detached
+                                                | SessionState::Ended
+                                                | SessionState::Failed
+                                        )
+                                });
+                                if should_detach {
+                                    store.touch_session_state(&session_id, SessionState::Detached);
+                                    store.save()?;
+                                }
+                            }
                         }
                         WebRtcEvent::StatsChannelOpened { host_id, mobile_device_id, channel } => {
                             info!("stats WebRTC channel opened for host {} from device {}", host_id, mobile_device_id);
