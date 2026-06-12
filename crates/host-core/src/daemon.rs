@@ -1785,6 +1785,15 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
     // `summary_unsubscribe` on connect when no mobile is viewing.
     let mut summary_active = true;
     info!("PocketShell native session persistence enabled");
+    // One-time startup reap: kill any conhost.exe ConPTY backend orphaned by a
+    // previous daemon instance's ungraceful death (they busy-spin at ~100% CPU
+    // forever and nothing else ever reaps them). New sessions are covered by
+    // the SessionManager's job object; this catches leftovers from runs that
+    // predate the guard or slipped past a failed assignment. No-op off-Windows.
+    let reaped = crate::job_object::sweep_orphaned_conpty_backends();
+    if reaped > 0 {
+        warn!("reaped {reaped} orphaned ConPTY conhost.exe process(es) from a previous daemon death");
+    }
     let mut sessions = SessionManager::new(config.session_limit);
     let (webrtc_event_tx, mut webrtc_event_rx) =
         tokio::sync::mpsc::unbounded_channel::<WebRtcEvent>();

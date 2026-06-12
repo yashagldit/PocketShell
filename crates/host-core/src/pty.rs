@@ -445,6 +445,15 @@ impl SessionManager {
             )));
         }
 
+        // Snapshot our direct conhost children before `openpty` so the
+        // `conhost.exe` ConPTY backend it spawns can be identified by diff
+        // below and pulled into the job object (Windows only).
+        #[cfg(windows)]
+        let conhosts_before: std::collections::HashSet<u32> =
+            crate::job_object::direct_conhost_children()
+                .into_iter()
+                .collect();
+
         let pty = native_pty_system();
         let pair = pty
             .openpty(PtySize {
@@ -474,6 +483,18 @@ impl SessionManager {
         if let Some(job) = &self.job {
             if let Some(h) = child.as_raw_handle() {
                 job.assign(h);
+            }
+            // Assigning the shell alone is NOT enough: `openpty` above
+            // (CreatePseudoConsole) spawned a `conhost.exe` ConPTY backend as a
+            // direct child of *this* process — a sibling of the shell, so job
+            // membership inherited through the shell never reaches it. That
+            // conhost is exactly the process that busy-spins at 100% CPU when
+            // orphaned. Diff the before/after child sets and pull the new
+            // backend(s) into the job too.
+            for pid in crate::job_object::direct_conhost_children() {
+                if !conhosts_before.contains(&pid) {
+                    job.assign_pid(pid);
+                }
             }
         }
 

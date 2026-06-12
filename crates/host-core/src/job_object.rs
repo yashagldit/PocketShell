@@ -24,6 +24,18 @@
 //! every process still in the job. Orphaned, spinning conhosts become
 //! structurally impossible regardless of how the daemon dies.
 //!
+//! Crucially, assigning the *shell* child is not enough: the `conhost.exe`
+//! ConPTY backend is spawned by `CreatePseudoConsole` (inside `openpty`) as a
+//! direct child of the **daemon** — a sibling of the shell, never its
+//! descendant — so job membership inherited through the shell never reaches
+//! it. The PTY spawn path therefore also diffs the daemon's direct conhost
+//! children around `openpty` and assigns the new backend into the job
+//! explicitly (see [`direct_conhost_children`] / [`JobObjectGuard::assign_pid`]).
+//!
+//! As a second layer, [`sweep_orphaned_conpty_backends`] runs once at daemon
+//! startup and kills any already-orphaned ConPTY conhost left behind by a
+//! previous daemon death (or by builds that predate this guard).
+//!
 //! # Why hand-rolled FFI
 //!
 //! The four kernel32 calls and the one limit-info struct used here are stable
@@ -84,6 +96,10 @@ mod imp {
         peak_job_memory_used: usize,
     }
 
+    // OpenProcess access rights required by AssignProcessToJobObject.
+    const PROCESS_TERMINATE: u32 = 0x0001;
+    const PROCESS_SET_QUOTA: u32 = 0x0100;
+
     #[link(name = "kernel32")]
     extern "system" {
         fn CreateJobObjectW(lp_job_attributes: *mut c_void, lp_name: *const u16) -> Handle;
@@ -94,6 +110,8 @@ mod imp {
             cb_job_object_information_length: u32,
         ) -> Bool;
         fn AssignProcessToJobObject(h_job: Handle, h_process: Handle) -> Bool;
+        fn OpenProcess(dw_desired_access: u32, b_inherit_handle: Bool, dw_process_id: u32)
+            -> Handle;
         fn CloseHandle(h_object: Handle) -> Bool;
     }
 
@@ -159,6 +177,122 @@ mod imp {
                 }
             }
         }
+
+        /// Assign a process by PID. Used for the `conhost.exe` ConPTY backend,
+        /// which `CreatePseudoConsole` spawns as a direct child of the daemon —
+        /// we never get a handle to it from `portable_pty`, only its PID via
+        /// child enumeration. Best-effort: opens the process with the minimal
+        /// rights `AssignProcessToJobObject` requires, assigns, closes.
+        pub fn assign_pid(&self, pid: u32) {
+            unsafe {
+                let process = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid);
+                if process.is_null() {
+                    tracing::debug!("OpenProcess failed for ConPTY backend pid={pid} (continuing)");
+                    return;
+                }
+                let ok = AssignProcessToJobObject(self.handle, process);
+                if ok == 0 {
+                    // Most common cause: already assigned on a previous call.
+                    tracing::debug!(
+                        "AssignProcessToJobObject failed for ConPTY backend pid={pid} (continuing)"
+                    );
+                } else {
+                    tracing::debug!("ConPTY backend conhost.exe pid={pid} joined the job object");
+                }
+                CloseHandle(process);
+            }
+        }
+    }
+
+    /// PIDs of `conhost.exe` processes whose direct parent is this process —
+    /// i.e. ConPTY backends created by our `CreatePseudoConsole` calls. Classic
+    /// interactive conhosts are children of their console *client* process, so
+    /// they never appear here.
+    pub fn direct_conhost_children() -> Vec<u32> {
+        use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+
+        let mut sys = System::new();
+        sys.refresh_processes_specifics(
+            ProcessesToUpdate::All,
+            true,
+            ProcessRefreshKind::nothing(),
+        );
+        let me = sysinfo::Pid::from_u32(std::process::id());
+        sys.processes()
+            .iter()
+            .filter(|(_, p)| {
+                p.parent() == Some(me) && p.name().eq_ignore_ascii_case("conhost.exe")
+            })
+            .map(|(pid, _)| pid.as_u32())
+            .collect()
+    }
+
+    /// Kill `conhost.exe` ConPTY backends orphaned by a previous daemon death.
+    ///
+    /// Run once at daemon startup. New sessions are protected by the job
+    /// object, but orphans left by older builds (or by a failed job
+    /// assignment) busy-spin at ~100% CPU forever — nothing else will ever
+    /// reap them. Targets are identified conservatively; a process is killed
+    /// only if ALL of:
+    /// - its image name is `conhost.exe`
+    /// - its command line contains `--headless` (the ConPTY marker —
+    ///   interactive console hosts never carry it)
+    /// - its parent is dead: either the PPID no longer exists, or the process
+    ///   now holding that PID started *after* the conhost did (PID reuse)
+    ///
+    /// Live ConPTY backends (ours or any other app's) always have a live,
+    /// older parent and are never touched. Returns the number killed.
+    pub fn sweep_orphaned_conpty_backends() -> usize {
+        use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+
+        let mut sys = System::new();
+        sys.refresh_processes_specifics(
+            ProcessesToUpdate::All,
+            true,
+            ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always),
+        );
+
+        let procs = sys.processes();
+        let mut killed = 0usize;
+        for (pid, p) in procs {
+            if !p.name().eq_ignore_ascii_case("conhost.exe") {
+                continue;
+            }
+            let headless = p
+                .cmd()
+                .iter()
+                .any(|arg| arg.to_string_lossy().contains("--headless"));
+            if !headless {
+                continue;
+            }
+            let Some(ppid) = p.parent() else {
+                continue; // can't establish lineage — leave it alone
+            };
+            let orphaned = match procs.get(&ppid) {
+                None => true, // parent is gone
+                // The PID was reused: its current holder started after this
+                // conhost, so the original parent is dead.
+                Some(parent) => parent.start_time() > p.start_time(),
+            };
+            if !orphaned {
+                continue;
+            }
+            if p.kill() {
+                tracing::warn!(
+                    "reaped orphaned ConPTY conhost.exe pid={} (parent {} is dead) — \
+                     leftover from an ungraceful daemon death",
+                    pid.as_u32(),
+                    ppid.as_u32()
+                );
+                killed += 1;
+            } else {
+                tracing::warn!(
+                    "failed to kill orphaned ConPTY conhost.exe pid={}",
+                    pid.as_u32()
+                );
+            }
+        }
+        killed
     }
 
     impl Drop for JobObjectGuard {
@@ -186,17 +320,154 @@ mod imp {
         }
         #[allow(dead_code)]
         pub fn assign(&self, _process_handle: *mut c_void) {}
+        #[allow(dead_code)]
+        pub fn assign_pid(&self, _pid: u32) {}
+    }
+
+    /// ConPTY backends only exist on Windows; nothing to enumerate elsewhere.
+    pub fn direct_conhost_children() -> Vec<u32> {
+        Vec::new()
+    }
+
+    /// ConPTY backends only exist on Windows; nothing to sweep elsewhere.
+    pub fn sweep_orphaned_conpty_backends() -> usize {
+        0
     }
 }
 
-pub use imp::JobObjectGuard;
+pub use imp::{direct_conhost_children, sweep_orphaned_conpty_backends, JobObjectGuard};
 
 #[cfg(all(test, windows))]
 mod tests {
-    use super::JobObjectGuard;
+    use super::{direct_conhost_children, sweep_orphaned_conpty_backends, JobObjectGuard};
+    use std::collections::HashSet;
     use std::os::windows::io::AsRawHandle;
     use std::process::Command;
     use std::time::{Duration, Instant};
+
+    /// Serializes the ConPTY-spawning tests. They identify "their" conhost by
+    /// diffing this process's conhost children around `openpty`, so two of
+    /// them running concurrently can capture each other's backend — and one
+    /// test's guard drop would then kill the other test's conhost.
+    static CONPTY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Spawn a real ConPTY with a long-lived child and return everything
+    /// needed to reason about its `conhost.exe` backend: the new conhost
+    /// PIDs (diffed against a pre-`openpty` snapshot), the PTY pair, and the
+    /// shell child.
+    fn spawn_conpty() -> (
+        Vec<u32>,
+        portable_pty::PtyPair,
+        Box<dyn portable_pty::Child + Send + Sync>,
+    ) {
+        use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+        use std::io::{Read, Write};
+
+        let before: HashSet<u32> = direct_conhost_children().into_iter().collect();
+
+        let pty = native_pty_system();
+        let pair = pty
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .expect("openpty");
+
+        // conhost can deadlock `spawn_command` if its output pipe fills with
+        // nobody reading, and `--inheritcursor` makes it await a DSR
+        // cursor-position reply during startup. Production code always runs a
+        // reader thread (pty.rs) and answers device queries (TerminalMirror);
+        // stand in for both here: drain the master continuously and pre-seed
+        // a cursor-position report.
+        let mut reader = pair.master.try_clone_reader().expect("clone reader");
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            while matches!(reader.read(&mut buf), Ok(n) if n > 0) {}
+        });
+        let mut writer = pair.master.take_writer().expect("take writer");
+        let _ = writer.write_all(b"\x1b[1;1R");
+        let _ = writer.flush();
+
+        let mut cmd = CommandBuilder::new("cmd.exe");
+        cmd.args(["/C", "ping -n 60 127.0.0.1 >NUL"]);
+        let child = pair.slave.spawn_command(cmd).expect("spawn pty child");
+
+        let new_conhosts: Vec<u32> = direct_conhost_children()
+            .into_iter()
+            .filter(|pid| !before.contains(pid))
+            .collect();
+        (new_conhosts, pair, child)
+    }
+
+    fn wait_for_pids_to_die(pids: &[u32], timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let alive: HashSet<u32> = direct_conhost_children().into_iter().collect();
+            if pids.iter().all(|pid| !alive.contains(pid)) {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    /// The actual orphan fix: the `conhost.exe` ConPTY backend — a direct
+    /// child of THIS process, not of the shell — must die when the job guard
+    /// drops. Assigning only the shell (the pre-fix behavior) left it behind
+    /// to busy-spin at 100% CPU.
+    #[test]
+    fn dropping_guard_kills_conpty_backend_conhost() {
+        let _serial = CONPTY_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = JobObjectGuard::new().expect("create job object");
+        let (new_conhosts, _pair, mut child) = spawn_conpty();
+        assert!(
+            !new_conhosts.is_empty(),
+            "openpty should have spawned a conhost.exe ConPTY backend as our direct child"
+        );
+
+        if let Some(h) = child.as_raw_handle() {
+            guard.assign(h);
+        }
+        for pid in &new_conhosts {
+            guard.assign_pid(*pid);
+        }
+
+        drop(guard);
+
+        let died = wait_for_pids_to_die(&new_conhosts, Duration::from_secs(5));
+        if !died {
+            let _ = child.kill(); // don't leak the shell if we're about to fail
+            panic!("ConPTY conhost {new_conhosts:?} survived the job-guard drop");
+        }
+        let _ = child.kill();
+    }
+
+    /// Sweep safety: a ConPTY backend whose parent (us) is alive must never
+    /// be touched, no matter how many orphans the sweep reaps elsewhere.
+    #[test]
+    fn sweep_spares_conpty_backend_with_live_parent() {
+        let _serial = CONPTY_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (new_conhosts, _pair, mut child) = spawn_conpty();
+        assert!(
+            !new_conhosts.is_empty(),
+            "openpty should have spawned a conhost.exe ConPTY backend as our direct child"
+        );
+
+        let _ = sweep_orphaned_conpty_backends();
+
+        let alive: HashSet<u32> = direct_conhost_children().into_iter().collect();
+        let _ = child.kill();
+        for pid in &new_conhosts {
+            assert!(
+                alive.contains(pid),
+                "sweep killed conhost {pid} even though its parent (this process) is alive"
+            );
+        }
+    }
 
     /// The core guarantee: a child assigned to the guard's job is killed when
     /// the guard (the sole job handle) is dropped. This is the exact mechanism
