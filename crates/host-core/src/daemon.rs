@@ -894,6 +894,79 @@ async fn send_control_rpc_response(
     }
 }
 
+/// Per-call `shell` permission re-check for sensitive control RPCs. Channel
+/// auth is one-time at open, so a mid-session device revoke must still take
+/// effect on the next call. Returns `Some(denied response)` (after writing
+/// the `authz.denied` audit event) when the device no longer has the
+/// permission, `None` when the handler may proceed.
+fn recheck_shell_permission(
+    store: &StateStore,
+    mobile_device_id: &str,
+    method: &str,
+    req_id: &str,
+) -> Option<crate::rpc::RpcResponse> {
+    match device_permission_result(store, mobile_device_id, "shell") {
+        Ok(()) => None,
+        Err(reason) => {
+            audit_authz_denied(store, mobile_device_id, method, &reason, None);
+            Some(crate::rpc::RpcResponse::err(
+                req_id.to_string(),
+                crate::rpc::RpcError::permission_denied(reason),
+            ))
+        }
+    }
+}
+
+/// Write a forward outcome (HTTP fetch or WS relay) to the data channel:
+/// head frame first, then every streamed frame until the producer ends.
+/// On a `PortNotExposed` head, writes the `ports.forward.denied` audit
+/// event so even a compromised phone's probing leaves a trail. Shared by
+/// the HTTP `ReadyRequest` and WS `WsOpen` ingest paths — their wire
+/// behavior is deliberately identical.
+#[allow(clippy::too_many_arguments)]
+async fn pump_forward_outcome(
+    outcome: crate::http_forward::ForwardOutcome,
+    ch: std::sync::Arc<webrtc::data_channel::RTCDataChannel>,
+    id: u32,
+    port: u16,
+    mobile_device_id: String,
+    store_host_id: Option<String>,
+    store_user_id: Option<String>,
+    protocol: &'static str,
+) {
+    let is_denial = matches!(
+        outcome.head,
+        crate::http_forward::Frame::RespError {
+            code: crate::http_forward::ErrorCode::PortNotExposed,
+            ..
+        }
+    );
+    let head_bytes = crate::http_forward::encode(&outcome.head);
+    if let Err(e) = ch.send(&bytes::Bytes::from(head_bytes)).await {
+        warn!("{}-forward head send failed: {}", protocol, e);
+        return;
+    }
+    if is_denial {
+        let mut ev =
+            crate::audit::AuditEvent::new("ports.forward.denied").denied("port_not_exposed");
+        ev.mobile_device_id = Some(mobile_device_id);
+        ev.target = Some(format!("{port}"));
+        ev.details = Some(serde_json::json!({ "port": port, "protocol": protocol }));
+        ev.host_id = store_host_id;
+        ev.user_id = store_user_id;
+        let _ = crate::audit::write_audit_event(ev);
+        return;
+    }
+    let mut body_rx = outcome.body;
+    while let Some(frame) = body_rx.recv().await {
+        let bytes = crate::http_forward::encode(&frame);
+        if let Err(e) = ch.send(&bytes::Bytes::from(bytes)).await {
+            warn!("{}-forward body send failed id={}: {}", protocol, id, e);
+            return;
+        }
+    }
+}
+
 fn spawn_files_reply(
     channel: &std::sync::Arc<webrtc::data_channel::RTCDataChannel>,
     response: serde_json::Value,
@@ -4235,29 +4308,18 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                         "system/list_processes" => {
                                             crate::rpc::handle_list_processes(&mut stats, req)
                                         }
+                                        // Re-check permission per RPC for everything below: the
+                                        // one-time channel auth runs only at open, so revoking
+                                        // shell access mid-session must still cut off audit
+                                        // reads and allowlist mutation immediately.
                                         "audit/list" => {
-                                            // Re-check permission per RPC: the one-time channel
-                                            // auth runs only at open, so revoking shell access
-                                            // mid-session would otherwise leave the audit log
-                                            // readable until the channel closes.
-                                            if let Err(reason) = device_permission_result(
+                                            if let Some(denied) = recheck_shell_permission(
                                                 &store,
                                                 &mobile_device_id,
-                                                "shell",
+                                                &method,
+                                                &req_id,
                                             ) {
-                                                audit_authz_denied(
-                                                    &store,
-                                                    &mobile_device_id,
-                                                    "audit/list",
-                                                    &reason,
-                                                    None,
-                                                );
-                                                crate::rpc::RpcResponse::err(
-                                                    req_id.clone(),
-                                                    crate::rpc::RpcError::permission_denied(
-                                                        reason,
-                                                    ),
-                                                )
+                                                denied
                                             } else {
                                                 crate::rpc::handle_audit_list(
                                                     &store,
@@ -4265,6 +4327,28 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                                     req,
                                                 )
                                                 .await
+                                            }
+                                        }
+                                        "ports/expose" | "ports/unexpose" => {
+                                            if let Some(denied) = recheck_shell_permission(
+                                                &store,
+                                                &mobile_device_id,
+                                                &method,
+                                                &req_id,
+                                            ) {
+                                                denied
+                                            } else if method == "ports/expose" {
+                                                crate::rpc::handle_expose_port(
+                                                    &store,
+                                                    &mobile_device_id,
+                                                    req,
+                                                )
+                                            } else {
+                                                crate::rpc::handle_unexpose_port(
+                                                    &store,
+                                                    &mobile_device_id,
+                                                    req,
+                                                )
                                             }
                                         }
                                         other => crate::rpc::RpcResponse::err(
@@ -4678,44 +4762,55 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                     let store_user_id = store.state.host.as_ref().map(|h| h.user_id.clone());
                                     tokio::spawn(async move {
                                         let outcome = crate::http_forward::forward_request(req).await;
-                                        // Send head frame (RespHead or RespError).
-                                        let is_denial = matches!(
-                                            outcome.head,
-                                            crate::http_forward::Frame::RespError {
-                                                code: crate::http_forward::ErrorCode::PortNotExposed,
-                                                ..
-                                            }
-                                        );
-                                        let head_bytes = crate::http_forward::encode(&outcome.head);
-                                        if let Err(e) = ch.send(&bytes::Bytes::from(head_bytes)).await {
-                                            warn!("http-forward head send failed: {}", e);
-                                            return;
-                                        }
-                                        if is_denial {
-                                            // Allowlist rejected. Surface the
-                                            // denial in the audit log so even
-                                            // a compromised phone's probing
-                                            // shows up in the trail.
-                                            let mut ev = crate::audit::AuditEvent::new(
-                                                "ports.forward.denied",
-                                            )
-                                            .denied("port_not_exposed");
-                                            ev.mobile_device_id = Some(mobile_for_audit);
-                                            ev.target = Some(format!("{port}"));
-                                            ev.host_id = store_host_id;
-                                            ev.user_id = store_user_id;
-                                            let _ = crate::audit::write_audit_event(ev);
-                                            return;
-                                        }
-                                        // Drain body chunks.
-                                        let mut body_rx = outcome.body;
-                                        while let Some(frame) = body_rx.recv().await {
-                                            let bytes = crate::http_forward::encode(&frame);
-                                            if let Err(e) = ch.send(&bytes::Bytes::from(bytes)).await {
-                                                warn!("http-forward body send failed id={}: {}", id, e);
-                                                return;
-                                            }
-                                        }
+                                        pump_forward_outcome(
+                                            outcome,
+                                            ch,
+                                            id,
+                                            port,
+                                            mobile_for_audit,
+                                            store_host_id,
+                                            store_user_id,
+                                            "http",
+                                        )
+                                        .await;
+                                    });
+                                }
+                                crate::http_forward::Ingest::WsOpen(ws_req) => {
+                                    // Same audit trail as HTTP forwards, tagged
+                                    // with the protocol so `ports.forward.*`
+                                    // queries distinguish socket opens from
+                                    // page loads.
+                                    let port = ws_req.head.port;
+                                    let mut ev = crate::audit::AuditEvent::new(
+                                        "ports.forward.requested",
+                                    );
+                                    ev.mobile_device_id = Some(mobile_device_id.clone());
+                                    ev.target = Some(format!("{}{}", port, &ws_req.head.path));
+                                    ev.details = Some(serde_json::json!({
+                                        "port": port,
+                                        "protocol": "ws",
+                                        "path": ws_req.head.path,
+                                    }));
+                                    let _ = crate::audit::write_audit_event_with_store(ev, &store);
+
+                                    let id = ws_req.id;
+                                    let ch = Arc::clone(&channel);
+                                    let mobile_for_audit = mobile_device_id.clone();
+                                    let store_host_id = store.state.host.as_ref().map(|h| h.host_id.clone());
+                                    let store_user_id = store.state.host.as_ref().map(|h| h.user_id.clone());
+                                    tokio::spawn(async move {
+                                        let outcome = crate::ws_forward::forward_ws(ws_req).await;
+                                        pump_forward_outcome(
+                                            outcome,
+                                            ch,
+                                            id,
+                                            port,
+                                            mobile_for_audit,
+                                            store_host_id,
+                                            store_user_id,
+                                            "ws",
+                                        )
+                                        .await;
                                     });
                                 }
                             }

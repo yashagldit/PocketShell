@@ -30,6 +30,7 @@ pub mod terminal;
 pub mod terminal_marks;
 pub mod transport;
 pub mod update;
+pub mod ws_forward;
 #[cfg(feature = "webrtc")]
 pub mod webrtc_manager;
 #[cfg(feature = "webrtc")]

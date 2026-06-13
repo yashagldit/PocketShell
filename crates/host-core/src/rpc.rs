@@ -94,7 +94,10 @@ pub fn parse_request(data: &[u8]) -> Option<RpcRequest> {
 /// fast path. The control-message handler in `daemon.rs` checks this and
 /// routes stateful methods inline so it can pass `&mut StatsCollector`.
 pub fn is_stateful_method(method: &str) -> bool {
-    matches!(method, "system/list_processes" | "audit/list")
+    matches!(
+        method,
+        "system/list_processes" | "audit/list" | "ports/expose" | "ports/unexpose"
+    )
 }
 
 /// Dispatch an RPC request to the matching handler.
@@ -322,6 +325,115 @@ pub async fn handle_audit_list(
         "more": more,
     });
     RpcResponse::ok(id, result)
+}
+
+/// Stateful handler for `ports/expose`. Adds `port` to the dev-server
+/// forwarding allowlist as an **ephemeral** entry — mobile-initiated
+/// exposures always clear on the next daemon restart.
+///
+/// ## Why mobile may expose at all (threat-model note)
+///
+/// The original Phase-2 design made `pocketshell expose` TTY-only so a stolen
+/// phone could not make local services tunnelable without the operator typing
+/// a command on the host. That bar is real but thin: the same paired phone
+/// has a sudo-capable terminal channel, so a motivated attacker can run the
+/// CLI (modulo the `POCKETSHELL_REMOTE_TERMINAL` guard) or just read the
+/// service directly through the shell. Discovery + one-tap expose is the
+/// single biggest activation gap in the dev-server flow, so we accept the
+/// trade deliberately and compensate:
+///
+///   - mobile exposures are **ephemeral-only** (gone on daemon restart);
+///     persistent entries still require the CLI/TUI on the host,
+///   - the device's `shell` permission is re-checked per call (mid-session
+///     revoke takes effect immediately),
+///   - every grant is audited as `ports.exposed` with `source: "mobile_rpc"`
+///     and the mobile_device_id, same trail as the CLI path.
+///
+/// Params: `{ port: u16 }`. Response: `{ port, ephemeral: true }`.
+pub fn handle_expose_port(
+    store: &crate::store::StateStore,
+    mobile_device_id: &str,
+    req: RpcRequest,
+) -> RpcResponse {
+    let id = req.id;
+    let Some(port) = parse_port_param(&req.params) else {
+        return RpcResponse::err(
+            id,
+            RpcError::invalid_params("missing or out-of-range `port` (1-65535)"),
+        );
+    };
+
+    let entry = match crate::exposed_ports::ExposedPortsStore::add(port, true) {
+        Ok(e) => e,
+        Err(e) => {
+            return RpcResponse::err(id, RpcError::internal(format!("allowlist write: {e}")));
+        }
+    };
+
+    let mut ev = crate::audit::AuditEvent::new("ports.exposed");
+    ev.mobile_device_id = Some(mobile_device_id.to_string());
+    ev.target = Some(port.to_string());
+    ev.details = Some(serde_json::json!({
+        "port": port,
+        "ephemeral": true,
+        "source": "mobile_rpc",
+    }));
+    if let Err(e) = crate::audit::write_audit_event_with_store(ev, store) {
+        tracing::warn!("ports.exposed audit write failed: {}", e);
+    }
+
+    RpcResponse::ok(
+        id,
+        serde_json::json!({ "port": port, "ephemeral": entry.ephemeral }),
+    )
+}
+
+/// Stateful handler for `ports/unexpose`. Removes `port` from the allowlist
+/// (whether the entry was ephemeral or persistent — revoking access from the
+/// phone is always safe). Audited as `ports.unexposed`.
+///
+/// Params: `{ port: u16 }`. Response: `{ port, removed: bool }`.
+pub fn handle_unexpose_port(
+    store: &crate::store::StateStore,
+    mobile_device_id: &str,
+    req: RpcRequest,
+) -> RpcResponse {
+    let id = req.id;
+    let Some(port) = parse_port_param(&req.params) else {
+        return RpcResponse::err(
+            id,
+            RpcError::invalid_params("missing or out-of-range `port` (1-65535)"),
+        );
+    };
+
+    let removed = match crate::exposed_ports::ExposedPortsStore::remove(port) {
+        Ok(r) => r,
+        Err(e) => {
+            return RpcResponse::err(id, RpcError::internal(format!("allowlist write: {e}")));
+        }
+    };
+
+    if removed {
+        let mut ev = crate::audit::AuditEvent::new("ports.unexposed");
+        ev.mobile_device_id = Some(mobile_device_id.to_string());
+        ev.target = Some(port.to_string());
+        ev.details = Some(serde_json::json!({ "port": port, "source": "mobile_rpc" }));
+        if let Err(e) = crate::audit::write_audit_event_with_store(ev, store) {
+            tracing::warn!("ports.unexposed audit write failed: {}", e);
+        }
+    }
+
+    RpcResponse::ok(id, serde_json::json!({ "port": port, "removed": removed }))
+}
+
+/// Extract a valid TCP port from `params.port`. Returns `None` for missing,
+/// non-integer, zero, or > 65535 values.
+fn parse_port_param(params: &Value) -> Option<u16> {
+    let n = params.get("port")?.as_u64()?;
+    if n == 0 || n > u16::MAX as u64 {
+        return None;
+    }
+    Some(n as u16)
 }
 
 fn now_ms() -> i64 {
@@ -736,10 +848,114 @@ mod tests {
     #[test]
     fn is_stateful_method_flags_list_processes() {
         assert!(is_stateful_method("system/list_processes"));
+        assert!(is_stateful_method("ports/expose"));
+        assert!(is_stateful_method("ports/unexpose"));
         assert!(!is_stateful_method("ping"));
         assert!(!is_stateful_method("system/kill_process"));
         assert!(!is_stateful_method("system/reboot"));
+        assert!(!is_stateful_method("ports/list_dev"));
         assert!(!is_stateful_method("nope"));
+    }
+
+    /// Run `f` with `$HOME` pointed at a fresh tmpdir so the allowlist and
+    /// audit writes land there instead of the developer's real
+    /// `~/.pocketshell`. Mirrors the helper in `exposed_ports::tests`.
+    fn with_isolated_home<F: FnOnce()>(f: F) {
+        let _g = crate::test_support::HOME_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        let prev_home = std::env::var_os("HOME");
+        unsafe { std::env::set_var("HOME", tmp.path()) };
+        std::fs::create_dir_all(tmp.path().join(".pocketshell")).unwrap();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+        unsafe {
+            match prev_home {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+        if let Err(e) = result {
+            std::panic::resume_unwind(e);
+        }
+    }
+
+    fn port_req(method: &str, params: Value) -> RpcRequest {
+        RpcRequest {
+            id: "p1".into(),
+            method: method.into(),
+            params,
+        }
+    }
+
+    #[test]
+    fn expose_port_rpc_adds_ephemeral_entry() {
+        with_isolated_home(|| {
+            let store = crate::store::StateStore::load().unwrap();
+            let resp = handle_expose_port(
+                &store,
+                "device-1",
+                port_req("ports/expose", serde_json::json!({"port": 5173})),
+            );
+            let result = resp.result.expect("expose must succeed");
+            assert_eq!(result.get("port").and_then(|v| v.as_u64()), Some(5173));
+            // Mobile-initiated exposures are ALWAYS ephemeral — persistent
+            // entries require the host CLI/TUI. Load-bearing security
+            // property, not a default.
+            assert_eq!(
+                result.get("ephemeral").and_then(|v| v.as_bool()),
+                Some(true)
+            );
+            assert!(crate::exposed_ports::ExposedPortsStore::is_allowed(5173).unwrap());
+            let entries = crate::exposed_ports::ExposedPortsStore::list().unwrap();
+            assert!(entries.iter().any(|p| p.port == 5173 && p.ephemeral));
+        });
+    }
+
+    #[test]
+    fn expose_port_rpc_rejects_missing_or_bad_port() {
+        with_isolated_home(|| {
+            let store = crate::store::StateStore::load().unwrap();
+            for params in [
+                serde_json::json!({}),
+                serde_json::json!({"port": 0}),
+                serde_json::json!({"port": 70000}),
+                serde_json::json!({"port": "5173"}),
+            ] {
+                let resp =
+                    handle_expose_port(&store, "device-1", port_req("ports/expose", params));
+                assert_eq!(resp.error.unwrap().code, "invalid_params");
+            }
+            assert!(crate::exposed_ports::ExposedPortsStore::list()
+                .unwrap()
+                .is_empty());
+        });
+    }
+
+    #[test]
+    fn unexpose_port_rpc_removes_and_reports() {
+        with_isolated_home(|| {
+            let store = crate::store::StateStore::load().unwrap();
+            crate::exposed_ports::ExposedPortsStore::add(3000, false).unwrap();
+
+            let resp = handle_unexpose_port(
+                &store,
+                "device-1",
+                port_req("ports/unexpose", serde_json::json!({"port": 3000})),
+            );
+            let result = resp.result.unwrap();
+            assert_eq!(result.get("removed").and_then(|v| v.as_bool()), Some(true));
+            assert!(!crate::exposed_ports::ExposedPortsStore::is_allowed(3000).unwrap());
+
+            // Second remove is a no-op, not an error.
+            let resp = handle_unexpose_port(
+                &store,
+                "device-1",
+                port_req("ports/unexpose", serde_json::json!({"port": 3000})),
+            );
+            let result = resp.result.unwrap();
+            assert_eq!(result.get("removed").and_then(|v| v.as_bool()), Some(false));
+        });
     }
 
     #[tokio::test]

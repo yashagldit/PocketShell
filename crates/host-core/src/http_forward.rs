@@ -75,8 +75,25 @@ pub const MAX_CONCURRENT_REQUESTS: usize = 64;
 /// How long we'll wait for the upstream dev server to send headers. Dev
 /// servers cold-start slowly (Vite first-request, Next.js compile-on-demand)
 /// but 30 s is plenty in practice.
+///
+/// Applied to the request *head* only (connect + headers), NOT the whole
+/// response. A total-request deadline would kill every long-lived stream
+/// (`text/event-stream`, chunked progress endpoints) at the 30 s mark even
+/// while it is actively delivering bytes.
 pub const UPSTREAM_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Idle timeout between body chunks for non-streaming responses. A regular
+/// response whose body stalls this long is effectively dead — fail it so the
+/// mobile fetch settles instead of holding a forward slot forever. Streaming
+/// content types ([`is_event_stream_headers`]) are exempt: SSE servers may
+/// legitimately stay silent for minutes between events, and the client
+/// cancels them explicitly (ReqCancel / channel close) when done.
+pub const BODY_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Wire-format v2: opcodes 0x2x/0x3x add WebSocket tunneling on the same
+/// channel and id-space as HTTP forwards (a v1 peer rejects them as
+/// UnknownOpcode, which the sender surfaces as "WS not supported by this
+/// host — update the agent").
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Opcode {
@@ -88,6 +105,19 @@ pub enum Opcode {
     ResponseBody = 0x12,
     ResponseEnd = 0x13,
     ResponseError = 0x14,
+    /// Client → host: open a WebSocket to `ws://localhost:{port}{path}`.
+    /// Payload identical to RequestHead (method is carried but ignored).
+    WsOpen = 0x21,
+    /// Both directions: one fragment of a WebSocket message.
+    /// Payload: flags u8 (bit0 = text, bit1 = fin), then raw bytes.
+    WsData = 0x22,
+    /// Both directions: close the WebSocket. Payload: u16 close code +
+    /// long-string reason. After sending/receiving this the id is dead.
+    WsClose = 0x23,
+    /// Host → client: upstream WebSocket handshake succeeded. Payload:
+    /// headers (e.g. the server-selected `Sec-WebSocket-Protocol`).
+    /// Handshake failures come back as a plain ResponseError instead.
+    WsOpenOk = 0x31,
 }
 
 impl Opcode {
@@ -101,10 +131,18 @@ impl Opcode {
             0x12 => Self::ResponseBody,
             0x13 => Self::ResponseEnd,
             0x14 => Self::ResponseError,
+            0x21 => Self::WsOpen,
+            0x22 => Self::WsData,
+            0x23 => Self::WsClose,
+            0x31 => Self::WsOpenOk,
             other => return Err(CodecError::UnknownOpcode(other)),
         })
     }
 }
+
+/// `WsData` flag bits.
+pub const WS_FLAG_TEXT: u8 = 0b0000_0001;
+pub const WS_FLAG_FIN: u8 = 0b0000_0010;
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -181,6 +219,28 @@ pub enum Frame {
         code: ErrorCode,
         message: String,
     },
+    WsOpen {
+        id: u32,
+        head: RequestHead,
+    },
+    WsData {
+        id: u32,
+        /// True for a text-message fragment, false for binary.
+        text: bool,
+        /// True on the final fragment of a message. Messages that fit in
+        /// one frame carry `fin = true` immediately.
+        fin: bool,
+        data: Bytes,
+    },
+    WsClose {
+        id: u32,
+        code: u16,
+        reason: String,
+    },
+    WsOpenOk {
+        id: u32,
+        headers: Vec<(String, String)>,
+    },
 }
 
 impl Frame {
@@ -193,7 +253,11 @@ impl Frame {
             | Frame::RespHead { id, .. }
             | Frame::RespBody { id, .. }
             | Frame::RespEnd { id }
-            | Frame::RespError { id, .. } => *id,
+            | Frame::RespError { id, .. }
+            | Frame::WsOpen { id, .. }
+            | Frame::WsData { id, .. }
+            | Frame::WsClose { id, .. }
+            | Frame::WsOpenOk { id, .. } => *id,
         }
     }
 
@@ -207,6 +271,10 @@ impl Frame {
             Frame::RespBody { .. } => Opcode::ResponseBody,
             Frame::RespEnd { .. } => Opcode::ResponseEnd,
             Frame::RespError { .. } => Opcode::ResponseError,
+            Frame::WsOpen { .. } => Opcode::WsOpen,
+            Frame::WsData { .. } => Opcode::WsData,
+            Frame::WsClose { .. } => Opcode::WsClose,
+            Frame::WsOpenOk { .. } => Opcode::WsOpenOk,
         }
     }
 }
@@ -260,6 +328,32 @@ pub fn encode(frame: &Frame) -> Vec<u8> {
             let len = bytes.len().min(u16::MAX as usize) as u16;
             out.extend_from_slice(&len.to_be_bytes());
             out.extend_from_slice(&bytes[..len as usize]);
+        }
+        Frame::WsOpen { head, .. } => {
+            out.extend_from_slice(&head.port.to_be_bytes());
+            encode_short_string(&mut out, &head.method);
+            encode_long_string(&mut out, &head.path);
+            encode_headers(&mut out, &head.headers);
+        }
+        Frame::WsData {
+            text, fin, data, ..
+        } => {
+            let mut flags = 0u8;
+            if *text {
+                flags |= WS_FLAG_TEXT;
+            }
+            if *fin {
+                flags |= WS_FLAG_FIN;
+            }
+            out.push(flags);
+            out.extend_from_slice(data);
+        }
+        Frame::WsClose { code, reason, .. } => {
+            out.extend_from_slice(&code.to_be_bytes());
+            encode_long_string(&mut out, reason);
+        }
+        Frame::WsOpenOk { headers, .. } => {
+            encode_headers(&mut out, headers);
         }
     }
     out
@@ -327,6 +421,43 @@ pub fn decode(buf: &[u8]) -> std::result::Result<Frame, CodecError> {
             let code = ErrorCode::from_u8(cur.read_u8()?);
             let message = cur.read_long_string("error.message")?;
             Frame::RespError { id, code, message }
+        }
+        Opcode::WsOpen => {
+            let mut cur = Cursor::new(payload);
+            let port = cur.read_u16()?;
+            let method = cur.read_short_string("method")?;
+            let path = cur.read_long_string("path")?;
+            let headers = cur.read_headers()?;
+            Frame::WsOpen {
+                id,
+                head: RequestHead {
+                    port,
+                    method,
+                    path,
+                    headers,
+                },
+            }
+        }
+        Opcode::WsData => {
+            let mut cur = Cursor::new(payload);
+            let flags = cur.read_u8()?;
+            Frame::WsData {
+                id,
+                text: flags & WS_FLAG_TEXT != 0,
+                fin: flags & WS_FLAG_FIN != 0,
+                data: Bytes::copy_from_slice(cur.rest()),
+            }
+        }
+        Opcode::WsClose => {
+            let mut cur = Cursor::new(payload);
+            let code = cur.read_u16()?;
+            let reason = cur.read_long_string("close.reason")?;
+            Frame::WsClose { id, code, reason }
+        }
+        Opcode::WsOpenOk => {
+            let mut cur = Cursor::new(payload);
+            let headers = cur.read_headers()?;
+            Frame::WsOpenOk { id, headers }
         }
     })
 }
@@ -421,6 +552,11 @@ impl<'a> Cursor<'a> {
         }
         Ok(out)
     }
+
+    /// Everything after the cursor — the raw tail of a WsData payload.
+    fn rest(&self) -> &'a [u8] {
+        &self.buf[self.pos..]
+    }
 }
 
 // =====================================================================
@@ -441,6 +577,28 @@ impl<'a> Cursor<'a> {
 pub struct HttpForwardSession {
     pending: HashMap<u32, PendingRequest>,
     in_flight: HashMap<u32, tokio::sync::oneshot::Sender<()>>,
+    /// Live WebSocket tunnels: id → sender feeding the relay task's
+    /// client-event loop. Entries are pruned when the relay drops its
+    /// receiver (upstream closed / relay errored) or on `WsClose`.
+    ws_streams: HashMap<u32, tokio::sync::mpsc::Sender<WsClientEvent>>,
+}
+
+/// Maximum simultaneous WebSocket tunnels per channel. HMR needs exactly
+/// one; a couple more covers SSE-over-WS fallbacks and app-level sockets.
+/// Above this we shed with `TooManyRequests` — same rationale as the HTTP
+/// concurrency cap (protect the shared peer, refuse rather than queue).
+pub const MAX_CONCURRENT_WS: usize = 8;
+
+/// Per-message reassembly cap for client→host WebSocket messages. A page
+/// shipping more than this in ONE message through a dev tunnel is broken;
+/// refusing bounds daemon memory against a hostile page.
+pub const WS_MSG_MAX_BYTES: usize = 16 * 1024 * 1024;
+
+/// Events the daemon routes from inbound frames into a WS relay task.
+#[derive(Debug)]
+pub enum WsClientEvent {
+    Data { text: bool, fin: bool, data: Bytes },
+    Close { code: u16, reason: String },
 }
 
 struct PendingRequest {
@@ -463,6 +621,7 @@ impl HttpForwardSession {
         Self {
             pending: HashMap::new(),
             in_flight: HashMap::new(),
+            ws_streams: HashMap::new(),
         }
     }
 
@@ -584,29 +743,100 @@ impl HttpForwardSession {
                 }
                 Ingest::Nothing
             }
+            Frame::WsOpen { id, head } => {
+                if head.path.is_empty() || !head.path.starts_with('/') {
+                    return Ingest::SendBack(Frame::RespError {
+                        id,
+                        code: ErrorCode::MalformedFrame,
+                        message: "path must be absolute".into(),
+                    });
+                }
+                self.reap_closed_ws();
+                if self.ws_streams.len() >= MAX_CONCURRENT_WS {
+                    return Ingest::SendBack(Frame::RespError {
+                        id,
+                        code: ErrorCode::TooManyRequests,
+                        message: format!(
+                            "too many concurrent websockets (cap {MAX_CONCURRENT_WS})"
+                        ),
+                    });
+                }
+                if self.ws_streams.contains_key(&id) {
+                    return Ingest::SendBack(Frame::RespError {
+                        id,
+                        code: ErrorCode::MalformedFrame,
+                        message: "websocket id already in use".into(),
+                    });
+                }
+                // 64 events of headroom: enough for a client bursting sends
+                // during the upstream connect, small enough that a stalled
+                // relay applies backpressure (we drop, see WsData below)
+                // instead of buffering unboundedly.
+                let (tx, rx) = tokio::sync::mpsc::channel(64);
+                self.ws_streams.insert(id, tx);
+                Ingest::WsOpen(WsOpenRequest {
+                    id,
+                    head,
+                    client_rx: rx,
+                })
+            }
+            Frame::WsData {
+                id,
+                text,
+                fin,
+                data,
+            } => {
+                if let Some(tx) = self.ws_streams.get(&id) {
+                    // try_send, not send: this runs on the daemon's event
+                    // loop and must never block on a slow relay. A full
+                    // buffer means the upstream socket has stalled — drop
+                    // the fragment (the page's WS sees a lossy tunnel and
+                    // its own keepalive recovers) rather than wedge every
+                    // other channel sharing the loop.
+                    if let Err(e) = tx.try_send(WsClientEvent::Data { text, fin, data }) {
+                        tracing::warn!("ws-forward id={}: dropping client frame: {}", id, e);
+                    }
+                }
+                Ingest::Nothing
+            }
+            Frame::WsClose { id, code, reason } => {
+                if let Some(tx) = self.ws_streams.remove(&id) {
+                    let _ = tx.try_send(WsClientEvent::Close { code, reason });
+                }
+                Ingest::Nothing
+            }
             // Server only receives request-side frames. Response-side
             // frames showing up here means a protocol bug on the peer; just
             // drop them.
             Frame::RespHead { .. }
             | Frame::RespBody { .. }
             | Frame::RespEnd { .. }
-            | Frame::RespError { .. } => Ingest::Nothing,
+            | Frame::RespError { .. }
+            | Frame::WsOpenOk { .. } => Ingest::Nothing,
         }
     }
 
     /// Drop all in-flight requests — called when the data channel closes.
     /// Sends cancel signals to every spawned forward task so they exit
     /// promptly instead of running to UPSTREAM_TIMEOUT against a closed
-    /// channel.
+    /// channel. WS relays notice their client-event sender dropping and
+    /// close the upstream socket.
     pub fn shutdown(&mut self) {
         self.pending.clear();
         for (_, cancel_tx) in self.in_flight.drain() {
             let _ = cancel_tx.send(());
         }
+        self.ws_streams.clear();
     }
 
     fn reap_completed_in_flight(&mut self) {
         self.in_flight.retain(|_, cancel_tx| !cancel_tx.is_closed());
+    }
+
+    /// Prune WS entries whose relay task has ended (receiver dropped) so
+    /// dead tunnels don't count against MAX_CONCURRENT_WS forever.
+    fn reap_closed_ws(&mut self) {
+        self.ws_streams.retain(|_, tx| !tx.is_closed());
     }
 
     #[cfg(test)]
@@ -630,6 +860,28 @@ pub enum Ingest {
     Nothing,
     SendBack(Frame),
     ReadyRequest(ReadyRequest),
+    /// A WsOpen was admitted — the daemon spawns
+    /// [`crate::ws_forward::forward_ws`] with this and pumps its frames
+    /// back onto the channel, exactly like an HTTP ReadyRequest.
+    WsOpen(WsOpenRequest),
+}
+
+/// An admitted WebSocket-open, handed to the relay task. `client_rx`
+/// receives the mobile side's outbound messages / close, routed by the
+/// daemon from subsequent WsData/WsClose frames with the same id.
+pub struct WsOpenRequest {
+    pub id: u32,
+    pub head: RequestHead,
+    pub client_rx: tokio::sync::mpsc::Receiver<WsClientEvent>,
+}
+
+impl std::fmt::Debug for WsOpenRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WsOpenRequest")
+            .field("id", &self.id)
+            .field("head", &self.head)
+            .finish()
+    }
 }
 
 pub struct ReadyRequest {
@@ -727,7 +979,11 @@ pub async fn forward_request(req: ReadyRequest) -> ForwardOutcome {
     // timeout. Revisit with a Happy-Eyeballs resolver if that comes up.
     let url = format!("http://localhost:{}{}", req.head.port, req.head.path);
     let mut builder = reqwest::Client::builder()
-        .timeout(UPSTREAM_TIMEOUT)
+        // NO total-request `.timeout(...)` here: it would cover the entire
+        // body read and abort long-lived streams (SSE) mid-flight. The head
+        // is deadlined with `tokio::time::timeout(UPSTREAM_TIMEOUT, send)`
+        // below, and non-streaming bodies get a per-chunk idle timeout.
+        .connect_timeout(UPSTREAM_TIMEOUT)
         // No keepalive — dev servers come and go.
         .pool_max_idle_per_host(0)
         // Don't follow redirects: forward whatever the dev server returns
@@ -795,9 +1051,11 @@ pub async fn forward_request(req: ReadyRequest) -> ForwardOutcome {
     // Race the upstream send against the cancellation oneshot. If the
     // mobile peer fires ReqCancel before the dev-server responds (e.g.
     // user navigates away during a slow Vite compile), we abort here
-    // instead of waiting out UPSTREAM_TIMEOUT.
+    // instead of waiting out UPSTREAM_TIMEOUT. The head deadline lives
+    // here (not on the reqwest client) so the body phase is free of any
+    // total-request timeout — see UPSTREAM_TIMEOUT's doc.
     let mut cancel = req.cancel;
-    let send_fut = rb.send();
+    let send_fut = tokio::time::timeout(UPSTREAM_TIMEOUT, rb.send());
     tokio::pin!(send_fut);
     let send_outcome = tokio::select! {
         biased; // prefer cancel so a racing cancel-before-send-poll is honored
@@ -814,8 +1072,21 @@ pub async fn forward_request(req: ReadyRequest) -> ForwardOutcome {
         result = &mut send_fut => result,
     };
     let resp = match send_outcome {
-        Ok(r) => r,
-        Err(e) if e.is_timeout() => {
+        Ok(Ok(r)) => r,
+        Err(_) => {
+            return ForwardOutcome {
+                head: Frame::RespError {
+                    id: req.id,
+                    code: ErrorCode::UpstreamTimeout,
+                    message: format!(
+                        "upstream did not answer within {}s",
+                        UPSTREAM_TIMEOUT.as_secs()
+                    ),
+                },
+                body: rx,
+            };
+        }
+        Ok(Err(e)) if e.is_timeout() => {
             return ForwardOutcome {
                 head: Frame::RespError {
                     id: req.id,
@@ -825,7 +1096,7 @@ pub async fn forward_request(req: ReadyRequest) -> ForwardOutcome {
                 body: rx,
             };
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             return ForwardOutcome {
                 head: Frame::RespError {
                     id: req.id,
@@ -872,12 +1143,19 @@ pub async fn forward_request(req: ReadyRequest) -> ForwardOutcome {
     // The cancellation oneshot is selected against each `resp.chunk()` so
     // a mid-stream ReqCancel aborts the upstream read immediately rather
     // than draining whatever bytes were already in flight.
+    //
+    // Streaming responses (SSE) are exempt from the per-chunk idle timeout:
+    // an event stream sitting quiet for minutes is normal, and its lifetime
+    // is bounded by the client cancel / channel close instead.
     let id = req.id;
+    let streaming = is_event_stream_headers(&headers);
     tokio::spawn(async move {
         let mut resp = resp;
         let mut cancel = cancel;
         let mut sent_bytes: usize = 0;
         loop {
+            let chunk_fut = resp.chunk();
+            tokio::pin!(chunk_fut);
             let chunk_outcome = tokio::select! {
                 biased;
                 _ = &mut cancel => {
@@ -890,7 +1168,30 @@ pub async fn forward_request(req: ReadyRequest) -> ForwardOutcome {
                         .await;
                     return;
                 }
-                result = resp.chunk() => result,
+                result = async {
+                    if streaming {
+                        // No idle deadline — wait as long as the upstream
+                        // keeps the stream open.
+                        Ok(chunk_fut.as_mut().await)
+                    } else {
+                        tokio::time::timeout(BODY_IDLE_TIMEOUT, chunk_fut.as_mut()).await
+                    }
+                } => match result {
+                    Ok(r) => r,
+                    Err(_) => {
+                        let _ = tx
+                            .send(Frame::RespError {
+                                id,
+                                code: ErrorCode::UpstreamTimeout,
+                                message: format!(
+                                    "response body stalled for {}s",
+                                    BODY_IDLE_TIMEOUT.as_secs()
+                                ),
+                            })
+                            .await;
+                        return;
+                    }
+                },
             };
             match chunk_outcome {
                 Ok(Some(chunk)) => {
@@ -965,6 +1266,17 @@ fn log_path(path: &str) -> String {
     } else {
         format!("{}…", &stripped[..128])
     }
+}
+
+/// True when the response headers declare a `text/event-stream` body — the
+/// content type that legitimately never ends and may go silent for minutes
+/// between events. Drives the idle-timeout exemption in the body pump and
+/// lets future callers branch on "this will stream forever".
+pub fn is_event_stream_headers(headers: &[(String, String)]) -> bool {
+    headers.iter().any(|(name, value)| {
+        name.eq_ignore_ascii_case("content-type")
+            && value.to_ascii_lowercase().contains("text/event-stream")
+    })
 }
 
 fn header_is_hop_by_hop(name: &str) -> bool {
@@ -1444,6 +1756,226 @@ mod tests {
         });
         assert!(matches!(out, Ingest::Nothing));
         assert_eq!(s.pending_count(), 0);
+    }
+
+    #[test]
+    fn roundtrip_ws_open() {
+        let f = Frame::WsOpen {
+            id: 11,
+            head: RequestHead {
+                port: 5173,
+                method: "GET".into(),
+                path: "/hmr?token=x".into(),
+                headers: vec![("Sec-WebSocket-Protocol".into(), "vite-hmr".into())],
+            },
+        };
+        match decode(&encode(&f)).unwrap() {
+            Frame::WsOpen { id, head } => {
+                assert_eq!(id, 11);
+                assert_eq!(head.port, 5173);
+                assert_eq!(head.path, "/hmr?token=x");
+                assert_eq!(head.headers[0].1, "vite-hmr");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn roundtrip_ws_data_flag_combinations() {
+        for (text, fin) in [(false, false), (true, false), (false, true), (true, true)] {
+            let f = Frame::WsData {
+                id: 3,
+                text,
+                fin,
+                data: Bytes::from_static(b"{\"type\":\"update\"}"),
+            };
+            match decode(&encode(&f)).unwrap() {
+                Frame::WsData {
+                    id,
+                    text: t,
+                    fin: fi,
+                    data,
+                } => {
+                    assert_eq!(id, 3);
+                    assert_eq!(t, text);
+                    assert_eq!(fi, fin);
+                    assert_eq!(&data[..], b"{\"type\":\"update\"}");
+                }
+                other => panic!("wrong variant: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn roundtrip_ws_data_empty_payload() {
+        // Empty text messages are legal WS heartbeats; the codec must not
+        // confuse "no bytes after flags" with a truncated frame.
+        let f = Frame::WsData {
+            id: 4,
+            text: true,
+            fin: true,
+            data: Bytes::new(),
+        };
+        match decode(&encode(&f)).unwrap() {
+            Frame::WsData { data, fin, .. } => {
+                assert!(data.is_empty());
+                assert!(fin);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn roundtrip_ws_close_and_open_ok() {
+        let f = Frame::WsClose {
+            id: 8,
+            code: 1001,
+            reason: "going away".into(),
+        };
+        match decode(&encode(&f)).unwrap() {
+            Frame::WsClose { id, code, reason } => {
+                assert_eq!((id, code), (8, 1001));
+                assert_eq!(reason, "going away");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+
+        let f = Frame::WsOpenOk {
+            id: 8,
+            headers: vec![("Sec-WebSocket-Protocol".into(), "vite-hmr".into())],
+        };
+        match decode(&encode(&f)).unwrap() {
+            Frame::WsOpenOk { id, headers } => {
+                assert_eq!(id, 8);
+                assert_eq!(headers[0].0, "Sec-WebSocket-Protocol");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn session_ws_open_registers_stream_and_routes_data() {
+        let mut s = HttpForwardSession::new();
+        let ready = s.ingest(Frame::WsOpen {
+            id: 1,
+            head: sample_req_head(),
+        });
+        let mut client_rx = match ready {
+            Ingest::WsOpen(r) => {
+                assert_eq!(r.id, 1);
+                r.client_rx
+            }
+            other => panic!("expected WsOpen, got {other:?}"),
+        };
+
+        // WsData for the id reaches the relay's receiver.
+        let _ = s.ingest(Frame::WsData {
+            id: 1,
+            text: true,
+            fin: true,
+            data: Bytes::from_static(b"ping"),
+        });
+        match client_rx.try_recv().unwrap() {
+            WsClientEvent::Data { text, fin, data } => {
+                assert!(text && fin);
+                assert_eq!(&data[..], b"ping");
+            }
+            other => panic!("expected Data, got {other:?}"),
+        }
+
+        // WsClose routes a Close event and frees the slot.
+        let _ = s.ingest(Frame::WsClose {
+            id: 1,
+            code: 1000,
+            reason: "bye".into(),
+        });
+        match client_rx.try_recv().unwrap() {
+            WsClientEvent::Close { code, .. } => assert_eq!(code, 1000),
+            other => panic!("expected Close, got {other:?}"),
+        }
+        // Subsequent data for the closed id is silently dropped.
+        let _ = s.ingest(Frame::WsData {
+            id: 1,
+            text: false,
+            fin: true,
+            data: Bytes::from_static(b"late"),
+        });
+        assert!(client_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn session_ws_open_sheds_past_cap_and_recovers_on_drop() {
+        let mut s = HttpForwardSession::new();
+        let mut held = Vec::new();
+        for id in 0..MAX_CONCURRENT_WS as u32 {
+            match s.ingest(Frame::WsOpen {
+                id,
+                head: sample_req_head(),
+            }) {
+                Ingest::WsOpen(r) => held.push(r.client_rx),
+                other => panic!("expected WsOpen for id {id}, got {other:?}"),
+            }
+        }
+
+        let over = MAX_CONCURRENT_WS as u32;
+        match s.ingest(Frame::WsOpen {
+            id: over,
+            head: sample_req_head(),
+        }) {
+            Ingest::SendBack(Frame::RespError { code, .. }) => {
+                assert_eq!(code, ErrorCode::TooManyRequests);
+            }
+            other => panic!("expected TooManyRequests, got {other:?}"),
+        }
+
+        // A relay ending (receiver dropped) frees its slot on the next open.
+        held.pop();
+        assert!(matches!(
+            s.ingest(Frame::WsOpen {
+                id: over + 1,
+                head: sample_req_head(),
+            }),
+            Ingest::WsOpen(_)
+        ));
+    }
+
+    #[test]
+    fn session_ws_duplicate_id_rejected() {
+        let mut s = HttpForwardSession::new();
+        let _first = match s.ingest(Frame::WsOpen {
+            id: 7,
+            head: sample_req_head(),
+        }) {
+            Ingest::WsOpen(r) => r,
+            other => panic!("expected WsOpen, got {other:?}"),
+        };
+        match s.ingest(Frame::WsOpen {
+            id: 7,
+            head: sample_req_head(),
+        }) {
+            Ingest::SendBack(Frame::RespError { code, .. }) => {
+                assert_eq!(code, ErrorCode::MalformedFrame);
+            }
+            other => panic!("expected MalformedFrame, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn session_shutdown_drops_ws_senders() {
+        let mut s = HttpForwardSession::new();
+        let mut rx = match s.ingest(Frame::WsOpen {
+            id: 1,
+            head: sample_req_head(),
+        }) {
+            Ingest::WsOpen(r) => r.client_rx,
+            other => panic!("expected WsOpen, got {other:?}"),
+        };
+        s.shutdown();
+        // Sender dropped → relay's recv() returns None → it closes upstream.
+        assert!(matches!(
+            rx.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)
+        ));
     }
 
     #[test]
