@@ -20,9 +20,12 @@
   "tab_count_other": "{{count}} terminaux",
   "tab_file_count_one": "{{count}} fichier",
   "tab_file_count_other": "{{count}} fichiers",
+  "tab_web_count_one": "{{count}} aperçu web",
+  "tab_web_count_other": "{{count}} aperçus web",
   "tab_summary_empty": "vide",
   "tab_label_terminal": "Terminal sur {{host}}",
   "tab_label_files": "Fichiers sur {{host}}",
+  "tab_label_web": "Aperçu web sur {{host}}",
   "on_host": "sur {{host}}",
   "errors.load_failed": "Échec du chargement des espaces de travail",
   "default_name": "Espace de travail {{index}}"

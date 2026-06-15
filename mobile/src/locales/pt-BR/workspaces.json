@@ -20,9 +20,12 @@
   "tab_count_other": "{{count}} terminais",
   "tab_file_count_one": "{{count}} arquivo",
   "tab_file_count_other": "{{count}} arquivos",
+  "tab_web_count_one": "{{count}} prévia web",
+  "tab_web_count_other": "{{count}} prévias web",
   "tab_summary_empty": "vazio",
   "tab_label_terminal": "Terminal no {{host}}",
   "tab_label_files": "Arquivos no {{host}}",
+  "tab_label_web": "Prévia web no {{host}}",
   "on_host": "no {{host}}",
   "errors.load_failed": "Falha ao carregar workspaces",
   "default_name": "Workspace {{index}}"

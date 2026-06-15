@@ -20,9 +20,12 @@
   "tab_count_other": "{{count}} Terminals",
   "tab_file_count_one": "{{count}} Datei",
   "tab_file_count_other": "{{count}} Dateien",
+  "tab_web_count_one": "{{count}} Web-Vorschau",
+  "tab_web_count_other": "{{count}} Web-Vorschauen",
   "tab_summary_empty": "Leer",
   "tab_label_terminal": "Terminal auf {{host}}",
   "tab_label_files": "Dateien auf {{host}}",
+  "tab_label_web": "Web-Vorschau auf {{host}}",
   "on_host": "auf {{host}}",
   "errors.load_failed": "Workspaces konnten nicht geladen werden",
   "default_name": "Arbeitsbereich {{index}}"

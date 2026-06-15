@@ -20,9 +20,12 @@
   "tab_count_other": "{{count}} terminales",
   "tab_file_count_one": "{{count}} archivo",
   "tab_file_count_other": "{{count}} archivos",
+  "tab_web_count_one": "{{count}} vista web",
+  "tab_web_count_other": "{{count}} vistas web",
   "tab_summary_empty": "vacío",
   "tab_label_terminal": "Terminal en {{host}}",
   "tab_label_files": "Archivos en {{host}}",
+  "tab_label_web": "Vista web en {{host}}",
   "on_host": "en {{host}}",
   "errors.load_failed": "No se pudieron cargar los espacios de trabajo",
   "default_name": "Espacio de trabajo {{index}}"

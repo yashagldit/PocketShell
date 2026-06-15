@@ -20,9 +20,12 @@
   "tab_count_other": "{{count}} टर्मिनल",
   "tab_file_count_one": "{{count}} फ़ाइल",
   "tab_file_count_other": "{{count}} फ़ाइलें",
+  "tab_web_count_one": "{{count}} वेब पूर्वावलोकन",
+  "tab_web_count_other": "{{count}} वेब पूर्वावलोकन",
   "tab_summary_empty": "खाली",
   "tab_label_terminal": "{{host}} पर टर्मिनल",
   "tab_label_files": "{{host}} पर फ़ाइलें",
+  "tab_label_web": "{{host}} पर वेब पूर्वावलोकन",
   "on_host": "{{host}} पर",
   "errors.load_failed": "कार्यक्षेत्र लोड करने में विफल",
   "default_name": "वर्कस्पेस {{index}}"
