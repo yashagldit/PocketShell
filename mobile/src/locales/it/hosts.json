@@ -163,5 +163,7 @@
   "errors.create_pairing_code_failed": "Impossibile creare il codice di abbinamento",
   "errors.refresh_pairing_status_failed": "Impossibile aggiornare lo stato di abbinamento",
   "errors.recovery_failed": "Azione di ripristino non riuscita",
-  "security.trusted_device_required": "Accesso al dispositivo attendibile richiesto"
+  "security.trusted_device_required": "Accesso al dispositivo attendibile richiesto",
+  "projects": "Projects",
+  "detail.projects": "Projects"
 }

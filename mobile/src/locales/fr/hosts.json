@@ -163,5 +163,7 @@
   "errors.create_pairing_code_failed": "Impossible de créer le code d'appairage",
   "errors.refresh_pairing_status_failed": "Impossible d'actualiser l'état d'appairage",
   "errors.recovery_failed": "L'action de récupération a échoué",
-  "security.trusted_device_required": "Accès à l'appareil approuvé requis"
+  "security.trusted_device_required": "Accès à l'appareil approuvé requis",
+  "projects": "Projects",
+  "detail.projects": "Projects"
 }

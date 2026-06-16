@@ -524,6 +524,18 @@ pub async fn handle_files_action_with_context(
                     include_hidden,
                 )
             }
+            "git_status" => crate::git::git_status(&path_str),
+            "git_diff" => {
+                let file = payload.get("file").and_then(|v| v.as_str());
+                crate::git::git_diff(&path_str, file)
+            }
+            "git_log" => {
+                let limit = payload
+                    .get("limit")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(20) as usize;
+                crate::git::git_log(&path_str, limit)
+            }
             _ => {
                 // Unknown actions are audit-worthy: a device probing the file
                 // channel with junk operation names is exactly the kind of
@@ -639,7 +651,7 @@ fn emit_files_audit(
     });
 }
 
-fn resolve_path(raw: &str) -> Result<PathBuf> {
+pub(crate) fn resolve_path(raw: &str) -> Result<PathBuf> {
     if raw.is_empty() {
         return Ok(default_file_home());
     }

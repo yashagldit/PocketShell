@@ -58,5 +58,6 @@
   "update.body": "新版本已就绪。立即重启以更新，或稍后再应用。",
   "update.restart": "立即重启",
   "update.later": "稍后",
-  "boot.error_prefix": "错误:"
+  "boot.error_prefix": "错误:",
+  "nav.projects": "Projects"
 }

@@ -163,5 +163,7 @@
   "errors.create_pairing_code_failed": "Falha ao criar código de emparelhamento",
   "errors.refresh_pairing_status_failed": "Falha ao atualizar status de emparelhamento",
   "errors.recovery_failed": "Ação de recuperação falhou",
-  "security.trusted_device_required": "Acesso de dispositivo confiável necessário"
+  "security.trusted_device_required": "Acesso de dispositivo confiável necessário",
+  "projects": "Projects",
+  "detail.projects": "Projects"
 }

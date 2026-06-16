@@ -163,5 +163,7 @@
   "errors.create_pairing_code_failed": "Не удалось создать код сопряжения",
   "errors.refresh_pairing_status_failed": "Не удалось обновить статус сопряжения",
   "errors.recovery_failed": "Действие восстановления не удалось",
-  "security.trusted_device_required": "Требуется доступ с доверенного устройства"
+  "security.trusted_device_required": "Требуется доступ с доверенного устройства",
+  "projects": "Projects",
+  "detail.projects": "Projects"
 }

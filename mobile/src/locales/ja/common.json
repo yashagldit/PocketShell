@@ -58,5 +58,6 @@
   "update.body": "新しいバージョンの準備ができました。今すぐ再起動して更新するか、後で適用されます。",
   "update.restart": "今すぐ再起動",
   "update.later": "後で",
-  "boot.error_prefix": "エラー:"
+  "boot.error_prefix": "エラー:",
+  "nav.projects": "Projects"
 }

@@ -12,6 +12,7 @@ pub mod error;
 pub mod exposed_ports;
 pub mod files;
 pub mod files_watch;
+pub mod git;
 pub mod http_forward;
 pub mod job_object;
 pub mod local_attach;

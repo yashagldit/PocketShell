@@ -163,5 +163,7 @@
   "errors.create_pairing_code_failed": "페어링 코드 생성 실패",
   "errors.refresh_pairing_status_failed": "페어링 상태 새로고침 실패",
   "errors.recovery_failed": "복구 작업 실패",
-  "security.trusted_device_required": "신뢰할 수 있는 기기 액세스 필요"
+  "security.trusted_device_required": "신뢰할 수 있는 기기 액세스 필요",
+  "projects": "Projects",
+  "detail.projects": "Projects"
 }

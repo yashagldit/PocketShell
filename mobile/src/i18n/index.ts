@@ -28,6 +28,7 @@ const NS_FILES = [
   "notifications",
   "stats",
   "demo",
+  "projects",
 ] as const;
 
 export const NAMESPACES = NS_FILES;
@@ -55,6 +56,18 @@ import enSettings from "@/locales/en/settings.json";
 import enDialogs from "@/locales/en/dialogs.json";
 import enWidgets from "@/locales/en/widgets.json";
 import enNotifications from "@/locales/en/notifications.json";
+import enProjects from "@/locales/en/projects.json";
+import deProjects from "@/locales/de/projects.json";
+import jaProjects from "@/locales/ja/projects.json";
+import hiProjects from "@/locales/hi/projects.json";
+import frProjects from "@/locales/fr/projects.json";
+import koProjects from "@/locales/ko/projects.json";
+import zhCNProjects from "@/locales/zh-CN/projects.json";
+import zhTWProjects from "@/locales/zh-TW/projects.json";
+import esProjects from "@/locales/es/projects.json";
+import itProjects from "@/locales/it/projects.json";
+import ruProjects from "@/locales/ru/projects.json";
+import ptBRProjects from "@/locales/pt-BR/projects.json";
 import enStats from "@/locales/en/stats.json";
 
 import deCommon from "@/locales/de/common.json";
@@ -379,6 +392,7 @@ const resources = {
     widgets: enWidgets,
     notifications: enNotifications,
     stats: enStats,
+    projects: enProjects,
     demo: enDemo,
   },
   de: {
@@ -405,6 +419,7 @@ const resources = {
     widgets: deWidgets,
     notifications: deNotifications,
     stats: deStats,
+    projects: deProjects,
     demo: deDemo,
   },
   ja: {
@@ -431,6 +446,7 @@ const resources = {
     widgets: jaWidgets,
     notifications: jaNotifications,
     stats: jaStats,
+    projects: jaProjects,
     demo: jaDemo,
   },
   hi: {
@@ -457,6 +473,7 @@ const resources = {
     widgets: hiWidgets,
     notifications: hiNotifications,
     stats: hiStats,
+    projects: hiProjects,
     demo: hiDemo,
   },
   "fr": {
@@ -483,6 +500,7 @@ const resources = {
     widgets: frWidgets,
     notifications: frNotifications,
     stats: frStats,
+    projects: frProjects,
     demo: frDemo,
   },
   "ko": {
@@ -509,6 +527,7 @@ const resources = {
     widgets: koWidgets,
     notifications: koNotifications,
     stats: koStats,
+    projects: koProjects,
     demo: koDemo,
   },
   "zh-CN": {
@@ -535,6 +554,7 @@ const resources = {
     widgets: zhCNWidgets,
     notifications: zhCNNotifications,
     stats: zhCNStats,
+    projects: zhCNProjects,
     demo: zhCNDemo,
   },
   "zh-TW": {
@@ -561,6 +581,7 @@ const resources = {
     widgets: zhTWWidgets,
     notifications: zhTWNotifications,
     stats: zhTWStats,
+    projects: zhTWProjects,
     demo: zhTWDemo,
   },
   "es": {
@@ -587,6 +608,7 @@ const resources = {
     widgets: esWidgets,
     notifications: esNotifications,
     stats: esStats,
+    projects: esProjects,
     demo: esDemo,
   },
   "it": {
@@ -613,6 +635,7 @@ const resources = {
     widgets: itWidgets,
     notifications: itNotifications,
     stats: itStats,
+    projects: itProjects,
     demo: itDemo,
   },
   "ru": {
@@ -639,6 +662,7 @@ const resources = {
     widgets: ruWidgets,
     notifications: ruNotifications,
     stats: ruStats,
+    projects: ruProjects,
     demo: ruDemo,
   },
   "pt-BR": {
@@ -665,6 +689,7 @@ const resources = {
     widgets: ptBRWidgets,
     notifications: ptBRNotifications,
     stats: ptBRStats,
+    projects: ptBRProjects,
     demo: ptBRDemo,
   },
 } as const;

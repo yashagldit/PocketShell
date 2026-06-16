@@ -58,5 +58,6 @@
   "update.body": "Uma nova versão está pronta. Reinicie para atualizar agora ou será aplicada mais tarde.",
   "update.restart": "Reiniciar agora",
   "update.later": "Mais tarde",
-  "boot.error_prefix": "erro:"
+  "boot.error_prefix": "erro:",
+  "nav.projects": "Projects"
 }
