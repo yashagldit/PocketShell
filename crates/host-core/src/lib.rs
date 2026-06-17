@@ -18,6 +18,10 @@ pub mod job_object;
 pub mod local_attach;
 pub mod models;
 pub mod platform;
+pub mod project_index;
+pub mod project_search;
+pub mod project_tree;
+pub mod projects;
 pub mod pty;
 pub mod rpc;
 pub mod secret_store;
@@ -31,11 +35,11 @@ pub mod terminal;
 pub mod terminal_marks;
 pub mod transport;
 pub mod update;
-pub mod ws_forward;
 #[cfg(feature = "webrtc")]
 pub mod webrtc_manager;
 #[cfg(feature = "webrtc")]
 pub mod webrtc_peer;
+pub mod ws_forward;
 
 #[cfg(test)]
 pub(crate) mod test_support {

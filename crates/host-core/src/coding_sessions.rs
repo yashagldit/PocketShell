@@ -25,10 +25,10 @@ pub enum Source {
 }
 
 #[derive(Clone)]
-struct SessionCandidate {
-    source: Source,
-    file_path: PathBuf,
-    mtime_micros: i64,
+pub(crate) struct SessionCandidate {
+    pub(crate) source: Source,
+    pub(crate) file_path: PathBuf,
+    pub(crate) mtime_micros: i64,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -132,7 +132,7 @@ fn task_err(e: tokio::task::JoinError) -> HostError {
     HostError::Backend(format!("coding_sessions scan panicked: {e}"))
 }
 
-fn collect_claude_candidates(claude_dir: &Path) -> Vec<SessionCandidate> {
+pub(crate) fn collect_claude_candidates(claude_dir: &Path) -> Vec<SessionCandidate> {
     let projects_dir = claude_dir.join("projects");
     let mut out = Vec::new();
 
@@ -264,7 +264,7 @@ fn parse_claude_session(file_path: &Path) -> Option<SessionInfo> {
     })
 }
 
-fn collect_codex_candidates(codex_dir: &Path) -> Vec<SessionCandidate> {
+pub(crate) fn collect_codex_candidates(codex_dir: &Path) -> Vec<SessionCandidate> {
     let sessions_root = codex_dir.join("sessions");
     let mut out = Vec::new();
 
@@ -394,7 +394,7 @@ fn make_candidate(source: Source, file_path: PathBuf) -> Option<SessionCandidate
     })
 }
 
-fn system_time_micros(t: SystemTime) -> i64 {
+pub(crate) fn system_time_micros(t: SystemTime) -> i64 {
     match t.duration_since(SystemTime::UNIX_EPOCH) {
         Ok(d) => d.as_micros().min(i64::MAX as u128) as i64,
         Err(e) => {

@@ -197,7 +197,7 @@ fn is_path_denied_against(path: &Path, denied: &DeniedPaths) -> bool {
 /// the resolved denylist is cached in a `OnceLock` so per-file dispatches
 /// don't re-stat $HOME. Tests that mutate $HOME use `is_path_denied_against`
 /// directly to avoid the cache.
-fn is_path_denied(path: &Path) -> bool {
+pub(crate) fn is_path_denied(path: &Path) -> bool {
     static CACHE: OnceLock<Option<DeniedPaths>> = OnceLock::new();
     let denied = CACHE.get_or_init(|| {
         let home = dirs::home_dir()?;
@@ -313,15 +313,15 @@ fn first_human_home() -> Option<PathBuf> {
     None
 }
 
-#[derive(Serialize)]
-struct FileEntry {
-    name: String,
-    path: String,
-    is_dir: bool,
-    size: u64,
-    permissions: String,
-    modified_at: Option<String>,
-    is_symlink: bool,
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct FileEntry {
+    pub(crate) name: String,
+    pub(crate) path: String,
+    pub(crate) is_dir: bool,
+    pub(crate) size: u64,
+    pub(crate) permissions: String,
+    pub(crate) modified_at: Option<String>,
+    pub(crate) is_symlink: bool,
 }
 
 /// Top-level dispatcher for file channel actions.
@@ -365,6 +365,39 @@ pub async fn handle_files_action_with_context(
             .map(|s| s.to_string());
         let alive = agent_router.alive_claude_resume_ids().await;
         return crate::coding_sessions::list_sessions(limit, cursor, alive).await;
+    }
+
+    if action == "list_projects" {
+        return crate::projects::list_projects().await;
+    }
+
+    if action == "list_project_tree" {
+        let path_str = payload.get("path").and_then(|v| v.as_str()).unwrap_or("");
+        let max_depth = payload
+            .get("max_depth")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as usize);
+        return crate::project_tree::list_project_tree(path_str, max_depth).await;
+    }
+
+    if action == "search_project" {
+        let path_str = payload.get("path").and_then(|v| v.as_str()).unwrap_or("");
+        let query = payload.get("query").and_then(|v| v.as_str()).unwrap_or("");
+        let filename_limit = payload
+            .get("filename_limit")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as usize);
+        let content_limit = payload
+            .get("content_limit")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as usize);
+        return crate::project_search::search_project(
+            path_str,
+            query,
+            filename_limit,
+            content_limit,
+        )
+        .await;
     }
 
     let path_str = payload
@@ -530,10 +563,7 @@ pub async fn handle_files_action_with_context(
                 crate::git::git_diff(&path_str, file)
             }
             "git_log" => {
-                let limit = payload
-                    .get("limit")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(20) as usize;
+                let limit = payload.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
                 crate::git::git_log(&path_str, limit)
             }
             _ => {
@@ -794,17 +824,9 @@ fn modified_iso(metadata: &fs::Metadata) -> Option<String> {
     })
 }
 
-fn list_dir(
-    path_str: &str,
-    offset: usize,
-    limit: usize,
-    include_hidden: bool,
-) -> Result<serde_json::Value> {
-    let dir = resolve_path(path_str)?;
-    let canonical = safe_canonicalize(&dir)?;
-
+fn collect_dir_entries(canonical: &Path, include_hidden: bool) -> Result<Vec<FileEntry>> {
     let mut entries = Vec::new();
-    let reader = fs::read_dir(&canonical).map_err(|e| {
+    let reader = fs::read_dir(canonical).map_err(|e| {
         HostError::Backend(format!(
             "cannot read directory {}: {}",
             canonical.display(),
@@ -825,6 +847,9 @@ fn list_dir(
             continue;
         }
         let entry_path = entry.path();
+        if is_path_denied(&entry_path) {
+            continue;
+        }
         let metadata = match entry.metadata() {
             Ok(m) => m,
             Err(e) => {
@@ -845,12 +870,33 @@ fn list_dir(
         });
     }
 
-    // Sort: dirs first, then by name (case-insensitive)
     entries.sort_by(|a, b| {
         b.is_dir
             .cmp(&a.is_dir)
             .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
+    Ok(entries)
+}
+
+pub(crate) fn list_dir_all(
+    path_str: &str,
+    include_hidden: bool,
+) -> Result<(PathBuf, Vec<FileEntry>)> {
+    let dir = resolve_path(path_str)?;
+    let canonical = safe_canonicalize(&dir)?;
+    let entries = collect_dir_entries(&canonical, include_hidden)?;
+    Ok((canonical, entries))
+}
+
+fn list_dir(
+    path_str: &str,
+    offset: usize,
+    limit: usize,
+    include_hidden: bool,
+) -> Result<serde_json::Value> {
+    let dir = resolve_path(path_str)?;
+    let canonical = safe_canonicalize(&dir)?;
+    let entries = collect_dir_entries(&canonical, include_hidden)?;
 
     let total = entries.len();
     let capped_limit = limit.clamp(1, MAX_LIST_DIR_PAGE_SIZE);

@@ -584,6 +584,7 @@ enum DirectHostTransferEvent {
 const FILE_TRANSFER_TIMEOUT_SECS: u64 = 300;
 const FILES_MESSAGE_TIMEOUT_SECS: u64 = 300;
 const FILES_MESSAGE_CHUNK_SIZE: usize = 12 * 1024;
+const FILES_SIGNALING_RESPONSE_CHUNK_SIZE: usize = 12 * 1024;
 const FILES_STREAM_CHUNK_SIZE: usize = 48 * 1024;
 const MAX_FILES_FRAMED_CHUNKS: usize = 128;
 const MAX_FILES_FRAMED_MESSAGE_BYTES: usize = 512 * 1024;
@@ -1060,6 +1061,157 @@ async fn send_framed_files_response(
     );
 
     Ok(())
+}
+
+fn split_str_for_signaling(input: &str, max_bytes: usize) -> Vec<&str> {
+    if input.is_empty() {
+        return vec![""];
+    }
+    let mut chunks = Vec::new();
+    let mut start = 0;
+    let mut last_boundary = 0;
+    for (idx, _) in input.char_indices() {
+        if idx == start {
+            last_boundary = idx;
+            continue;
+        }
+        if idx - start > max_bytes {
+            let end = if last_boundary > start {
+                last_boundary
+            } else {
+                idx
+            };
+            chunks.push(&input[start..end]);
+            start = end;
+        }
+        last_boundary = idx;
+    }
+    while start < input.len() {
+        let end = std::cmp::min(input.len(), start + max_bytes);
+        let mut safe_end = end;
+        while safe_end > start && !input.is_char_boundary(safe_end) {
+            safe_end -= 1;
+        }
+        if safe_end == start {
+            safe_end = input.len();
+        }
+        chunks.push(&input[start..safe_end]);
+        start = safe_end;
+    }
+    chunks
+}
+
+fn build_files_signaling_frame_response(
+    session_id: Option<String>,
+    mobile_device_id: Option<&str>,
+    response_to: &str,
+    frame: serde_json::Value,
+) -> SignalEnvelope {
+    let mut extra = std::collections::HashMap::new();
+    if let Some(target) = mobile_device_id {
+        extra.insert(
+            "target_mobile_device_id".to_string(),
+            serde_json::json!(target),
+        );
+    }
+    SignalEnvelope {
+        message_type: "signal".to_string(),
+        session_id,
+        payload: Some(serde_json::json!({
+            "channel": "files",
+            "response_to": response_to,
+            "frame": frame,
+        })),
+        state: None,
+        accepted: None,
+        reason: None,
+        extra,
+    }
+}
+
+fn build_files_signaling_response_envelopes(
+    session_id: Option<String>,
+    mobile_device_id: Option<&str>,
+    response: serde_json::Value,
+) -> Vec<SignalEnvelope> {
+    let response_to = response
+        .get("response_to")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let Ok(json) = serde_json::to_string(&response) else {
+        return vec![build_files_signaling_frame_response(
+            session_id,
+            mobile_device_id,
+            &response_to,
+            serde_json::json!({"op": "end", "id": "encode_failed"}),
+        )];
+    };
+    if json.len() <= FILES_SIGNALING_RESPONSE_CHUNK_SIZE {
+        let mut extra = std::collections::HashMap::new();
+        if let Some(target) = mobile_device_id {
+            extra.insert(
+                "target_mobile_device_id".to_string(),
+                serde_json::json!(target),
+            );
+        }
+        return vec![SignalEnvelope {
+            message_type: "signal".to_string(),
+            session_id,
+            payload: Some(response),
+            state: None,
+            accepted: None,
+            reason: None,
+            extra,
+        }];
+    }
+
+    let message_id = format!(
+        "fs_{}",
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    );
+    let chunks = split_str_for_signaling(&json, FILES_SIGNALING_RESPONSE_CHUNK_SIZE);
+    let total_chunks = chunks.len();
+    let mut envelopes = Vec::with_capacity(total_chunks + 2);
+    envelopes.push(build_files_signaling_frame_response(
+        session_id.clone(),
+        mobile_device_id,
+        &response_to,
+        serde_json::json!({
+            "op": "start",
+            "id": message_id,
+            "chunks": total_chunks,
+        }),
+    ));
+    for (index, chunk) in chunks.iter().enumerate() {
+        envelopes.push(build_files_signaling_frame_response(
+            session_id.clone(),
+            mobile_device_id,
+            &response_to,
+            serde_json::json!({
+                "op": "chunk",
+                "id": message_id,
+                "i": index,
+                "d": chunk,
+            }),
+        ));
+    }
+    envelopes.push(build_files_signaling_frame_response(
+        session_id,
+        mobile_device_id,
+        &response_to,
+        serde_json::json!({
+            "op": "end",
+            "id": message_id,
+        }),
+    ));
+    info!(
+        "files signaling frame response response_to={} bytes={} chunks={}",
+        response_to,
+        json.len(),
+        total_chunks
+    );
+    envelopes
 }
 
 async fn send_direct_transfer_result(
@@ -7281,23 +7433,13 @@ async fn handle_signal(
                             }
                         };
 
-                        let mut extra = std::collections::HashMap::new();
-                        if let Some(target) = target_mobile_device_id {
-                            extra.insert(
-                                "target_mobile_device_id".to_string(),
-                                serde_json::json!(target),
-                            );
+                        for response in build_files_signaling_response_envelopes(
+                            Some(session_id.clone()),
+                            target_mobile_device_id.as_deref(),
+                            response_payload,
+                        ) {
+                            let _ = tx.send(response);
                         }
-                        let response = SignalEnvelope {
-                            message_type: "signal".to_string(),
-                            session_id: Some(session_id),
-                            payload: Some(response_payload),
-                            state: None,
-                            accepted: None,
-                            reason: None,
-                            extra,
-                        };
-                        let _ = tx.send(response);
                     });
                 }
                 _ => {}
@@ -8198,37 +8340,76 @@ async fn handle_signal(
                 }
             };
             let response_plaintext = serde_json::to_vec(&response_json).unwrap_or_default();
-
-            // Enforce 200 KB limit for signaling responses
-            const MAX_SIGNALING_RESPONSE_BYTES: usize = 200 * 1024;
-            let plaintext_to_encrypt = if response_plaintext.len() > MAX_SIGNALING_RESPONSE_BYTES {
-                warn!(
-                    "encrypted files: response too large ({} bytes), rejecting",
-                    response_plaintext.len()
-                );
-                serde_json::to_vec(&serde_json::json!({
-                    "channel": "files",
-                    "response_to": request_id,
-                    "status": "error",
-                    "error": "Response exceeds signaling size limit",
-                    "error_code": "payload_too_large"
-                }))
-                .unwrap_or_default()
+            let plaintext_frames = if response_plaintext.len()
+                <= FILES_SIGNALING_RESPONSE_CHUNK_SIZE
+            {
+                vec![response_plaintext]
             } else {
-                response_plaintext
+                let json = serde_json::to_string(&response_json).unwrap_or_default();
+                let chunks = split_str_for_signaling(&json, FILES_SIGNALING_RESPONSE_CHUNK_SIZE);
+                let total_chunks = chunks.len();
+                let message_id = format!(
+                    "efs_{}",
+                    chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+                );
+                info!(
+                    "encrypted files frame response response_to={} bytes={} chunks={}",
+                    request_id,
+                    json.len(),
+                    total_chunks
+                );
+
+                let mut frames = Vec::with_capacity(total_chunks + 2);
+                frames.push(
+                    serde_json::to_vec(&serde_json::json!({
+                        "channel": "files",
+                        "response_to": request_id,
+                        "frame": {
+                            "op": "start",
+                            "id": message_id,
+                            "chunks": total_chunks,
+                        }
+                    }))
+                    .unwrap_or_default(),
+                );
+                for (index, chunk) in chunks.iter().enumerate() {
+                    frames.push(
+                        serde_json::to_vec(&serde_json::json!({
+                            "channel": "files",
+                            "response_to": request_id,
+                            "frame": {
+                                "op": "chunk",
+                                "id": message_id,
+                                "i": index,
+                                "d": chunk,
+                            }
+                        }))
+                        .unwrap_or_default(),
+                    );
+                }
+                frames.push(
+                    serde_json::to_vec(&serde_json::json!({
+                        "channel": "files",
+                        "response_to": request_id,
+                        "frame": {
+                            "op": "end",
+                            "id": message_id,
+                        }
+                    }))
+                    .unwrap_or_default(),
+                );
+                frames
             };
 
-            match encrypt_and_build(
-                cipher,
-                &plaintext_to_encrypt,
-                &session_id,
-                &mobile_device_id,
-            ) {
-                Ok(envelope) => {
-                    let _ = send_signal(ws, &envelope).await;
-                }
-                Err(e) => {
-                    warn!("encrypted files: failed to encrypt response: {}", e);
+            for plaintext in plaintext_frames {
+                match encrypt_and_build(cipher, &plaintext, &session_id, &mobile_device_id) {
+                    Ok(envelope) => {
+                        let _ = send_signal(ws, &envelope).await;
+                    }
+                    Err(e) => {
+                        warn!("encrypted files: failed to encrypt response: {}", e);
+                        break;
+                    }
                 }
             }
         }
@@ -9092,6 +9273,59 @@ mod tests {
         let body = &out[AUTH_SENTINEL.len()..];
         let parsed: serde_json::Value = serde_json::from_slice(body).unwrap();
         assert_eq!(parsed, val);
+    }
+
+    #[test]
+    fn split_str_for_signaling_preserves_utf8() {
+        let input = "alpha-नमस्ते-beta-こんにちは";
+        let chunks = split_str_for_signaling(input, 8);
+        assert_eq!(chunks.concat(), input);
+        assert!(chunks
+            .iter()
+            .all(|chunk| chunk.is_char_boundary(chunk.len())));
+    }
+
+    #[test]
+    fn build_files_signaling_response_envelopes_chunks_large_payload() {
+        let response = serde_json::json!({
+            "channel": "files",
+            "response_to": "req-1",
+            "status": "ok",
+            "data": {
+                "entries": ["x".repeat(FILES_SIGNALING_RESPONSE_CHUNK_SIZE + 128)]
+            }
+        });
+        let envelopes = build_files_signaling_response_envelopes(
+            Some("sid".to_string()),
+            Some("mdi"),
+            response,
+        );
+        assert!(envelopes.len() > 3);
+        assert_eq!(envelopes.first().unwrap().message_type, "signal");
+        assert_eq!(
+            envelopes
+                .first()
+                .unwrap()
+                .payload
+                .as_ref()
+                .unwrap()
+                .get("frame")
+                .and_then(|f| f.get("op"))
+                .and_then(|op| op.as_str()),
+            Some("start")
+        );
+        assert_eq!(
+            envelopes
+                .last()
+                .unwrap()
+                .payload
+                .as_ref()
+                .unwrap()
+                .get("frame")
+                .and_then(|f| f.get("op"))
+                .and_then(|op| op.as_str()),
+            Some("end")
+        );
     }
 
     #[test]
