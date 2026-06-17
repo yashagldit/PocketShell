@@ -183,6 +183,8 @@
   "viewer.pdf_loading": "Загрузка PDF...",
   "viewer.pdf_render_failed": "Не удалось отобразить PDF:",
   "viewer.media_unsupported": "Ваш браузер не поддерживает этот формат мультимедиа.",
+  "editor.word_wrap_on": "Перенос строк включён",
+  "editor.word_wrap_off": "Перенос строк выключен",
   "errors.transfer_channel_unavailable": "Для этой операции требуется прямой канал передачи, который недоступен",
   "errors.operation_timed_out": "Истёк тайм-аут операции с файлом",
   "errors.operation_failed": "Операция с файлом не удалась",

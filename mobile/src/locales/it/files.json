@@ -183,6 +183,8 @@
   "viewer.pdf_loading": "Caricamento PDF...",
   "viewer.pdf_render_failed": "Impossibile eseguire il rendering del PDF:",
   "viewer.media_unsupported": "Il tuo browser non supporta questo formato multimediale.",
+  "editor.word_wrap_on": "A capo automatico attivo",
+  "editor.word_wrap_off": "A capo automatico disattivo",
   "errors.transfer_channel_unavailable": "Questa operazione richiede un canale di trasferimento diretto che non è disponibile",
   "errors.operation_timed_out": "Timeout dell'operazione di file",
   "errors.operation_failed": "Operazione di file non riuscita",

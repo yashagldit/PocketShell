@@ -183,6 +183,8 @@
   "viewer.pdf_loading": "Chargement du PDF...",
   "viewer.pdf_render_failed": "Échec du rendu du PDF :",
   "viewer.media_unsupported": "Votre navigateur ne supporte pas ce format multimédia.",
+  "editor.word_wrap_on": "Retour à la ligne activé",
+  "editor.word_wrap_off": "Retour à la ligne désactivé",
   "errors.transfer_channel_unavailable": "Cette opération nécessite un canal de transfert direct qui n'est pas disponible",
   "errors.operation_timed_out": "L'opération sur fichier a expiré",
   "errors.operation_failed": "L'opération sur fichier a échoué",

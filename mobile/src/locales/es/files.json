@@ -183,6 +183,8 @@
   "viewer.pdf_loading": "Cargando PDF...",
   "viewer.pdf_render_failed": "Error al renderizar PDF:",
   "viewer.media_unsupported": "Su navegador no admite este formato de medios.",
+  "editor.word_wrap_on": "Ajuste de línea activado",
+  "editor.word_wrap_off": "Ajuste de línea desactivado",
   "errors.transfer_channel_unavailable": "Esta operación requiere un canal de transferencia directo que no está disponible",
   "errors.operation_timed_out": "La operación de archivo agotó el tiempo de espera",
   "errors.operation_failed": "La operación de archivo falló",

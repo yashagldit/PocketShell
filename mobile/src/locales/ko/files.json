@@ -183,6 +183,8 @@
   "viewer.pdf_loading": "PDF 로드 중...",
   "viewer.pdf_render_failed": "PDF 렌더링 실패:",
   "viewer.media_unsupported": "브라우저에서 이 미디어 형식을 지원하지 않습니다.",
+  "editor.word_wrap_on": "줄 바꿈 켜짐",
+  "editor.word_wrap_off": "줄 바꿈 꺼짐",
   "errors.transfer_channel_unavailable": "이 작업을 위해서는 사용할 수 없는 직접 전송 채널이 필요합니다",
   "errors.operation_timed_out": "파일 작업 시간 초과",
   "errors.operation_failed": "파일 작업 실패",

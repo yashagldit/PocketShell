@@ -183,6 +183,8 @@
   "viewer.pdf_loading": "PDFを読み込み中...",
   "viewer.pdf_render_failed": "PDFのレンダリングに失敗しました:",
   "viewer.media_unsupported": "お使いのブラウザーはこのメディア形式に対応していません。",
+  "editor.word_wrap_on": "折り返しオン",
+  "editor.word_wrap_off": "折り返しオフ",
   "errors.transfer_channel_unavailable": "この操作には直接転送チャネルが必要ですが、利用できません",
   "errors.operation_timed_out": "ファイル操作がタイムアウトしました",
   "errors.operation_failed": "ファイル操作が失敗しました",

@@ -183,6 +183,8 @@
   "viewer.pdf_loading": "Loading PDF...",
   "viewer.pdf_render_failed": "Failed to render PDF:",
   "viewer.media_unsupported": "Your browser does not support this media format.",
+  "editor.word_wrap_on": "Word wrap on",
+  "editor.word_wrap_off": "Word wrap off",
   "errors.transfer_channel_unavailable": "This operation requires a direct transfer channel which is not available",
   "errors.operation_timed_out": "File operation timed out",
   "errors.operation_failed": "File operation failed",
