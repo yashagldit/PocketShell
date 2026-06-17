@@ -34,6 +34,27 @@ fn run_git(cwd: &str, args: &[&str]) -> Result<String> {
     Ok(stdout)
 }
 
+fn run_git_allow_exit(cwd: &str, args: &[&str], allowed_codes: &[i32]) -> Result<String> {
+    let dir = git_dir(cwd)?;
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(&dir)
+        .output()
+        .map_err(|e| HostError::Backend(format!("git spawn failed: {e}")))?;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let code = output.status.code().unwrap_or(-1);
+    if !output.status.success() && !allowed_codes.contains(&code) {
+        let msg = if stderr.trim().is_empty() {
+            format!("git exited with {}", output.status)
+        } else {
+            stderr.trim().to_string()
+        };
+        return Err(HostError::Backend(msg));
+    }
+    Ok(stdout)
+}
+
 fn run_git_ok_stderr(cwd: &str, args: &[&str]) -> Result<String> {
     let dir = git_dir(cwd)?;
     let output = Command::new("git")
@@ -47,7 +68,8 @@ fn run_git_ok_stderr(cwd: &str, args: &[&str]) -> Result<String> {
 
 /// `git status --porcelain=v1 -b` plus ahead/behind when available.
 pub fn git_status(cwd: &str) -> Result<serde_json::Value> {
-    let branch_out = run_git_ok_stderr(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
+    let branch_out =
+        run_git_ok_stderr(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
     let branch = branch_out.trim().to_string();
     let porcelain = run_git_ok_stderr(cwd, &["status", "--porcelain=v1", "-b"]).unwrap_or_default();
 
@@ -130,14 +152,30 @@ pub fn git_status(cwd: &str) -> Result<serde_json::Value> {
 
 /// Unified diff for one file or entire worktree when `file` is None.
 pub fn git_diff(cwd: &str, file: Option<&str>) -> Result<serde_json::Value> {
-    let mut args = vec!["diff", "--no-color"];
     if let Some(f) = file {
         if f.trim().is_empty() {
             return Err(HostError::Backend("empty file path".into()));
         }
-        args.push(f);
+        let status =
+            run_git_ok_stderr(cwd, &["status", "--porcelain=v1", "--", f]).unwrap_or_default();
+        let diff = if status.lines().any(|line| line.starts_with("?? ")) {
+            run_git_allow_exit(
+                cwd,
+                &["diff", "--no-color", "--no-index", "--", "/dev/null", f],
+                &[0, 1],
+            )?
+        } else {
+            run_git(cwd, &["diff", "--no-color", "HEAD", "--", f])
+                .or_else(|_| run_git(cwd, &["diff", "--no-color", "--", f]))?
+        };
+        return Ok(serde_json::json!({
+            "diff": diff,
+            "file": file,
+        }));
     }
-    let diff = run_git(cwd, &args)?;
+
+    let diff = run_git(cwd, &["diff", "--no-color", "HEAD"])
+        .or_else(|_| run_git(cwd, &["diff", "--no-color"]))?;
     Ok(serde_json::json!({
         "diff": diff,
         "file": file,
@@ -148,10 +186,7 @@ pub fn git_diff(cwd: &str, file: Option<&str>) -> Result<serde_json::Value> {
 pub fn git_log(cwd: &str, limit: usize) -> Result<serde_json::Value> {
     let lim = limit.clamp(1, 50);
     let fmt = "--pretty=format:%H%x1f%s%x1f%ar";
-    let out = run_git(
-        cwd,
-        &["log", "-n", &lim.to_string(), fmt],
-    )?;
+    let out = run_git(cwd, &["log", "-n", &lim.to_string(), fmt])?;
     let commits: Vec<serde_json::Value> = out
         .lines()
         .filter(|l| !l.is_empty())
@@ -177,7 +212,10 @@ pub fn is_git_repo(cwd: &str) -> bool {
 
 fn is_git_worktree(dir: &Path) -> bool {
     let git = dir.join(".git");
-    git.is_file() && std::fs::read_to_string(&git).map(|s| s.starts_with("gitdir:")).unwrap_or(false)
+    git.is_file()
+        && std::fs::read_to_string(&git)
+            .map(|s| s.starts_with("gitdir:"))
+            .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -204,23 +242,62 @@ mod tests {
             .expect("git config name");
     }
 
+    fn commit_all(dir: &Path, message: &str) {
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(dir)
+            .output()
+            .expect("git add");
+        Command::new("git")
+            .args(["commit", "-m", message])
+            .current_dir(dir)
+            .output()
+            .expect("git commit");
+    }
+
     #[test]
     fn git_status_clean_repo() {
         let dir = tempfile::tempdir().unwrap();
         init_repo(dir.path());
         fs::write(dir.path().join("README.md"), "hi").unwrap();
-        Command::new("git")
-            .args(["add", "README.md"])
-            .current_dir(dir.path())
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["commit", "-m", "init"])
-            .current_dir(dir.path())
-            .output()
-            .unwrap();
+        commit_all(dir.path(), "init");
         let status = git_status(&dir.path().to_string_lossy()).unwrap();
         assert_eq!(status["dirty"].as_bool(), Some(false));
         assert_eq!(status["branch"].as_str(), Some("main"));
+    }
+
+    #[test]
+    fn git_diff_includes_staged_file_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo(dir.path());
+        fs::write(dir.path().join("app.txt"), "old\n").unwrap();
+        commit_all(dir.path(), "init");
+
+        fs::write(dir.path().join("app.txt"), "new\n").unwrap();
+        Command::new("git")
+            .args(["add", "app.txt"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+
+        let diff = git_diff(&dir.path().to_string_lossy(), Some("app.txt")).unwrap();
+        let text = diff["diff"].as_str().unwrap();
+        assert!(text.contains("-old"));
+        assert!(text.contains("+new"));
+    }
+
+    #[test]
+    fn git_diff_renders_untracked_file_as_addition() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo(dir.path());
+        fs::write(dir.path().join("README.md"), "hi\n").unwrap();
+        commit_all(dir.path(), "init");
+
+        fs::write(dir.path().join("new.txt"), "hello\n").unwrap();
+
+        let diff = git_diff(&dir.path().to_string_lossy(), Some("new.txt")).unwrap();
+        let text = diff["diff"].as_str().unwrap();
+        assert!(text.contains("+++ b/new.txt") || text.contains("+++ new.txt"));
+        assert!(text.contains("+hello"));
     }
 }

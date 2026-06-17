@@ -245,14 +245,13 @@ fn addr_is_local(addr_hex: &str, v6: bool) -> bool {
         let upper = addr_hex.to_ascii_uppercase();
         // Wildcard `::` is all zeros; loopback `::1` has this fixed kernel
         // representation (four little-endian 32-bit words).
-        upper == "00000000000000000000000000000000"
-            || upper == "00000000000000000000000001000000"
+        upper == "00000000000000000000000000000000" || upper == "00000000000000000000000001000000"
     } else {
         // The kernel prints the v4 address as a little-endian u32, so the
         // first octet of the dotted address is the low byte.
         match u32::from_str_radix(addr_hex, 16) {
-            Ok(0) => true,                 // 0.0.0.0 wildcard
-            Ok(n) => (n & 0xff) == 127,    // 127.0.0.0/8 loopback
+            Ok(0) => true,              // 0.0.0.0 wildcard
+            Ok(n) => (n & 0xff) == 127, // 127.0.0.0/8 loopback
             Err(_) => false,
         }
     }
@@ -327,9 +326,7 @@ fn list_listening_ports_macos() -> Vec<ListeningPort> {
         .args(["-nP", "-iTCP", "-sTCP:LISTEN"])
         .output();
     match output {
-        Ok(out) if out.status.success() => {
-            parse_lsof_output(&String::from_utf8_lossy(&out.stdout))
-        }
+        Ok(out) if out.status.success() => parse_lsof_output(&String::from_utf8_lossy(&out.stdout)),
         Ok(out) => {
             tracing::debug!(
                 "dev_ports: lsof exited {}: {}",
@@ -386,8 +383,7 @@ fn parse_lsof_output(text: &str) -> Vec<ListeningPort> {
 
 #[cfg(any(target_os = "macos", test))]
 fn lsof_addr_is_local(addr: &str) -> bool {
-    matches!(addr, "*" | "0.0.0.0" | "127.0.0.1" | "[::1]" | "[::]")
-        || addr.starts_with("127.")
+    matches!(addr, "*" | "0.0.0.0" | "127.0.0.1" | "[::1]" | "[::]") || addr.starts_with("127.")
 }
 
 // =====================================================================
@@ -449,7 +445,11 @@ async fn probe_port(port: u16) -> Option<ProbeResult> {
     }
     let body_snippet = String::from_utf8_lossy(&body);
 
-    let kind = classify_kind(server_header.as_deref(), powered_by.as_deref(), &body_snippet);
+    let kind = classify_kind(
+        server_header.as_deref(),
+        powered_by.as_deref(),
+        &body_snippet,
+    );
     Some(ProbeResult {
         status,
         server_header,
@@ -654,7 +654,12 @@ postgres 4321 yash    5u  IPv4 0x111111111111111      0t0  TCP *:5432 (LISTEN)
             Some("next")
         );
         assert_eq!(
-            classify_kind(None, None, "<div id=\"__next\">x</div><script src=\"/_next/static/x.js\">").as_deref(),
+            classify_kind(
+                None,
+                None,
+                "<div id=\"__next\">x</div><script src=\"/_next/static/x.js\">"
+            )
+            .as_deref(),
             Some("next")
         );
     }

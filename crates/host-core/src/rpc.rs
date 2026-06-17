@@ -922,8 +922,7 @@ mod tests {
                 serde_json::json!({"port": 70000}),
                 serde_json::json!({"port": "5173"}),
             ] {
-                let resp =
-                    handle_expose_port(&store, "device-1", port_req("ports/expose", params));
+                let resp = handle_expose_port(&store, "device-1", port_req("ports/expose", params));
                 assert_eq!(resp.error.unwrap().code, "invalid_params");
             }
             assert!(crate::exposed_ports::ExposedPortsStore::list()
@@ -1178,11 +1177,18 @@ mod tests {
         };
         let resp = dispatch(req).await;
         assert_eq!(resp.id, "ports");
-        assert!(resp.error.is_none(), "list_dev must not error: {:?}", resp.error);
+        assert!(
+            resp.error.is_none(),
+            "list_dev must not error: {:?}",
+            resp.error
+        );
         let result = resp.result.unwrap();
         assert!(result.get("ports").unwrap().is_array());
         assert_eq!(result.get("probed").and_then(|v| v.as_bool()), Some(false));
-        assert!(result.get("captured_at_ms").and_then(|v| v.as_i64()).is_some());
+        assert!(result
+            .get("captured_at_ms")
+            .and_then(|v| v.as_i64())
+            .is_some());
     }
 
     #[tokio::test]

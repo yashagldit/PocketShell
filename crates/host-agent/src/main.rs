@@ -2506,7 +2506,9 @@ fn menu_exposed_ports(theme: &dialoguer::theme::ColorfulTheme) -> Result<()> {
                 }
             };
             let ephemeral = Confirm::with_theme(theme)
-                .with_prompt("Ephemeral? (drops on next daemon restart — recommended for `npm run dev`)")
+                .with_prompt(
+                    "Ephemeral? (drops on next daemon restart — recommended for `npm run dev`)",
+                )
                 .default(true)
                 .interact_opt()
                 .map_err(|e| anyhow!("confirm error: {e}"))?
