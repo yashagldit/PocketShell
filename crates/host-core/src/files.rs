@@ -566,6 +566,69 @@ pub async fn handle_files_action_with_context(
                 let limit = payload.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
                 crate::git::git_log(&path_str, limit)
             }
+            "git_stage" => {
+                let file = payload.get("file").and_then(|v| v.as_str());
+                audit_mutation(
+                    &ctx,
+                    "file.git_stage",
+                    &path_str,
+                    None,
+                    Some(serde_json::json!({ "file": file })),
+                    crate::git::git_stage(&path_str, file),
+                )
+            }
+            "git_unstage" => {
+                let file = payload.get("file").and_then(|v| v.as_str());
+                audit_mutation(
+                    &ctx,
+                    "file.git_unstage",
+                    &path_str,
+                    None,
+                    Some(serde_json::json!({ "file": file })),
+                    crate::git::git_unstage(&path_str, file),
+                )
+            }
+            "git_discard" => {
+                let file = payload.get("file").and_then(|v| v.as_str());
+                audit_mutation(
+                    &ctx,
+                    "file.git_discard",
+                    &path_str,
+                    None,
+                    Some(serde_json::json!({ "file": file })),
+                    crate::git::git_discard(&path_str, file),
+                )
+            }
+            "git_commit" => {
+                let message = payload
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                audit_mutation(
+                    &ctx,
+                    "file.git_commit",
+                    &path_str,
+                    None,
+                    None,
+                    crate::git::git_commit(&path_str, message),
+                )
+            }
+            "git_branches" => crate::git::git_branches(&path_str),
+            "git_checkout_branch" => {
+                let branch = payload.get("branch").and_then(|v| v.as_str()).unwrap_or("");
+                let create = payload
+                    .get("create")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                audit_mutation(
+                    &ctx,
+                    "file.git_checkout_branch",
+                    &path_str,
+                    None,
+                    Some(serde_json::json!({ "branch": branch, "create": create })),
+                    crate::git::git_checkout_branch(&path_str, branch, create),
+                )
+            }
             _ => {
                 // Unknown actions are audit-worthy: a device probing the file
                 // channel with junk operation names is exactly the kind of

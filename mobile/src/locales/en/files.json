@@ -49,6 +49,7 @@
   "action.open_folder": "Open Folder",
   "action.copy": "Copy",
   "action.move": "Move",
+  "action.paste": "Paste",
   "action.copy_path": "Copy Path",
   "action.rename": "Rename",
   "action.delete": "Delete",
