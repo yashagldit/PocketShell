@@ -50,6 +50,7 @@
   "action.copy": "Copy",
   "action.move": "Move",
   "action.paste": "Paste",
+  "action.open_terminal": "Open in Terminal",
   "action.copy_path": "Copy Path",
   "action.rename": "Rename",
   "action.delete": "Delete",
