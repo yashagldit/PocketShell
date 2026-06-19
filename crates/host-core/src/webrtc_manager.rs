@@ -14,6 +14,7 @@ use tokio::time::{timeout, Duration};
 /// ICE-restart attempt can recover without losing the peer.
 const DISCONNECTED_GRACE: Duration = Duration::from_secs(20);
 const RELAY_STATS_TIMEOUT: Duration = Duration::from_secs(3);
+const OFFER_NEGOTIATION_TIMEOUT: Duration = Duration::from_secs(10);
 use tracing::{info, warn};
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
 use webrtc::data_channel::RTCDataChannel;
@@ -343,14 +344,12 @@ impl WebRtcManager {
             }
         };
         if should_create {
-            if let Some(old) = self.peers.remove(peer_key) {
+            if let Some(old_state) = self.peers.get(peer_key).map(|old| old.connection_state()) {
                 info!(
                     "replacing WebRTC peer for peer_key={} (state={:?}, forced={})",
-                    peer_key,
-                    old.connection_state(),
-                    force_new_peer
+                    peer_key, old_state, force_new_peer
                 );
-                old.close().await;
+                self.close_peer(peer_key).await;
             }
             self.disconnected_since.remove(peer_key);
             let peer = WebRtcPeer::new(turn_uris, username, credential).await?;
@@ -358,12 +357,30 @@ impl WebRtcManager {
             info!("created WebRTC peer for peer_key={}", peer_key);
         }
 
-        let peer = self
-            .peers
-            .get(peer_key)
-            .ok_or_else(|| HostError::Backend("peer not found after creation".into()))?;
+        let answer_result = {
+            let peer = self
+                .peers
+                .get(peer_key)
+                .ok_or_else(|| HostError::Backend("peer not found after creation".into()))?;
 
-        let answer_sdp = peer.apply_offer(offer_sdp).await?;
+            timeout(OFFER_NEGOTIATION_TIMEOUT, peer.apply_offer(offer_sdp)).await
+        };
+
+        let answer_sdp = match answer_result {
+            Ok(Ok(answer_sdp)) => answer_sdp,
+            Ok(Err(err)) => return Err(err),
+            Err(_) => {
+                warn!(
+                    "WebRTC offer negotiation timed out for peer_key={} after {:?}; closing peer",
+                    peer_key, OFFER_NEGOTIATION_TIMEOUT
+                );
+                self.close_peer(peer_key).await;
+                return Err(HostError::Backend(format!(
+                    "WebRTC offer negotiation timed out after {:?}",
+                    OFFER_NEGOTIATION_TIMEOUT
+                )));
+            }
+        };
         info!("applied offer, sending answer for peer_key={}", peer_key);
 
         Ok(answer_sdp)

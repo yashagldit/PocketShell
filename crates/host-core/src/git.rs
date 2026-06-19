@@ -132,8 +132,11 @@ fn parse_status_z(out: &str) -> Vec<GitStatusEntry> {
 
 fn status_entries(cwd: &str, file: Option<&str>) -> Result<Vec<GitStatusEntry>> {
     let out = match file {
-        Some(f) => run_git(cwd, &["status", "--porcelain=v1", "-z", "--", f])?,
-        None => run_git(cwd, &["status", "--porcelain=v1", "-z"])?,
+        Some(f) => run_git(
+            cwd,
+            &["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", f],
+        )?,
+        None => run_git(cwd, &["status", "--porcelain=v1", "-z", "--untracked-files=all"])?,
     };
     Ok(parse_status_z(&out))
 }
@@ -548,6 +551,31 @@ mod tests {
         assert!(!dir.path().join("scratch.txt").exists());
         let status = git_status(&dir.path().to_string_lossy()).unwrap();
         assert_eq!(status["dirty"].as_bool(), Some(false));
+    }
+
+    #[test]
+    fn git_status_expands_untracked_directory_contents() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo(dir.path());
+        fs::write(dir.path().join("README.md"), "hi\n").unwrap();
+        commit_all(dir.path(), "init");
+
+        fs::create_dir_all(dir.path().join("new-dir/nested")).unwrap();
+        fs::write(dir.path().join("new-dir/a.txt"), "a\n").unwrap();
+        fs::write(dir.path().join("new-dir/nested/b.txt"), "b\n").unwrap();
+
+        let status = git_status(&dir.path().to_string_lossy()).unwrap();
+        let paths: Vec<&str> = status["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|file| file["path"].as_str())
+            .collect();
+
+        assert!(paths.contains(&"new-dir/a.txt"));
+        assert!(paths.contains(&"new-dir/nested/b.txt"));
+        assert!(!paths.contains(&"new-dir/"));
+        assert_eq!(status["counts"]["untracked"].as_u64(), Some(2));
     }
 
     #[test]
