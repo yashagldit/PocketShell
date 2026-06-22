@@ -2796,7 +2796,13 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                     // OSC 133 / BEL attention events fire after the parser's
                     // quiet-period debounce (see `DEFAULT_QUIET_PERIOD`).
                     for ev in sessions.drain_attention(std::time::Instant::now()) {
-                        let SessionAttentionEvent { session_id, kind, command_duration } = ev;
+                        let SessionAttentionEvent {
+                            session_id,
+                            kind,
+                            command_duration,
+                            attention_context,
+                            foreground_process,
+                        } = ev;
                         let exit_code = match &kind {
                             AttentionKind::CommandDone { exit_code } => *exit_code,
                             AttentionKind::Bell
@@ -2817,6 +2823,8 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                 "exit_code": exit_code,
                                 "command_duration_ms": command_duration.map(|d| d.as_millis() as u64),
                                 "body": body,
+                                "attention_context": attention_context.wire_str(),
+                                "foreground_process": foreground_process,
                             })),
                             state: None,
                             accepted: None,
