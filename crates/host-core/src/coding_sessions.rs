@@ -14,8 +14,17 @@ const TITLE_MAX_CHARS: usize = 80;
 /// Hard cap on lines scanned per Claude JSONL when searching for metadata —
 /// bounds worst-case I/O on a session with no qualifying user message.
 const CLAUDE_SCAN_LINE_CAP: usize = 200;
+/// Codex titles can come from early user turns or rename events in the rollout.
+/// Keep the scan bounded so listing hundreds of sessions remains predictable.
+const CODEX_SCAN_LINE_CAP: usize = 500;
 const DEFAULT_LIMIT: usize = 50;
 const MAX_LIMIT: usize = 200;
+
+#[derive(Default)]
+struct CodexTitleStores {
+    session_index: HashMap<String, String>,
+    global_state: HashMap<String, String>,
+}
 
 #[derive(Debug, Serialize, Deserialize, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
 #[serde(rename_all = "lowercase")]
@@ -57,12 +66,17 @@ pub async fn list_sessions(
     limit: Option<usize>,
     cursor: Option<String>,
     alive_ids: HashSet<String>,
+    project_path: Option<String>,
 ) -> Result<serde_json::Value> {
     let home = dirs::home_dir().ok_or_else(|| HostError::Backend("home dir not found".into()))?;
     let limit = limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
     let cursor = cursor
         .as_deref()
         .and_then(|s| serde_json::from_str::<PageCursor>(s).ok());
+    let project_filter = project_path
+        .as_deref()
+        .map(normalize_project_path)
+        .filter(|s| !s.is_empty());
 
     let claude_dir = home.join(".claude");
     let codex_dir = home.join(".codex");
@@ -76,6 +90,11 @@ pub async fn list_sessions(
 
     candidates.sort_by(compare_candidates);
     let total = candidates.len();
+
+    if let Some(project_filter) = project_filter {
+        return list_project_sessions(home, candidates, limit, cursor, alive_ids, project_filter)
+            .await;
+    }
 
     let page_candidates: Vec<SessionCandidate> = candidates
         .into_iter()
@@ -92,14 +111,12 @@ pub async fn list_sessions(
         None
     };
 
-    let codex_index = if page_candidates
+    let codex_titles = if page_candidates
         .iter()
         .take(limit)
         .any(|c| c.source == Source::Codex)
     {
-        Some(load_codex_index(
-            &home.join(".codex").join("session_index.jsonl"),
-        ))
+        Some(load_codex_title_stores(&home.join(".codex")))
     } else {
         None
     };
@@ -110,7 +127,7 @@ pub async fn list_sessions(
             Source::Claude => parse_claude_session(&candidate.file_path),
             Source::Codex => parse_codex_session(
                 &candidate.file_path,
-                codex_index.as_ref().expect("codex index loaded"),
+                codex_titles.as_ref().expect("codex titles loaded"),
             ),
         };
         if let Some(mut session) = parsed {
@@ -126,6 +143,121 @@ pub async fn list_sessions(
         "has_more": has_more,
         "next_cursor": next_cursor,
     }))
+}
+
+async fn list_project_sessions(
+    home: PathBuf,
+    candidates: Vec<SessionCandidate>,
+    limit: usize,
+    cursor: Option<PageCursor>,
+    alive_ids: HashSet<String>,
+    project_filter: String,
+) -> Result<serde_json::Value> {
+    let codex_titles = load_codex_title_stores(&home.join(".codex"));
+    let mut total = 0usize;
+    let mut sessions = Vec::new();
+    let mut next_cursor = None;
+    let mut last_returned_candidate = None;
+
+    for candidate in candidates
+        .into_iter()
+        .filter(|c| is_after_cursor(c, cursor.as_ref()))
+    {
+        let parsed = match candidate.source {
+            Source::Claude => parse_claude_session(&candidate.file_path),
+            Source::Codex => parse_codex_session(&candidate.file_path, &codex_titles),
+        };
+        let Some(mut session) = parsed else {
+            continue;
+        };
+        if normalize_project_path(&session.project_path) != project_filter {
+            continue;
+        }
+
+        total += 1;
+        if sessions.len() < limit {
+            session.alive = alive_ids.contains(&session.session_id);
+            last_returned_candidate = Some(candidate.clone());
+            sessions.push(session);
+        } else if next_cursor.is_none() {
+            next_cursor = last_returned_candidate
+                .as_ref()
+                .map(candidate_cursor)
+                .transpose()?;
+        }
+    }
+
+    Ok(serde_json::json!({
+        "sessions": sessions,
+        "total": total,
+        "pagination_supported": true,
+        "has_more": next_cursor.is_some(),
+        "next_cursor": next_cursor,
+    }))
+}
+
+fn normalize_project_path(path: &str) -> String {
+    path.replace('\\', "/").trim_end_matches('/').to_string()
+}
+
+fn claude_project_path_from_record(raw: &serde_json::Value) -> Option<&str> {
+    ["cwd", "project_path", "projectPath"]
+        .into_iter()
+        .find_map(|key| {
+            raw.get(key)
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+        })
+}
+
+fn decode_claude_project_path_from_file(file_path: &Path) -> Option<String> {
+    let encoded = file_path.parent()?.file_name()?.to_str()?;
+    decode_claude_project_dir(encoded)
+}
+
+fn decode_claude_project_dir(encoded: &str) -> Option<String> {
+    if encoded.is_empty() {
+        return None;
+    }
+    if encoded == "-" {
+        return Some("/".to_string());
+    }
+    if let Some(path) = decode_existing_unix_claude_project_dir(encoded) {
+        return Some(path);
+    }
+    if encoded.starts_with('-') {
+        return Some(encoded.replace('-', "/"));
+    }
+    Some(encoded.to_string())
+}
+
+fn decode_existing_unix_claude_project_dir(encoded: &str) -> Option<String> {
+    let rest = encoded.strip_prefix('-')?;
+    if rest.is_empty() {
+        return Some("/".to_string());
+    }
+
+    let parts: Vec<&str> = rest.split('-').filter(|part| !part.is_empty()).collect();
+    let path = resolve_existing_encoded_path(PathBuf::from("/"), &parts)?;
+    Some(path.to_string_lossy().into_owned())
+}
+
+fn resolve_existing_encoded_path(base: PathBuf, parts: &[&str]) -> Option<PathBuf> {
+    if parts.is_empty() {
+        return base.exists().then_some(base);
+    }
+
+    for end in 1..=parts.len() {
+        let component = parts[..end].join("-");
+        let candidate = base.join(component);
+        if candidate.exists() {
+            if let Some(resolved) = resolve_existing_encoded_path(candidate, &parts[end..]) {
+                return Some(resolved);
+            }
+        }
+    }
+
+    None
 }
 
 fn task_err(e: tokio::task::JoinError) -> HostError {
@@ -210,7 +342,7 @@ fn parse_claude_session(file_path: &Path) -> Option<SessionInfo> {
             }
         }
         if cwd.is_empty() {
-            if let Some(c) = raw.get("cwd").and_then(|v| v.as_str()) {
+            if let Some(c) = claude_project_path_from_record(&raw) {
                 cwd = c.to_string();
             }
         }
@@ -251,6 +383,10 @@ fn parse_claude_session(file_path: &Path) -> Option<SessionInfo> {
     let title = ai_title
         .or(user_title)
         .unwrap_or_else(|| "Untitled Session".to_string());
+
+    if cwd.is_empty() {
+        cwd = decode_claude_project_path_from_file(file_path).unwrap_or_default();
+    }
 
     Some(SessionInfo {
         session_id,
@@ -331,18 +467,50 @@ fn load_codex_index(index_path: &Path) -> HashMap<String, String> {
     map
 }
 
-fn parse_codex_session(file_path: &Path, index: &HashMap<String, String>) -> Option<SessionInfo> {
+fn load_codex_global_state_titles(global_state_path: &Path) -> HashMap<String, String> {
+    let raw = fs::read_to_string(global_state_path).ok();
+    let Some(raw) = raw else {
+        return HashMap::new();
+    };
+    let parsed: serde_json::Value = serde_json::from_str(&raw)
+        .ok()
+        .unwrap_or(serde_json::Value::Null);
+    let titles = parsed
+        .get("thread-titles")
+        .and_then(|v| v.get("titles"))
+        .and_then(|v| v.as_object());
+    let Some(titles) = titles else {
+        return HashMap::new();
+    };
+    titles
+        .iter()
+        .filter_map(|(id, title)| {
+            if id.ends_with("_old") {
+                return None;
+            }
+            normalize_title(title.as_str().unwrap_or(""))
+                .filter(|_| !id.is_empty())
+                .map(|title| (id.to_string(), title))
+        })
+        .collect()
+}
+
+fn load_codex_title_stores(codex_dir: &Path) -> CodexTitleStores {
+    CodexTitleStores {
+        session_index: load_codex_index(&codex_dir.join("session_index.jsonl")),
+        global_state: load_codex_global_state_titles(&codex_dir.join(".codex-global-state.json")),
+    }
+}
+
+fn parse_codex_session(file_path: &Path, titles: &CodexTitleStores) -> Option<SessionInfo> {
     let file = fs::File::open(file_path).ok()?;
     let metadata = file.metadata().ok()?;
     let size_bytes = metadata.len();
     let mtime_system = metadata.modified().ok()?;
 
-    let mut reader = BufReader::new(file);
-    let mut first_line = String::new();
-    if reader.read_line(&mut first_line).ok()? == 0 {
-        return None;
-    }
-
+    let reader = BufReader::new(file);
+    let mut lines = reader.lines();
+    let first_line = lines.next()?.ok()?;
     let raw: serde_json::Value = serde_json::from_str(first_line.trim()).ok()?;
     if raw.get("type").and_then(|v| v.as_str()) != Some("session_meta") {
         return None;
@@ -364,10 +532,67 @@ fn parse_codex_session(file_path: &Path, index: &HashMap<String, String>) -> Opt
         return None;
     }
 
-    let title = index
+    let mut thread_event_title: Option<String> = None;
+    let mut first_response_user_title: Option<String> = None;
+    let mut first_event_user_title: Option<String> = None;
+
+    for line in lines.take(CODEX_SCAN_LINE_CAP.saturating_sub(1)).flatten() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let raw: serde_json::Value = match serde_json::from_str(&line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        match raw.get("type").and_then(|v| v.as_str()) {
+            Some("response_item") => {
+                let payload = raw.get("payload").unwrap_or(&serde_json::Value::Null);
+                if first_response_user_title.is_none()
+                    && payload.get("type").and_then(|v| v.as_str()) == Some("message")
+                    && payload.get("role").and_then(|v| v.as_str()) == Some("user")
+                {
+                    if let Some(content) = payload.get("content") {
+                        first_response_user_title = extract_title(content);
+                    }
+                }
+            }
+            Some("event_msg") => {
+                let payload = raw.get("payload").unwrap_or(&serde_json::Value::Null);
+                match payload.get("type").and_then(|v| v.as_str()) {
+                    Some("thread_name_updated") => {
+                        if let Some(t) = payload
+                            .get("thread_name")
+                            .and_then(|v| v.as_str())
+                            .and_then(normalize_title)
+                        {
+                            thread_event_title = Some(t);
+                        }
+                    }
+                    Some("user_message") if first_event_user_title.is_none() => {
+                        if let Some(t) = payload
+                            .get("message")
+                            .and_then(|v| v.as_str())
+                            .and_then(normalize_title)
+                        {
+                            first_event_user_title = Some(t);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let title = titles
+        .session_index
         .get(&session_id)
         .cloned()
-        .unwrap_or_else(|| session_id.clone());
+        .or(thread_event_title)
+        .or_else(|| titles.global_state.get(&session_id).cloned())
+        .or(first_response_user_title)
+        .or(first_event_user_title)
+        .unwrap_or_else(|| "Codex Session".to_string());
 
     Some(SessionInfo {
         session_id,
@@ -513,6 +738,20 @@ fn is_system_message(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn codex_titles(session_index: HashMap<String, String>) -> CodexTitleStores {
+        CodexTitleStores {
+            session_index,
+            global_state: HashMap::new(),
+        }
+    }
+
+    fn codex_titles_with_global(global_state: HashMap<String, String>) -> CodexTitleStores {
+        CodexTitleStores {
+            session_index: HashMap::new(),
+            global_state,
+        }
+    }
 
     #[test]
     fn extracts_title_from_string_content() {
@@ -708,8 +947,8 @@ not json
 "#,
         )
         .unwrap();
-        let idx = HashMap::new();
-        assert!(parse_codex_session(&p, &idx).is_none());
+        let titles = CodexTitleStores::default();
+        assert!(parse_codex_session(&p, &titles).is_none());
     }
 
     #[test]
@@ -724,25 +963,89 @@ not json
         .unwrap();
         let mut idx = HashMap::new();
         idx.insert("sess-1".into(), "My Session".into());
-        let info = parse_codex_session(&p, &idx).unwrap();
+        let info = parse_codex_session(&p, &codex_titles(idx)).unwrap();
         assert_eq!(info.session_id, "sess-1");
         assert_eq!(info.title, "My Session");
         assert_eq!(info.project_path, "/work/dir");
     }
 
     #[test]
-    fn parse_codex_session_falls_back_to_id_title() {
+    fn parse_codex_session_uses_thread_name_updated_event() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("rollout-z.jsonl");
         std::fs::write(
             &p,
             r#"{"type":"session_meta","payload":{"id":"sess-2","cwd":""}}
+{"type":"event_msg","payload":{"type":"thread_name_updated","thread_name":"Renamed from event"}}
 "#,
         )
         .unwrap();
-        let idx = HashMap::new();
-        let info = parse_codex_session(&p, &idx).unwrap();
-        assert_eq!(info.title, "sess-2");
+        let titles = CodexTitleStores::default();
+        let info = parse_codex_session(&p, &titles).unwrap();
+        assert_eq!(info.title, "Renamed from event");
+    }
+
+    #[test]
+    fn parse_codex_session_uses_legacy_global_state_title() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("rollout-global.jsonl");
+        std::fs::write(
+            &p,
+            r#"{"type":"session_meta","payload":{"id":"sess-global","cwd":""}}
+"#,
+        )
+        .unwrap();
+        let mut global = HashMap::new();
+        global.insert("sess-global".into(), "Legacy Global Title".into());
+        let info = parse_codex_session(&p, &codex_titles_with_global(global)).unwrap();
+        assert_eq!(info.title, "Legacy Global Title");
+    }
+
+    #[test]
+    fn parse_codex_session_uses_first_response_user_prompt_title() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("rollout-user.jsonl");
+        std::fs::write(
+            &p,
+            r#"{"type":"session_meta","payload":{"id":"sess-user","cwd":""}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Implement better Codex titles in history"}]}}
+"#,
+        )
+        .unwrap();
+        let titles = CodexTitleStores::default();
+        let info = parse_codex_session(&p, &titles).unwrap();
+        assert_eq!(info.title, "Implement better Codex titles in history");
+    }
+
+    #[test]
+    fn parse_codex_session_uses_first_event_user_prompt_title() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("rollout-event-user.jsonl");
+        std::fs::write(
+            &p,
+            r#"{"type":"session_meta","payload":{"id":"sess-event-user","cwd":""}}
+{"type":"event_msg","payload":{"type":"user_message","message":"Look into the mobile agent drawer title"}}
+"#,
+        )
+        .unwrap();
+        let titles = CodexTitleStores::default();
+        let info = parse_codex_session(&p, &titles).unwrap();
+        assert_eq!(info.title, "Look into the mobile agent drawer title");
+    }
+
+    #[test]
+    fn parse_codex_session_falls_back_to_codex_session_title() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("rollout-no-title.jsonl");
+        std::fs::write(
+            &p,
+            r#"{"type":"session_meta","payload":{"id":"sess-empty-title","cwd":""}}
+"#,
+        )
+        .unwrap();
+        let titles = CodexTitleStores::default();
+        let info = parse_codex_session(&p, &titles).unwrap();
+        assert_eq!(info.title, "Codex Session");
     }
 
     #[test]
@@ -755,8 +1058,8 @@ not json
 "#,
         )
         .unwrap();
-        let idx = HashMap::new();
-        assert!(parse_codex_session(&p, &idx).is_none());
+        let titles = CodexTitleStores::default();
+        assert!(parse_codex_session(&p, &titles).is_none());
     }
 
     #[test]
@@ -794,6 +1097,140 @@ not json
         let info = parse_claude_session(&p).unwrap();
         assert_eq!(info.session_id, "sess-b");
         assert_eq!(info.title, "Debug employee gatepass page errors");
+    }
+
+    #[test]
+    fn parse_claude_session_reads_project_path_when_cwd_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("claude-project-path.jsonl");
+        std::fs::write(
+            &p,
+            r#"{"type":"system","sessionId":"sess-c","project_path":"/work/from-project-path"}
+{"type":"user","message":{"content":"first real user text"}}
+"#,
+        )
+        .unwrap();
+        let info = parse_claude_session(&p).unwrap();
+        assert_eq!(info.session_id, "sess-c");
+        assert_eq!(info.project_path, "/work/from-project-path");
+    }
+
+    #[test]
+    fn parse_claude_session_decodes_project_dir_when_path_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("repo-with-dash");
+        std::fs::create_dir(&project).unwrap();
+        let encoded_project = project
+            .to_string_lossy()
+            .replace(std::path::MAIN_SEPARATOR, "-");
+        let claude_project_dir = dir.path().join(".claude/projects").join(encoded_project);
+        std::fs::create_dir_all(&claude_project_dir).unwrap();
+        let p = claude_project_dir.join("missing-cwd.jsonl");
+        std::fs::write(
+            &p,
+            r#"{"type":"system","sessionId":"sess-d"}
+{"type":"user","message":{"content":"first real user text"}}
+"#,
+        )
+        .unwrap();
+
+        let info = parse_claude_session(&p).unwrap();
+        assert_eq!(info.project_path, project.to_string_lossy());
+    }
+
+    #[test]
+    fn decode_claude_project_dir_resolves_nested_existing_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("parent").join("child");
+        std::fs::create_dir_all(&project).unwrap();
+        let encoded = project
+            .to_string_lossy()
+            .replace(std::path::MAIN_SEPARATOR, "-");
+
+        assert_eq!(
+            decode_claude_project_dir(&encoded).as_deref(),
+            Some(project.to_string_lossy().as_ref()),
+        );
+    }
+
+    #[test]
+    fn decode_claude_project_dir_falls_back_to_slashes() {
+        assert_eq!(
+            decode_claude_project_dir("-Users-someone-missing").as_deref(),
+            Some("/Users/someone/missing"),
+        );
+    }
+
+    #[tokio::test]
+    async fn list_project_sessions_cursor_resumes_after_last_returned_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = "/work/project";
+        let paths: Vec<PathBuf> = ["newest", "middle", "oldest"]
+            .into_iter()
+            .map(|name| {
+                let path = dir.path().join(format!("{name}.jsonl"));
+                std::fs::write(
+                    &path,
+                    format!(
+                        r#"{{"type":"system","sessionId":"{name}","cwd":"{project}"}}
+{{"type":"user","message":{{"content":"title for {name}"}}}}
+"#
+                    ),
+                )
+                .unwrap();
+                path
+            })
+            .collect();
+        let candidates = vec![
+            SessionCandidate {
+                source: Source::Claude,
+                file_path: paths[0].clone(),
+                mtime_micros: 300,
+            },
+            SessionCandidate {
+                source: Source::Claude,
+                file_path: paths[1].clone(),
+                mtime_micros: 200,
+            },
+            SessionCandidate {
+                source: Source::Claude,
+                file_path: paths[2].clone(),
+                mtime_micros: 100,
+            },
+        ];
+
+        let first = list_project_sessions(
+            dir.path().to_path_buf(),
+            candidates.clone(),
+            2,
+            None,
+            HashSet::new(),
+            normalize_project_path(project),
+        )
+        .await
+        .unwrap();
+        let first_sessions = first["sessions"].as_array().unwrap();
+        assert_eq!(first_sessions.len(), 2);
+        assert_eq!(first_sessions[0]["session_id"], "newest");
+        assert_eq!(first_sessions[1]["session_id"], "middle");
+        assert_eq!(first["has_more"], true);
+
+        let cursor = first["next_cursor"].as_str().unwrap().to_string();
+        let cursor = serde_json::from_str::<PageCursor>(&cursor).unwrap();
+        let second = list_project_sessions(
+            dir.path().to_path_buf(),
+            candidates,
+            2,
+            Some(cursor),
+            HashSet::new(),
+            normalize_project_path(project),
+        )
+        .await
+        .unwrap();
+        let second_sessions = second["sessions"].as_array().unwrap();
+        assert_eq!(second_sessions.len(), 1);
+        assert_eq!(second_sessions[0]["session_id"], "oldest");
+        assert_eq!(second["has_more"], false);
     }
 
     #[test]

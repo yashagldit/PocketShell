@@ -1,6 +1,7 @@
 {
   "screen.title": "Projects",
   "screen.project": "Project",
+  "tabs.projects": "Projects",
   "tabs.code": "Code",
   "tabs.terminal": "Terminal",
   "tabs.chats": "Chats",
