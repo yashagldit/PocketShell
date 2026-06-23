@@ -134,9 +134,19 @@ fn status_entries(cwd: &str, file: Option<&str>) -> Result<Vec<GitStatusEntry>> 
     let out = match file {
         Some(f) => run_git(
             cwd,
-            &["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", f],
+            &[
+                "status",
+                "--porcelain=v1",
+                "-z",
+                "--untracked-files=all",
+                "--",
+                f,
+            ],
         )?,
-        None => run_git(cwd, &["status", "--porcelain=v1", "-z", "--untracked-files=all"])?,
+        None => run_git(
+            cwd,
+            &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        )?,
     };
     Ok(parse_status_z(&out))
 }
