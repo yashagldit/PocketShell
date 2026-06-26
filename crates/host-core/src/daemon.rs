@@ -3737,9 +3737,33 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                                 "size": metadata.len(),
                                                 "mime_type": mime_type,
                                             });
-                                            if let Err(e) = send_files_stream_frame(std::sync::Arc::clone(&channel), &start, &[]).await {
-                                                warn!("files download start send failed: {}", e);
-                                                return;
+                                            info!(
+                                                "files download_stream start req={} bytes={}",
+                                                req_id_clone,
+                                                metadata.len()
+                                            );
+                                            match tokio::time::timeout(
+                                                DOWNLOAD_SEND_TIMEOUT,
+                                                send_files_stream_frame(
+                                                    std::sync::Arc::clone(&channel),
+                                                    &start,
+                                                    &[],
+                                                ),
+                                            )
+                                            .await
+                                            {
+                                                Ok(Ok(())) => {}
+                                                Ok(Err(e)) => {
+                                                    warn!("files download start send failed: {}", e);
+                                                    return;
+                                                }
+                                                Err(_) => {
+                                                    warn!(
+                                                        "files download start send timed out req={}",
+                                                        req_id_clone
+                                                    );
+                                                    return;
+                                                }
                                             }
 
                                             let file = match File::open(&canonical) {

@@ -2,7 +2,7 @@
 // compact summary list for the mobile app.
 
 use crate::error::{HostError, Result};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -19,6 +19,7 @@ const CLAUDE_SCAN_LINE_CAP: usize = 200;
 const CODEX_SCAN_LINE_CAP: usize = 500;
 const DEFAULT_LIMIT: usize = 50;
 const MAX_LIMIT: usize = 200;
+const DEFAULT_PROJECT_SESSION_LIMIT: usize = 5;
 
 #[derive(Default)]
 struct CodexTitleStores {
@@ -62,11 +63,31 @@ pub struct SessionInfo {
     pub alive: bool,
 }
 
+#[derive(Serialize)]
+pub struct ProjectSessionsInfo {
+    pub project_path: String,
+    pub total: usize,
+    pub loaded: usize,
+    pub last_activity_at: String,
+    pub last_activity_micros: i64,
+    pub next_cursor: Option<String>,
+}
+
+struct ProjectSessionGroup {
+    project_path: String,
+    total: usize,
+    last_activity_micros: i64,
+    sessions: Vec<SessionInfo>,
+    last_loaded_candidate: Option<SessionCandidate>,
+}
+
 pub async fn list_sessions(
     limit: Option<usize>,
     cursor: Option<String>,
     alive_ids: HashSet<String>,
     project_path: Option<String>,
+    group_by_project: bool,
+    project_session_limit: Option<usize>,
 ) -> Result<serde_json::Value> {
     let home = dirs::home_dir().ok_or_else(|| HostError::Backend("home dir not found".into()))?;
     let limit = limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
@@ -94,6 +115,18 @@ pub async fn list_sessions(
     if let Some(project_filter) = project_filter {
         return list_project_sessions(home, candidates, limit, cursor, alive_ids, project_filter)
             .await;
+    }
+
+    if group_by_project && cursor.is_none() {
+        return list_grouped_project_sessions(
+            home,
+            candidates,
+            project_session_limit
+                .unwrap_or(DEFAULT_PROJECT_SESSION_LIMIT)
+                .clamp(1, MAX_LIMIT),
+            alive_ids,
+        )
+        .await;
     }
 
     let page_candidates: Vec<SessionCandidate> = candidates
@@ -145,6 +178,89 @@ pub async fn list_sessions(
     }))
 }
 
+async fn list_grouped_project_sessions(
+    home: PathBuf,
+    candidates: Vec<SessionCandidate>,
+    per_project_limit: usize,
+    alive_ids: HashSet<String>,
+) -> Result<serde_json::Value> {
+    let codex_titles = load_codex_title_stores(&home.join(".codex"));
+    let mut groups: HashMap<String, ProjectSessionGroup> = HashMap::new();
+    let mut total = 0usize;
+
+    for candidate in candidates {
+        let parsed = match candidate.source {
+            Source::Claude => parse_claude_session(&candidate.file_path),
+            Source::Codex => parse_codex_session(&candidate.file_path, &codex_titles),
+        };
+        let Some(mut session) = parsed else {
+            continue;
+        };
+        session.alive = alive_ids.contains(&session.session_id);
+
+        total += 1;
+        let key = normalize_project_path(&session.project_path);
+        let group = groups.entry(key).or_insert_with(|| ProjectSessionGroup {
+            project_path: normalize_project_path(&session.project_path),
+            total: 0,
+            last_activity_micros: 0,
+            sessions: Vec::new(),
+            last_loaded_candidate: None,
+        });
+        group.total += 1;
+        group.last_activity_micros = group.last_activity_micros.max(candidate.mtime_micros);
+        if group.sessions.len() < per_project_limit {
+            group.last_loaded_candidate = Some(candidate.clone());
+            group.sessions.push(session);
+        }
+    }
+
+    let mut groups: Vec<ProjectSessionGroup> = groups.into_values().collect();
+    groups.sort_by(|a, b| {
+        if a.project_path.is_empty() {
+            return std::cmp::Ordering::Greater;
+        }
+        if b.project_path.is_empty() {
+            return std::cmp::Ordering::Less;
+        }
+        b.last_activity_micros
+            .cmp(&a.last_activity_micros)
+            .then_with(|| a.project_path.cmp(&b.project_path))
+    });
+
+    let mut sessions = Vec::new();
+    let mut project_totals = Vec::new();
+    for group in groups {
+        project_totals.push(ProjectSessionsInfo {
+            project_path: group.project_path,
+            total: group.total,
+            loaded: group.sessions.len(),
+            last_activity_at: micros_to_rfc3339(group.last_activity_micros),
+            last_activity_micros: group.last_activity_micros,
+            next_cursor: if group.total > group.sessions.len() {
+                group
+                    .last_loaded_candidate
+                    .as_ref()
+                    .map(candidate_cursor)
+                    .transpose()?
+            } else {
+                None
+            },
+        });
+        sessions.extend(group.sessions);
+    }
+
+    Ok(serde_json::json!({
+        "sessions": sessions,
+        "total": total,
+        "pagination_supported": false,
+        "has_more": false,
+        "next_cursor": null,
+        "grouped_by_project": true,
+        "project_totals": project_totals,
+    }))
+}
+
 async fn list_project_sessions(
     home: PathBuf,
     candidates: Vec<SessionCandidate>,
@@ -159,10 +275,7 @@ async fn list_project_sessions(
     let mut next_cursor = None;
     let mut last_returned_candidate = None;
 
-    for candidate in candidates
-        .into_iter()
-        .filter(|c| is_after_cursor(c, cursor.as_ref()))
-    {
+    for candidate in candidates.into_iter() {
         let parsed = match candidate.source {
             Source::Claude => parse_claude_session(&candidate.file_path),
             Source::Codex => parse_codex_session(&candidate.file_path, &codex_titles),
@@ -175,6 +288,9 @@ async fn list_project_sessions(
         }
 
         total += 1;
+        if !is_after_cursor(&candidate, cursor.as_ref()) {
+            continue;
+        }
         if sessions.len() < limit {
             session.alive = alive_ids.contains(&session.session_id);
             last_returned_candidate = Some(candidate.clone());
@@ -662,6 +778,15 @@ fn candidate_cursor(candidate: &SessionCandidate) -> Result<String> {
 fn format_mtime(t: SystemTime) -> String {
     let dt: DateTime<Utc> = t.into();
     dt.to_rfc3339()
+}
+
+fn micros_to_rfc3339(micros: i64) -> String {
+    let secs = micros.div_euclid(1_000_000);
+    let nsecs = ((micros.rem_euclid(1_000_000)) * 1_000) as u32;
+    Utc.timestamp_opt(secs, nsecs)
+        .single()
+        .map(|dt| dt.to_rfc3339())
+        .unwrap_or_else(|| Utc::now().to_rfc3339())
 }
 
 fn extract_title(content: &serde_json::Value) -> Option<String> {
@@ -1230,7 +1355,64 @@ not json
         let second_sessions = second["sessions"].as_array().unwrap();
         assert_eq!(second_sessions.len(), 1);
         assert_eq!(second_sessions[0]["session_id"], "oldest");
+        assert_eq!(second["total"], 3);
         assert_eq!(second["has_more"], false);
+    }
+
+    #[tokio::test]
+    async fn list_grouped_project_sessions_returns_slice_and_totals() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut candidates = Vec::new();
+        for (idx, (project, mtime)) in [
+            ("/work/a", 500),
+            ("/work/a", 400),
+            ("/work/a", 300),
+            ("/work/b", 600),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let name = format!("sess-{idx}");
+            let path = dir.path().join(format!("{name}.jsonl"));
+            std::fs::write(
+                &path,
+                format!(
+                    r#"{{"type":"system","sessionId":"{name}","cwd":"{project}"}}
+{{"type":"user","message":{{"content":"title for {name}"}}}}
+"#
+                ),
+            )
+            .unwrap();
+            candidates.push(SessionCandidate {
+                source: Source::Claude,
+                file_path: path,
+                mtime_micros: mtime,
+            });
+        }
+        candidates.sort_by(compare_candidates);
+
+        let out =
+            list_grouped_project_sessions(dir.path().to_path_buf(), candidates, 2, HashSet::new())
+                .await
+                .unwrap();
+
+        assert_eq!(out["grouped_by_project"], true);
+        assert_eq!(out["pagination_supported"], false);
+        assert_eq!(out["total"], 4);
+        let sessions = out["sessions"].as_array().unwrap();
+        assert_eq!(sessions.len(), 3);
+        assert_eq!(sessions[0]["project_path"], "/work/b");
+        assert_eq!(sessions[1]["project_path"], "/work/a");
+        assert_eq!(sessions[2]["project_path"], "/work/a");
+
+        let totals = out["project_totals"].as_array().unwrap();
+        assert_eq!(totals[0]["project_path"], "/work/b");
+        assert_eq!(totals[0]["total"], 1);
+        assert_eq!(totals[0]["loaded"], 1);
+        assert_eq!(totals[1]["project_path"], "/work/a");
+        assert_eq!(totals[1]["total"], 3);
+        assert_eq!(totals[1]["loaded"], 2);
+        assert!(totals[1]["next_cursor"].as_str().is_some());
     }
 
     #[test]

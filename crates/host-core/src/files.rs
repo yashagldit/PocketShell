@@ -367,8 +367,24 @@ pub async fn handle_files_action_with_context(
             .get("project_path")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
+        let group_by_project = payload
+            .get("group_by_project")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let project_session_limit = payload
+            .get("project_session_limit")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as usize);
         let alive = agent_router.alive_claude_resume_ids().await;
-        return crate::coding_sessions::list_sessions(limit, cursor, alive, project_path).await;
+        return crate::coding_sessions::list_sessions(
+            limit,
+            cursor,
+            alive,
+            project_path,
+            group_by_project,
+            project_session_limit,
+        )
+        .await;
     }
 
     if action == "list_projects" {
