@@ -122,6 +122,12 @@
   "time.days_ago": "{{count}}日前",
   "detail.last_seen_prefix": "最終確認 {{time}}",
   "recent_workspaces.no_tabs": "空",
+  "recent_workspaces.terminal_count_one": "ターミナル{{count}}件",
+  "recent_workspaces.terminal_count_other": "ターミナル{{count}}件",
+  "recent_workspaces.file_count_one": "ファイル{{count}}件",
+  "recent_workspaces.file_count_other": "ファイル{{count}}件",
+  "recent_workspaces.web_count_one": "Webプレビュー{{count}}件",
+  "recent_workspaces.web_count_other": "Webプレビュー{{count}}件",
   "recent_workspaces.subtitle_one": "ターミナル{{terminals}}件、ファイル{{files}}件",
   "recent_workspaces.subtitle_other": "ターミナル{{terminals}}件、ファイル{{files}}件",
   "empty.action": "最初のホストをペアリング",
@@ -157,5 +163,7 @@
   "errors.create_pairing_code_failed": "ペアリングコードを作成できませんでした",
   "errors.refresh_pairing_status_failed": "ペアリングステータスを更新できませんでした",
   "errors.recovery_failed": "復旧アクションが失敗しました",
-  "security.trusted_device_required": "信頼できるデバイスのアクセスが必要です"
+  "security.trusted_device_required": "信頼できるデバイスのアクセスが必要です",
+  "projects": "Projects",
+  "detail.projects": "Projects"
 }

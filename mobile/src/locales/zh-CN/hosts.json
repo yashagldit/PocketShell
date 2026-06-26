@@ -121,6 +121,12 @@
   "time.days_ago": "{{count}}天前",
   "detail.last_seen_prefix": "最后在线 {{time}}",
   "recent_workspaces.no_tabs": "空",
+  "recent_workspaces.terminal_count_one": "{{count}} 个终端",
+  "recent_workspaces.terminal_count_other": "{{count}} 个终端",
+  "recent_workspaces.file_count_one": "{{count}} 个文件",
+  "recent_workspaces.file_count_other": "{{count}} 个文件",
+  "recent_workspaces.web_count_one": "{{count}} 个网页预览",
+  "recent_workspaces.web_count_other": "{{count}} 个网页预览",
   "recent_workspaces.subtitle_one": "{{terminals}} 个终端, {{files}} 个文件",
   "recent_workspaces.subtitle_other": "{{terminals}} 个终端, {{files}} 个文件",
   "empty.action": "配对您的第一个主机",
@@ -157,5 +163,7 @@
   "errors.create_pairing_code_failed": "创建配对码失败",
   "errors.refresh_pairing_status_failed": "刷新配对状态失败",
   "errors.recovery_failed": "恢复操作失败",
-  "security.trusted_device_required": "需要可信设备访问"
+  "security.trusted_device_required": "需要可信设备访问",
+  "projects": "Projects",
+  "detail.projects": "Projects"
 }

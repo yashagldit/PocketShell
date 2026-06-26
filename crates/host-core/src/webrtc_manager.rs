@@ -14,6 +14,7 @@ use tokio::time::{timeout, Duration};
 /// ICE-restart attempt can recover without losing the peer.
 const DISCONNECTED_GRACE: Duration = Duration::from_secs(20);
 const RELAY_STATS_TIMEOUT: Duration = Duration::from_secs(3);
+const OFFER_NEGOTIATION_TIMEOUT: Duration = Duration::from_secs(10);
 use tracing::{info, warn};
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
 use webrtc::data_channel::RTCDataChannel;
@@ -86,6 +87,18 @@ pub enum WebRtcEvent {
     },
     AgentMessage {
         agent_id: String,
+        mobile_device_id: String,
+        data: Vec<u8>,
+        channel: Arc<RTCDataChannel>,
+    },
+    HttpChannelOpened {
+        mobile_device_id: String,
+        channel: Arc<RTCDataChannel>,
+    },
+    HttpChannelClosed {
+        mobile_device_id: String,
+    },
+    HttpForwardMessage {
         mobile_device_id: String,
         data: Vec<u8>,
         channel: Arc<RTCDataChannel>,
@@ -214,6 +227,25 @@ impl std::fmt::Debug for WebRtcEvent {
                 .field("mobile_device_id", mobile_device_id)
                 .field("data_len", &data.len())
                 .finish(),
+            Self::HttpChannelOpened {
+                mobile_device_id, ..
+            } => f
+                .debug_struct("HttpChannelOpened")
+                .field("mobile_device_id", mobile_device_id)
+                .finish(),
+            Self::HttpChannelClosed { mobile_device_id } => f
+                .debug_struct("HttpChannelClosed")
+                .field("mobile_device_id", mobile_device_id)
+                .finish(),
+            Self::HttpForwardMessage {
+                mobile_device_id,
+                data,
+                ..
+            } => f
+                .debug_struct("HttpForwardMessage")
+                .field("mobile_device_id", mobile_device_id)
+                .field("data_len", &data.len())
+                .finish(),
         }
     }
 }
@@ -239,6 +271,11 @@ pub struct WebRtcManager {
     /// Tracked by `(peer_key, agent_id, channel)` so we can prune by either
     /// peer disconnect or session close.
     agent_channel_owners: Vec<(String, String, Arc<RTCDataChannel>)>,
+    /// HTTP-forward channels: one `http-{hostId}` channel per mobile peer.
+    /// The daemon owns a `HttpForwardSession` keyed by `mobile_device_id`
+    /// that holds the partial-request buffers; we only track the channel
+    /// here for cleanup.
+    http_channel_owners: Vec<(String, Arc<RTCDataChannel>)>,
     /// First time we observed each peer in `Disconnected` state. Cleared once
     /// the peer recovers; used to enforce `DISCONNECTED_GRACE` before teardown.
     disconnected_since: HashMap<String, Instant>,
@@ -264,6 +301,7 @@ impl WebRtcManager {
             files_channel_owners: Vec::new(),
             control_channel_owners: Vec::new(),
             agent_channel_owners: Vec::new(),
+            http_channel_owners: Vec::new(),
             disconnected_since: HashMap::new(),
             event_tx,
         }
@@ -306,14 +344,12 @@ impl WebRtcManager {
             }
         };
         if should_create {
-            if let Some(old) = self.peers.remove(peer_key) {
+            if let Some(old_state) = self.peers.get(peer_key).map(|old| old.connection_state()) {
                 info!(
                     "replacing WebRTC peer for peer_key={} (state={:?}, forced={})",
-                    peer_key,
-                    old.connection_state(),
-                    force_new_peer
+                    peer_key, old_state, force_new_peer
                 );
-                old.close().await;
+                self.close_peer(peer_key).await;
             }
             self.disconnected_since.remove(peer_key);
             let peer = WebRtcPeer::new(turn_uris, username, credential).await?;
@@ -321,12 +357,30 @@ impl WebRtcManager {
             info!("created WebRTC peer for peer_key={}", peer_key);
         }
 
-        let peer = self
-            .peers
-            .get(peer_key)
-            .ok_or_else(|| HostError::Backend("peer not found after creation".into()))?;
+        let answer_result = {
+            let peer = self
+                .peers
+                .get(peer_key)
+                .ok_or_else(|| HostError::Backend("peer not found after creation".into()))?;
 
-        let answer_sdp = peer.apply_offer(offer_sdp).await?;
+            timeout(OFFER_NEGOTIATION_TIMEOUT, peer.apply_offer(offer_sdp)).await
+        };
+
+        let answer_sdp = match answer_result {
+            Ok(Ok(answer_sdp)) => answer_sdp,
+            Ok(Err(err)) => return Err(err),
+            Err(_) => {
+                warn!(
+                    "WebRTC offer negotiation timed out for peer_key={} after {:?}; closing peer",
+                    peer_key, OFFER_NEGOTIATION_TIMEOUT
+                );
+                self.close_peer(peer_key).await;
+                return Err(HostError::Backend(format!(
+                    "WebRTC offer negotiation timed out after {:?}",
+                    OFFER_NEGOTIATION_TIMEOUT
+                )));
+            }
+        };
         info!("applied offer, sending answer for peer_key={}", peer_key);
 
         Ok(answer_sdp)
@@ -527,6 +581,14 @@ impl WebRtcManager {
         });
     }
 
+    /// Drop any HTTP-forward channels whose underlying data channel has
+    /// closed. The daemon writes via the channel captured at open-time.
+    pub fn prune_http_channels(&mut self) {
+        self.http_channel_owners.retain(|(_, ch)| {
+            ch.ready_state() == webrtc::data_channel::data_channel_state::RTCDataChannelState::Open
+        });
+    }
+
     pub fn close_session(&mut self, session_id: &str) {
         if let Some(channels) = self.session_channels.remove(session_id) {
             for channel in channels {
@@ -615,6 +677,18 @@ impl WebRtcManager {
             .partition(|(owner_peer_key, _, _)| owner_peer_key == peer_key);
         self.agent_channel_owners = agent_remaining;
         for (_, _, ch) in agent_to_close {
+            tokio::spawn(async move {
+                let _ = ch.close().await;
+            });
+        }
+
+        // Close HTTP-forward channels owned by this specific peer.
+        let (http_to_close, http_remaining): (Vec<_>, Vec<_>) = self
+            .http_channel_owners
+            .drain(..)
+            .partition(|(owner_peer_key, _)| owner_peer_key == peer_key);
+        self.http_channel_owners = http_remaining;
+        for (_, ch) in http_to_close {
             tokio::spawn(async move {
                 let _ = ch.close().await;
             });
@@ -804,6 +878,49 @@ impl WebRtcManager {
             return;
         }
 
+        if label.starts_with("http-") {
+            info!(
+                "http-forward data channel opened from mobile {} peer_key={}",
+                mobile_id, peer_key
+            );
+            self.http_channel_owners
+                .push((peer_key.to_string(), Arc::clone(&channel)));
+
+            let event_tx_msg = self.event_tx.clone();
+            let mid = mobile_id.to_string();
+            let ch = Arc::clone(&channel);
+            channel.on_message(Box::new(move |msg: DataChannelMessage| {
+                let tx = event_tx_msg.clone();
+                let mobile = mid.clone();
+                let channel = Arc::clone(&ch);
+                Box::pin(async move {
+                    let _ = tx.send(WebRtcEvent::HttpForwardMessage {
+                        mobile_device_id: mobile,
+                        data: msg.data.to_vec(),
+                        channel,
+                    });
+                })
+            }));
+
+            let event_tx = self.event_tx.clone();
+            let mid_close = mobile_id.to_string();
+            channel.on_close(Box::new(move || {
+                let tx = event_tx.clone();
+                let mobile = mid_close.clone();
+                Box::pin(async move {
+                    let _ = tx.send(WebRtcEvent::HttpChannelClosed {
+                        mobile_device_id: mobile,
+                    });
+                })
+            }));
+
+            let _ = self.event_tx.send(WebRtcEvent::HttpChannelOpened {
+                mobile_device_id: mobile_id.to_string(),
+                channel: Arc::clone(&channel),
+            });
+            return;
+        }
+
         if label.starts_with("files-") {
             info!(
                 "files data channel opened from mobile {} peer_key={}",
@@ -986,6 +1103,7 @@ mod tests {
         assert!(mgr.files_channel_owners.is_empty());
         assert!(mgr.control_channel_owners.is_empty());
         assert!(mgr.agent_channel_owners.is_empty());
+        assert!(mgr.http_channel_owners.is_empty());
         assert!(!mgr.has_channel("any-session"));
         assert!(!mgr.has_stats_channel());
     }
@@ -1060,6 +1178,28 @@ mod tests {
         let (mut mgr, _rx) = make_manager();
         mgr.prune_agent_channels();
         assert!(mgr.agent_channel_owners.is_empty());
+    }
+
+    #[test]
+    fn prune_http_channels_on_empty_is_noop() {
+        let (mut mgr, _rx) = make_manager();
+        mgr.prune_http_channels();
+        assert!(mgr.http_channel_owners.is_empty());
+    }
+
+    #[test]
+    fn webrtc_event_debug_http_channel_closed() {
+        // FilesMessage/AgentMessage/etc. Debug impls are exercised only via
+        // the *-Closed variants (no channel field) so the unit test doesn't
+        // need to fabricate an `Arc<RTCDataChannel>`. The HttpForwardMessage
+        // body-redaction property is identical to FilesMessage's (both use
+        // `data_len` not raw bytes) — covered by inspection.
+        let ev = WebRtcEvent::HttpChannelClosed {
+            mobile_device_id: "mob".into(),
+        };
+        let dbg = format!("{:?}", ev);
+        assert!(dbg.contains("HttpChannelClosed"));
+        assert!(dbg.contains("mob"));
     }
 
     #[test]

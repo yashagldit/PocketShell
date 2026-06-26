@@ -20,9 +20,12 @@
   "tab_count_other": "{{count}} terminali",
   "tab_file_count_one": "{{count}} file",
   "tab_file_count_other": "{{count}} file",
+  "tab_web_count_one": "{{count}} anteprima web",
+  "tab_web_count_other": "{{count}} anteprime web",
   "tab_summary_empty": "vuoto",
   "tab_label_terminal": "Terminale su {{host}}",
   "tab_label_files": "File su {{host}}",
+  "tab_label_web": "Anteprima web su {{host}}",
   "on_host": "su {{host}}",
   "errors.load_failed": "Caricamento workspace non riuscito",
   "default_name": "Spazio di lavoro {{index}}"

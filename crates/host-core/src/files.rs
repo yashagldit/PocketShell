@@ -197,7 +197,7 @@ fn is_path_denied_against(path: &Path, denied: &DeniedPaths) -> bool {
 /// the resolved denylist is cached in a `OnceLock` so per-file dispatches
 /// don't re-stat $HOME. Tests that mutate $HOME use `is_path_denied_against`
 /// directly to avoid the cache.
-fn is_path_denied(path: &Path) -> bool {
+pub(crate) fn is_path_denied(path: &Path) -> bool {
     static CACHE: OnceLock<Option<DeniedPaths>> = OnceLock::new();
     let denied = CACHE.get_or_init(|| {
         let home = dirs::home_dir()?;
@@ -313,15 +313,15 @@ fn first_human_home() -> Option<PathBuf> {
     None
 }
 
-#[derive(Serialize)]
-struct FileEntry {
-    name: String,
-    path: String,
-    is_dir: bool,
-    size: u64,
-    permissions: String,
-    modified_at: Option<String>,
-    is_symlink: bool,
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct FileEntry {
+    pub(crate) name: String,
+    pub(crate) path: String,
+    pub(crate) is_dir: bool,
+    pub(crate) size: u64,
+    pub(crate) permissions: String,
+    pub(crate) modified_at: Option<String>,
+    pub(crate) is_symlink: bool,
 }
 
 /// Top-level dispatcher for file channel actions.
@@ -363,8 +363,61 @@ pub async fn handle_files_action_with_context(
             .get("cursor")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
+        let project_path = payload
+            .get("project_path")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let group_by_project = payload
+            .get("group_by_project")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let project_session_limit = payload
+            .get("project_session_limit")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as usize);
         let alive = agent_router.alive_claude_resume_ids().await;
-        return crate::coding_sessions::list_sessions(limit, cursor, alive).await;
+        return crate::coding_sessions::list_sessions(
+            limit,
+            cursor,
+            alive,
+            project_path,
+            group_by_project,
+            project_session_limit,
+        )
+        .await;
+    }
+
+    if action == "list_projects" {
+        return crate::projects::list_projects().await;
+    }
+
+    if action == "list_project_tree" {
+        let path_str = payload.get("path").and_then(|v| v.as_str()).unwrap_or("");
+        let max_depth = payload
+            .get("max_depth")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as usize);
+        return crate::project_tree::list_project_tree(path_str, max_depth).await;
+    }
+
+    if action == "search_project" {
+        let path_str = payload.get("path").and_then(|v| v.as_str()).unwrap_or("");
+        let query = payload.get("query").and_then(|v| v.as_str()).unwrap_or("");
+        let filename_limit = payload
+            .get("filename_limit")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as usize);
+        let content_limit = payload
+            .get("content_limit")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as usize);
+        return crate::project_search::search_project(
+            path_str,
+            query,
+            filename_limit,
+            content_limit,
+        )
+        .await;
     }
 
     let path_str = payload
@@ -524,6 +577,78 @@ pub async fn handle_files_action_with_context(
                     include_hidden,
                 )
             }
+            "git_status" => crate::git::git_status(&path_str),
+            "git_diff" => {
+                let file = payload.get("file").and_then(|v| v.as_str());
+                crate::git::git_diff(&path_str, file)
+            }
+            "git_log" => {
+                let limit = payload.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
+                crate::git::git_log(&path_str, limit)
+            }
+            "git_stage" => {
+                let file = payload.get("file").and_then(|v| v.as_str());
+                audit_mutation(
+                    &ctx,
+                    "file.git_stage",
+                    &path_str,
+                    None,
+                    Some(serde_json::json!({ "file": file })),
+                    crate::git::git_stage(&path_str, file),
+                )
+            }
+            "git_unstage" => {
+                let file = payload.get("file").and_then(|v| v.as_str());
+                audit_mutation(
+                    &ctx,
+                    "file.git_unstage",
+                    &path_str,
+                    None,
+                    Some(serde_json::json!({ "file": file })),
+                    crate::git::git_unstage(&path_str, file),
+                )
+            }
+            "git_discard" => {
+                let file = payload.get("file").and_then(|v| v.as_str());
+                audit_mutation(
+                    &ctx,
+                    "file.git_discard",
+                    &path_str,
+                    None,
+                    Some(serde_json::json!({ "file": file })),
+                    crate::git::git_discard(&path_str, file),
+                )
+            }
+            "git_commit" => {
+                let message = payload
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                audit_mutation(
+                    &ctx,
+                    "file.git_commit",
+                    &path_str,
+                    None,
+                    None,
+                    crate::git::git_commit(&path_str, message),
+                )
+            }
+            "git_branches" => crate::git::git_branches(&path_str),
+            "git_checkout_branch" => {
+                let branch = payload.get("branch").and_then(|v| v.as_str()).unwrap_or("");
+                let create = payload
+                    .get("create")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                audit_mutation(
+                    &ctx,
+                    "file.git_checkout_branch",
+                    &path_str,
+                    None,
+                    Some(serde_json::json!({ "branch": branch, "create": create })),
+                    crate::git::git_checkout_branch(&path_str, branch, create),
+                )
+            }
             _ => {
                 // Unknown actions are audit-worthy: a device probing the file
                 // channel with junk operation names is exactly the kind of
@@ -639,7 +764,7 @@ fn emit_files_audit(
     });
 }
 
-fn resolve_path(raw: &str) -> Result<PathBuf> {
+pub(crate) fn resolve_path(raw: &str) -> Result<PathBuf> {
     if raw.is_empty() {
         return Ok(default_file_home());
     }
@@ -782,17 +907,9 @@ fn modified_iso(metadata: &fs::Metadata) -> Option<String> {
     })
 }
 
-fn list_dir(
-    path_str: &str,
-    offset: usize,
-    limit: usize,
-    include_hidden: bool,
-) -> Result<serde_json::Value> {
-    let dir = resolve_path(path_str)?;
-    let canonical = safe_canonicalize(&dir)?;
-
+fn collect_dir_entries(canonical: &Path, include_hidden: bool) -> Result<Vec<FileEntry>> {
     let mut entries = Vec::new();
-    let reader = fs::read_dir(&canonical).map_err(|e| {
+    let reader = fs::read_dir(canonical).map_err(|e| {
         HostError::Backend(format!(
             "cannot read directory {}: {}",
             canonical.display(),
@@ -813,6 +930,9 @@ fn list_dir(
             continue;
         }
         let entry_path = entry.path();
+        if is_path_denied(&entry_path) {
+            continue;
+        }
         let metadata = match entry.metadata() {
             Ok(m) => m,
             Err(e) => {
@@ -833,12 +953,33 @@ fn list_dir(
         });
     }
 
-    // Sort: dirs first, then by name (case-insensitive)
     entries.sort_by(|a, b| {
         b.is_dir
             .cmp(&a.is_dir)
             .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
+    Ok(entries)
+}
+
+pub(crate) fn list_dir_all(
+    path_str: &str,
+    include_hidden: bool,
+) -> Result<(PathBuf, Vec<FileEntry>)> {
+    let dir = resolve_path(path_str)?;
+    let canonical = safe_canonicalize(&dir)?;
+    let entries = collect_dir_entries(&canonical, include_hidden)?;
+    Ok((canonical, entries))
+}
+
+fn list_dir(
+    path_str: &str,
+    offset: usize,
+    limit: usize,
+    include_hidden: bool,
+) -> Result<serde_json::Value> {
+    let dir = resolve_path(path_str)?;
+    let canonical = safe_canonicalize(&dir)?;
+    let entries = collect_dir_entries(&canonical, include_hidden)?;
 
     let total = entries.len();
     let capped_limit = limit.clamp(1, MAX_LIST_DIR_PAGE_SIZE);

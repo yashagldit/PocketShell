@@ -121,6 +121,12 @@
   "time.days_ago": "il y a {{count}} j",
   "detail.last_seen_prefix": "Dernière vue : {{time}}",
   "recent_workspaces.no_tabs": "Vide",
+  "recent_workspaces.terminal_count_one": "{{count}} terminal",
+  "recent_workspaces.terminal_count_other": "{{count}} terminaux",
+  "recent_workspaces.file_count_one": "{{count}} fichier",
+  "recent_workspaces.file_count_other": "{{count}} fichiers",
+  "recent_workspaces.web_count_one": "{{count}} aperçu web",
+  "recent_workspaces.web_count_other": "{{count}} aperçus web",
   "recent_workspaces.subtitle_one": "{{terminals}} terminal, {{files}} fichier",
   "recent_workspaces.subtitle_other": "{{terminals}} terminaux, {{files}} fichiers",
   "empty.action": "Jumeler le premier hôte",
@@ -157,5 +163,7 @@
   "errors.create_pairing_code_failed": "Impossible de créer le code d'appairage",
   "errors.refresh_pairing_status_failed": "Impossible d'actualiser l'état d'appairage",
   "errors.recovery_failed": "L'action de récupération a échoué",
-  "security.trusted_device_required": "Accès à l'appareil approuvé requis"
+  "security.trusted_device_required": "Accès à l'appareil approuvé requis",
+  "projects": "Projects",
+  "detail.projects": "Projects"
 }

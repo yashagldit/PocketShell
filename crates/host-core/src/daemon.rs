@@ -247,6 +247,26 @@ fn audit_channel_auth(
     }
 }
 
+fn data_channel_auth_key(
+    kind: &str,
+    mobile_device_id: &str,
+    channel: &Arc<RTCDataChannel>,
+) -> String {
+    format!("{kind}:{mobile_device_id}:{:p}", Arc::as_ptr(channel))
+}
+
+fn clear_data_channel_auth(
+    authenticated_channels: &mut HashSet<String>,
+    pending_auth: &mut HashMap<String, (String, String)>,
+    kind: &str,
+    mobile_device_id: &str,
+) {
+    let legacy_key = format!("{kind}:{mobile_device_id}");
+    let scoped_prefix = format!("{legacy_key}:");
+    authenticated_channels.retain(|key| key != &legacy_key && !key.starts_with(&scoped_prefix));
+    pending_auth.retain(|key, _| key != &legacy_key && !key.starts_with(&scoped_prefix));
+}
+
 /// Sentinel `mobile_device_id` for audit records where the requesting device
 /// did not supply one (or supplied an empty string). Writing a literal value
 /// instead of omitting the field lets SIEMs correlate anonymous probes —
@@ -564,6 +584,7 @@ enum DirectHostTransferEvent {
 const FILE_TRANSFER_TIMEOUT_SECS: u64 = 300;
 const FILES_MESSAGE_TIMEOUT_SECS: u64 = 300;
 const FILES_MESSAGE_CHUNK_SIZE: usize = 12 * 1024;
+const FILES_SIGNALING_RESPONSE_CHUNK_SIZE: usize = 12 * 1024;
 const FILES_STREAM_CHUNK_SIZE: usize = 48 * 1024;
 const MAX_FILES_FRAMED_CHUNKS: usize = 128;
 const MAX_FILES_FRAMED_MESSAGE_BYTES: usize = 512 * 1024;
@@ -874,6 +895,79 @@ async fn send_control_rpc_response(
     }
 }
 
+/// Per-call `shell` permission re-check for sensitive control RPCs. Channel
+/// auth is one-time at open, so a mid-session device revoke must still take
+/// effect on the next call. Returns `Some(denied response)` (after writing
+/// the `authz.denied` audit event) when the device no longer has the
+/// permission, `None` when the handler may proceed.
+fn recheck_shell_permission(
+    store: &StateStore,
+    mobile_device_id: &str,
+    method: &str,
+    req_id: &str,
+) -> Option<crate::rpc::RpcResponse> {
+    match device_permission_result(store, mobile_device_id, "shell") {
+        Ok(()) => None,
+        Err(reason) => {
+            audit_authz_denied(store, mobile_device_id, method, &reason, None);
+            Some(crate::rpc::RpcResponse::err(
+                req_id.to_string(),
+                crate::rpc::RpcError::permission_denied(reason),
+            ))
+        }
+    }
+}
+
+/// Write a forward outcome (HTTP fetch or WS relay) to the data channel:
+/// head frame first, then every streamed frame until the producer ends.
+/// On a `PortNotExposed` head, writes the `ports.forward.denied` audit
+/// event so even a compromised phone's probing leaves a trail. Shared by
+/// the HTTP `ReadyRequest` and WS `WsOpen` ingest paths — their wire
+/// behavior is deliberately identical.
+#[allow(clippy::too_many_arguments)]
+async fn pump_forward_outcome(
+    outcome: crate::http_forward::ForwardOutcome,
+    ch: std::sync::Arc<webrtc::data_channel::RTCDataChannel>,
+    id: u32,
+    port: u16,
+    mobile_device_id: String,
+    store_host_id: Option<String>,
+    store_user_id: Option<String>,
+    protocol: &'static str,
+) {
+    let is_denial = matches!(
+        outcome.head,
+        crate::http_forward::Frame::RespError {
+            code: crate::http_forward::ErrorCode::PortNotExposed,
+            ..
+        }
+    );
+    let head_bytes = crate::http_forward::encode(&outcome.head);
+    if let Err(e) = ch.send(&bytes::Bytes::from(head_bytes)).await {
+        warn!("{}-forward head send failed: {}", protocol, e);
+        return;
+    }
+    if is_denial {
+        let mut ev =
+            crate::audit::AuditEvent::new("ports.forward.denied").denied("port_not_exposed");
+        ev.mobile_device_id = Some(mobile_device_id);
+        ev.target = Some(format!("{port}"));
+        ev.details = Some(serde_json::json!({ "port": port, "protocol": protocol }));
+        ev.host_id = store_host_id;
+        ev.user_id = store_user_id;
+        let _ = crate::audit::write_audit_event(ev);
+        return;
+    }
+    let mut body_rx = outcome.body;
+    while let Some(frame) = body_rx.recv().await {
+        let bytes = crate::http_forward::encode(&frame);
+        if let Err(e) = ch.send(&bytes::Bytes::from(bytes)).await {
+            warn!("{}-forward body send failed id={}: {}", protocol, id, e);
+            return;
+        }
+    }
+}
+
 fn spawn_files_reply(
     channel: &std::sync::Arc<webrtc::data_channel::RTCDataChannel>,
     response: serde_json::Value,
@@ -967,6 +1061,157 @@ async fn send_framed_files_response(
     );
 
     Ok(())
+}
+
+fn split_str_for_signaling(input: &str, max_bytes: usize) -> Vec<&str> {
+    if input.is_empty() {
+        return vec![""];
+    }
+    let mut chunks = Vec::new();
+    let mut start = 0;
+    let mut last_boundary = 0;
+    for (idx, _) in input.char_indices() {
+        if idx == start {
+            last_boundary = idx;
+            continue;
+        }
+        if idx - start > max_bytes {
+            let end = if last_boundary > start {
+                last_boundary
+            } else {
+                idx
+            };
+            chunks.push(&input[start..end]);
+            start = end;
+        }
+        last_boundary = idx;
+    }
+    while start < input.len() {
+        let end = std::cmp::min(input.len(), start + max_bytes);
+        let mut safe_end = end;
+        while safe_end > start && !input.is_char_boundary(safe_end) {
+            safe_end -= 1;
+        }
+        if safe_end == start {
+            safe_end = input.len();
+        }
+        chunks.push(&input[start..safe_end]);
+        start = safe_end;
+    }
+    chunks
+}
+
+fn build_files_signaling_frame_response(
+    session_id: Option<String>,
+    mobile_device_id: Option<&str>,
+    response_to: &str,
+    frame: serde_json::Value,
+) -> SignalEnvelope {
+    let mut extra = std::collections::HashMap::new();
+    if let Some(target) = mobile_device_id {
+        extra.insert(
+            "target_mobile_device_id".to_string(),
+            serde_json::json!(target),
+        );
+    }
+    SignalEnvelope {
+        message_type: "signal".to_string(),
+        session_id,
+        payload: Some(serde_json::json!({
+            "channel": "files",
+            "response_to": response_to,
+            "frame": frame,
+        })),
+        state: None,
+        accepted: None,
+        reason: None,
+        extra,
+    }
+}
+
+fn build_files_signaling_response_envelopes(
+    session_id: Option<String>,
+    mobile_device_id: Option<&str>,
+    response: serde_json::Value,
+) -> Vec<SignalEnvelope> {
+    let response_to = response
+        .get("response_to")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let Ok(json) = serde_json::to_string(&response) else {
+        return vec![build_files_signaling_frame_response(
+            session_id,
+            mobile_device_id,
+            &response_to,
+            serde_json::json!({"op": "end", "id": "encode_failed"}),
+        )];
+    };
+    if json.len() <= FILES_SIGNALING_RESPONSE_CHUNK_SIZE {
+        let mut extra = std::collections::HashMap::new();
+        if let Some(target) = mobile_device_id {
+            extra.insert(
+                "target_mobile_device_id".to_string(),
+                serde_json::json!(target),
+            );
+        }
+        return vec![SignalEnvelope {
+            message_type: "signal".to_string(),
+            session_id,
+            payload: Some(response),
+            state: None,
+            accepted: None,
+            reason: None,
+            extra,
+        }];
+    }
+
+    let message_id = format!(
+        "fs_{}",
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    );
+    let chunks = split_str_for_signaling(&json, FILES_SIGNALING_RESPONSE_CHUNK_SIZE);
+    let total_chunks = chunks.len();
+    let mut envelopes = Vec::with_capacity(total_chunks + 2);
+    envelopes.push(build_files_signaling_frame_response(
+        session_id.clone(),
+        mobile_device_id,
+        &response_to,
+        serde_json::json!({
+            "op": "start",
+            "id": message_id,
+            "chunks": total_chunks,
+        }),
+    ));
+    for (index, chunk) in chunks.iter().enumerate() {
+        envelopes.push(build_files_signaling_frame_response(
+            session_id.clone(),
+            mobile_device_id,
+            &response_to,
+            serde_json::json!({
+                "op": "chunk",
+                "id": message_id,
+                "i": index,
+                "d": chunk,
+            }),
+        ));
+    }
+    envelopes.push(build_files_signaling_frame_response(
+        session_id,
+        mobile_device_id,
+        &response_to,
+        serde_json::json!({
+            "op": "end",
+            "id": message_id,
+        }),
+    ));
+    info!(
+        "files signaling frame response response_to={} bytes={} chunks={}",
+        response_to,
+        json.len(),
+        total_chunks
+    );
+    envelopes
 }
 
 async fn send_direct_transfer_result(
@@ -1758,6 +2003,13 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
     let mut store = StateStore::load()?;
     store.require_logged_in()?;
 
+    // Clear ephemeral entries from the dev-server allowlist. `pocketshell
+    // expose 3000 --ephemeral` is supposed to vanish on the next daemon
+    // restart so `npm run dev` users don't have to remember to unexpose.
+    if let Err(e) = crate::exposed_ports::ExposedPortsStore::purge_ephemeral() {
+        warn!("failed to purge ephemeral exposed ports on startup: {e}");
+    }
+
     // A fresh daemon process can never have an active peer connection, so any
     // session record left in state.json from a previous run is dead by
     // definition. They'd otherwise show up in the mobile "Persistent Sessions"
@@ -1830,6 +2082,12 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
         HashMap::new();
     // Active JSONL tailers, keyed by (mobile_device_id, subscription_id).
     let mut files_watchers: HashMap<(String, String), tokio::task::JoinHandle<()>> = HashMap::new();
+
+    // HTTP-forward sessions: one per open `http-{hostId}` data channel,
+    // keyed by mobile_device_id. Owns the partial-request buffers for that
+    // channel; cleared on HttpChannelClosed.
+    let mut http_forward_sessions: HashMap<String, crate::http_forward::HttpForwardSession> =
+        HashMap::new();
 
     // Challenge-response auth state for WebRTC channels
     let mut authenticated_channels: HashSet<String> = HashSet::new();
@@ -2547,7 +2805,13 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                     // OSC 133 / BEL attention events fire after the parser's
                     // quiet-period debounce (see `DEFAULT_QUIET_PERIOD`).
                     for ev in sessions.drain_attention(std::time::Instant::now()) {
-                        let SessionAttentionEvent { session_id, kind, command_duration } = ev;
+                        let SessionAttentionEvent {
+                            session_id,
+                            kind,
+                            command_duration,
+                            attention_context,
+                            foreground_process,
+                        } = ev;
                         let exit_code = match &kind {
                             AttentionKind::CommandDone { exit_code } => *exit_code,
                             AttentionKind::Bell
@@ -2568,6 +2832,8 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                 "exit_code": exit_code,
                                 "command_duration_ms": command_duration.map(|d| d.as_millis() as u64),
                                 "body": body,
+                                "attention_context": attention_context.wire_str(),
+                                "foreground_process": foreground_process,
                             })),
                             state: None,
                             accepted: None,
@@ -3480,9 +3746,33 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                                 "size": metadata.len(),
                                                 "mime_type": mime_type,
                                             });
-                                            if let Err(e) = send_files_stream_frame(std::sync::Arc::clone(&channel), &start, &[]).await {
-                                                warn!("files download start send failed: {}", e);
-                                                return;
+                                            info!(
+                                                "files download_stream start req={} bytes={}",
+                                                req_id_clone,
+                                                metadata.len()
+                                            );
+                                            match tokio::time::timeout(
+                                                DOWNLOAD_SEND_TIMEOUT,
+                                                send_files_stream_frame(
+                                                    std::sync::Arc::clone(&channel),
+                                                    &start,
+                                                    &[],
+                                                ),
+                                            )
+                                            .await
+                                            {
+                                                Ok(Ok(())) => {}
+                                                Ok(Err(e)) => {
+                                                    warn!("files download start send failed: {}", e);
+                                                    return;
+                                                }
+                                                Err(_) => {
+                                                    warn!(
+                                                        "files download start send timed out req={}",
+                                                        req_id_clone
+                                                    );
+                                                    return;
+                                                }
                                             }
 
                                             let file = match File::open(&canonical) {
@@ -4211,29 +4501,18 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                         "system/list_processes" => {
                                             crate::rpc::handle_list_processes(&mut stats, req)
                                         }
+                                        // Re-check permission per RPC for everything below: the
+                                        // one-time channel auth runs only at open, so revoking
+                                        // shell access mid-session must still cut off audit
+                                        // reads and allowlist mutation immediately.
                                         "audit/list" => {
-                                            // Re-check permission per RPC: the one-time channel
-                                            // auth runs only at open, so revoking shell access
-                                            // mid-session would otherwise leave the audit log
-                                            // readable until the channel closes.
-                                            if let Err(reason) = device_permission_result(
+                                            if let Some(denied) = recheck_shell_permission(
                                                 &store,
                                                 &mobile_device_id,
-                                                "shell",
+                                                &method,
+                                                &req_id,
                                             ) {
-                                                audit_authz_denied(
-                                                    &store,
-                                                    &mobile_device_id,
-                                                    "audit/list",
-                                                    &reason,
-                                                    None,
-                                                );
-                                                crate::rpc::RpcResponse::err(
-                                                    req_id.clone(),
-                                                    crate::rpc::RpcError::permission_denied(
-                                                        reason,
-                                                    ),
-                                                )
+                                                denied
                                             } else {
                                                 crate::rpc::handle_audit_list(
                                                     &store,
@@ -4241,6 +4520,28 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                                     req,
                                                 )
                                                 .await
+                                            }
+                                        }
+                                        "ports/expose" | "ports/unexpose" => {
+                                            if let Some(denied) = recheck_shell_permission(
+                                                &store,
+                                                &mobile_device_id,
+                                                &method,
+                                                &req_id,
+                                            ) {
+                                                denied
+                                            } else if method == "ports/expose" {
+                                                crate::rpc::handle_expose_port(
+                                                    &store,
+                                                    &mobile_device_id,
+                                                    req,
+                                                )
+                                            } else {
+                                                crate::rpc::handle_unexpose_port(
+                                                    &store,
+                                                    &mobile_device_id,
+                                                    req,
+                                                )
                                             }
                                         }
                                         other => crate::rpc::RpcResponse::err(
@@ -4472,6 +4773,240 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                 .await;
                             });
                             agent_pumps.insert(agent_id, handle);
+                        }
+                        WebRtcEvent::HttpChannelOpened { mobile_device_id, channel } => {
+                            info!("http-forward channel opened for mobile {}", mobile_device_id);
+                            // Auth is scoped to the concrete data-channel instance,
+                            // not just the mobile device. A reconnect can open a
+                            // fresh `http-*` channel before the old Close event is
+                            // delivered; clearing stale keys here prevents the new
+                            // channel from inheriting the old channel's auth state.
+                            clear_data_channel_auth(
+                                &mut authenticated_channels,
+                                &mut pending_auth,
+                                "http",
+                                &mobile_device_id,
+                            );
+                            // If a session already exists for this device
+                            // (e.g. mobile reconnected its http channel
+                            // before the prior Close event was processed),
+                            // we drop its partial-request buffers explicitly
+                            // and log a warning. Replacing silently would
+                            // hang any in-flight POST whose body chunks
+                            // were arriving against the previous session.
+                            if let Some(mut prior) = http_forward_sessions.remove(&mobile_device_id) {
+                                warn!(
+                                    "http-forward: replacing existing session for mobile {} (channel reopened before close); discarding buffered requests",
+                                    mobile_device_id
+                                );
+                                prior.shutdown();
+                            }
+                            http_forward_sessions.insert(
+                                mobile_device_id.clone(),
+                                crate::http_forward::HttpForwardSession::new(),
+                            );
+                            let http_channel_key =
+                                data_channel_auth_key("http", &mobile_device_id, &channel);
+                            let mut nonce_bytes = [0u8; 32];
+                            rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
+                            let nonce_b64 = base64::engine::general_purpose::STANDARD.encode(&nonce_bytes);
+                            pending_auth.insert(http_channel_key.clone(), (nonce_b64.clone(), mobile_device_id.clone()));
+                            let challenge = build_auth_message(&serde_json::json!({
+                                "type": "auth_challenge",
+                                "nonce": nonce_b64,
+                                "channel_key": http_channel_key,
+                            }));
+                            if let Err(err) = channel.send(&bytes::Bytes::from(challenge)).await {
+                                warn!("http-forward auth challenge send failed for mobile {}: {}", mobile_device_id, err);
+                            } else {
+                                info!("sent http-forward auth challenge for mobile {}", mobile_device_id);
+                            }
+                        }
+                        WebRtcEvent::HttpChannelClosed { mobile_device_id } => {
+                            info!("http-forward channel closed for mobile {}", mobile_device_id);
+                            if let Some(mut sess) = http_forward_sessions.remove(&mobile_device_id) {
+                                sess.shutdown();
+                            }
+                            clear_data_channel_auth(
+                                &mut authenticated_channels,
+                                &mut pending_auth,
+                                "http",
+                                &mobile_device_id,
+                            );
+                            webrtc_mgr.prune_http_channels();
+                        }
+                        WebRtcEvent::HttpForwardMessage { mobile_device_id, data, channel } => {
+                            let http_channel_key =
+                                data_channel_auth_key("http", &mobile_device_id, &channel);
+                            if data.len() > 5 && data[0] == 0x00 && &data[1..5] == b"PSAU" {
+                                if let Ok(json_str) = std::str::from_utf8(&data[5..]) {
+                                    if let Ok(msg) = serde_json::from_str::<serde_json::Value>(json_str) {
+                                        let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                                        if msg_type == "auth_response" {
+                                            let result = verify_device_auth(
+                                                &msg,
+                                                &http_channel_key,
+                                                &mobile_device_id,
+                                                &mut pending_auth,
+                                                &store,
+                                            )
+                                            .and_then(|_| {
+                                                device_permission_result(&store, &mobile_device_id, "shell")
+                                            });
+                                            let response = build_auth_message(&serde_json::json!({
+                                                "type": "auth_result",
+                                                "ok": result.is_ok(),
+                                                "reason": result.as_ref().err(),
+                                            }));
+                                            if let Err(err) = channel.send(&bytes::Bytes::from(response)).await {
+                                                warn!("http-forward auth result send failed for mobile {}: {}", mobile_device_id, err);
+                                            }
+                                            let result_for_audit = result.as_ref().map(|_| ()).map_err(|e| e.to_string());
+                                            if result.is_ok() {
+                                                authenticated_channels.insert(http_channel_key.clone());
+                                                info!("device {} authenticated for http-forward channel", mobile_device_id);
+                                            } else {
+                                                warn!("http-forward auth failed for device {}: {:?}", mobile_device_id, result.err());
+                                            }
+                                            audit_channel_auth(&store, "http", &mobile_device_id, None, result_for_audit);
+                                        }
+                                    }
+                                }
+                                continue;
+                            } else if !authenticated_channels.contains(&http_channel_key) {
+                                warn!("dropping unauthenticated http-forward message from device {}", mobile_device_id);
+                                continue;
+                            }
+                            let frame = match crate::http_forward::decode(&data) {
+                                Ok(f) => f,
+                                Err(e) => {
+                                    warn!(
+                                        "http-forward decode failed mobile={}: {}",
+                                        mobile_device_id, e
+                                    );
+                                    continue;
+                                }
+                            };
+                            let session = match http_forward_sessions.get_mut(&mobile_device_id) {
+                                Some(s) => s,
+                                None => {
+                                    // Frame arrived after the channel was
+                                    // torn down — usually a tail message
+                                    // racing close. Drop silently.
+                                    continue;
+                                }
+                            };
+                            match session.ingest(frame) {
+                                crate::http_forward::Ingest::Nothing => {}
+                                crate::http_forward::Ingest::SendBack(out_frame) => {
+                                    let bytes = crate::http_forward::encode(&out_frame);
+                                    let ch = Arc::clone(&channel);
+                                    tokio::spawn(async move {
+                                        let _ = ch.send(&bytes::Bytes::from(bytes)).await;
+                                    });
+                                }
+                                crate::http_forward::Ingest::ReadyRequest(req) => {
+                                    // Audit every forward attempt — gives the
+                                    // user a paper trail of what the paired
+                                    // mobile asked us to fetch, before the
+                                    // allowlist gate decides. Path is
+                                    // truncated; query strings can carry
+                                    // tokens.
+                                    let port = req.head.port;
+                                    let method = req.head.method.clone();
+                                    let path_audit = {
+                                        let mut p = req.head.path.clone();
+                                        if let Some(q) = p.find('?') {
+                                            p.truncate(q);
+                                            p.push_str("?…");
+                                        }
+                                        // String::truncate panics if the
+                                        // byte index falls inside a multi-
+                                        // byte UTF-8 codepoint. Find the
+                                        // last char boundary at or below
+                                        // 125 bytes so a path like
+                                        // `/搜索/…` doesn't crash the daemon.
+                                        if p.len() > 128 {
+                                            let mut cut = 125;
+                                            while cut > 0 && !p.is_char_boundary(cut) {
+                                                cut -= 1;
+                                            }
+                                            p.truncate(cut);
+                                            p.push_str("…");
+                                        }
+                                        p
+                                    };
+                                    let mut ev = crate::audit::AuditEvent::new(
+                                        "ports.forward.requested",
+                                    );
+                                    ev.mobile_device_id = Some(mobile_device_id.clone());
+                                    ev.target = Some(format!("{}{}", port, &path_audit));
+                                    ev.details = Some(serde_json::json!({
+                                        "port": port,
+                                        "method": method,
+                                        "path": path_audit,
+                                    }));
+                                    let _ = crate::audit::write_audit_event_with_store(ev, &store);
+
+                                    let id = req.id;
+                                    let ch = Arc::clone(&channel);
+                                    let mobile_for_audit = mobile_device_id.clone();
+                                    let store_host_id = store.state.host.as_ref().map(|h| h.host_id.clone());
+                                    let store_user_id = store.state.host.as_ref().map(|h| h.user_id.clone());
+                                    tokio::spawn(async move {
+                                        let outcome = crate::http_forward::forward_request(req).await;
+                                        pump_forward_outcome(
+                                            outcome,
+                                            ch,
+                                            id,
+                                            port,
+                                            mobile_for_audit,
+                                            store_host_id,
+                                            store_user_id,
+                                            "http",
+                                        )
+                                        .await;
+                                    });
+                                }
+                                crate::http_forward::Ingest::WsOpen(ws_req) => {
+                                    // Same audit trail as HTTP forwards, tagged
+                                    // with the protocol so `ports.forward.*`
+                                    // queries distinguish socket opens from
+                                    // page loads.
+                                    let port = ws_req.head.port;
+                                    let mut ev = crate::audit::AuditEvent::new(
+                                        "ports.forward.requested",
+                                    );
+                                    ev.mobile_device_id = Some(mobile_device_id.clone());
+                                    ev.target = Some(format!("{}{}", port, &ws_req.head.path));
+                                    ev.details = Some(serde_json::json!({
+                                        "port": port,
+                                        "protocol": "ws",
+                                        "path": ws_req.head.path,
+                                    }));
+                                    let _ = crate::audit::write_audit_event_with_store(ev, &store);
+
+                                    let id = ws_req.id;
+                                    let ch = Arc::clone(&channel);
+                                    let mobile_for_audit = mobile_device_id.clone();
+                                    let store_host_id = store.state.host.as_ref().map(|h| h.host_id.clone());
+                                    let store_user_id = store.state.host.as_ref().map(|h| h.user_id.clone());
+                                    tokio::spawn(async move {
+                                        let outcome = crate::ws_forward::forward_ws(ws_req).await;
+                                        pump_forward_outcome(
+                                            outcome,
+                                            ch,
+                                            id,
+                                            port,
+                                            mobile_for_audit,
+                                            store_host_id,
+                                            store_user_id,
+                                            "ws",
+                                        )
+                                        .await;
+                                    });
+                                }
+                            }
                         }
                         WebRtcEvent::IceCandidate { peer_key, mobile_device_id, candidate_json } => {
                             if let Ok(candidate_value) = serde_json::from_str::<serde_json::Value>(&candidate_json) {
@@ -6939,23 +7474,13 @@ async fn handle_signal(
                             }
                         };
 
-                        let mut extra = std::collections::HashMap::new();
-                        if let Some(target) = target_mobile_device_id {
-                            extra.insert(
-                                "target_mobile_device_id".to_string(),
-                                serde_json::json!(target),
-                            );
+                        for response in build_files_signaling_response_envelopes(
+                            Some(session_id.clone()),
+                            target_mobile_device_id.as_deref(),
+                            response_payload,
+                        ) {
+                            let _ = tx.send(response);
                         }
-                        let response = SignalEnvelope {
-                            message_type: "signal".to_string(),
-                            session_id: Some(session_id),
-                            payload: Some(response_payload),
-                            state: None,
-                            accepted: None,
-                            reason: None,
-                            extra,
-                        };
-                        let _ = tx.send(response);
                     });
                 }
                 _ => {}
@@ -7856,37 +8381,76 @@ async fn handle_signal(
                 }
             };
             let response_plaintext = serde_json::to_vec(&response_json).unwrap_or_default();
-
-            // Enforce 200 KB limit for signaling responses
-            const MAX_SIGNALING_RESPONSE_BYTES: usize = 200 * 1024;
-            let plaintext_to_encrypt = if response_plaintext.len() > MAX_SIGNALING_RESPONSE_BYTES {
-                warn!(
-                    "encrypted files: response too large ({} bytes), rejecting",
-                    response_plaintext.len()
-                );
-                serde_json::to_vec(&serde_json::json!({
-                    "channel": "files",
-                    "response_to": request_id,
-                    "status": "error",
-                    "error": "Response exceeds signaling size limit",
-                    "error_code": "payload_too_large"
-                }))
-                .unwrap_or_default()
+            let plaintext_frames = if response_plaintext.len()
+                <= FILES_SIGNALING_RESPONSE_CHUNK_SIZE
+            {
+                vec![response_plaintext]
             } else {
-                response_plaintext
+                let json = serde_json::to_string(&response_json).unwrap_or_default();
+                let chunks = split_str_for_signaling(&json, FILES_SIGNALING_RESPONSE_CHUNK_SIZE);
+                let total_chunks = chunks.len();
+                let message_id = format!(
+                    "efs_{}",
+                    chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+                );
+                info!(
+                    "encrypted files frame response response_to={} bytes={} chunks={}",
+                    request_id,
+                    json.len(),
+                    total_chunks
+                );
+
+                let mut frames = Vec::with_capacity(total_chunks + 2);
+                frames.push(
+                    serde_json::to_vec(&serde_json::json!({
+                        "channel": "files",
+                        "response_to": request_id,
+                        "frame": {
+                            "op": "start",
+                            "id": message_id,
+                            "chunks": total_chunks,
+                        }
+                    }))
+                    .unwrap_or_default(),
+                );
+                for (index, chunk) in chunks.iter().enumerate() {
+                    frames.push(
+                        serde_json::to_vec(&serde_json::json!({
+                            "channel": "files",
+                            "response_to": request_id,
+                            "frame": {
+                                "op": "chunk",
+                                "id": message_id,
+                                "i": index,
+                                "d": chunk,
+                            }
+                        }))
+                        .unwrap_or_default(),
+                    );
+                }
+                frames.push(
+                    serde_json::to_vec(&serde_json::json!({
+                        "channel": "files",
+                        "response_to": request_id,
+                        "frame": {
+                            "op": "end",
+                            "id": message_id,
+                        }
+                    }))
+                    .unwrap_or_default(),
+                );
+                frames
             };
 
-            match encrypt_and_build(
-                cipher,
-                &plaintext_to_encrypt,
-                &session_id,
-                &mobile_device_id,
-            ) {
-                Ok(envelope) => {
-                    let _ = send_signal(ws, &envelope).await;
-                }
-                Err(e) => {
-                    warn!("encrypted files: failed to encrypt response: {}", e);
+            for plaintext in plaintext_frames {
+                match encrypt_and_build(cipher, &plaintext, &session_id, &mobile_device_id) {
+                    Ok(envelope) => {
+                        let _ = send_signal(ws, &envelope).await;
+                    }
+                    Err(e) => {
+                        warn!("encrypted files: failed to encrypt response: {}", e);
+                        break;
+                    }
                 }
             }
         }
@@ -8750,6 +9314,59 @@ mod tests {
         let body = &out[AUTH_SENTINEL.len()..];
         let parsed: serde_json::Value = serde_json::from_slice(body).unwrap();
         assert_eq!(parsed, val);
+    }
+
+    #[test]
+    fn split_str_for_signaling_preserves_utf8() {
+        let input = "alpha-नमस्ते-beta-こんにちは";
+        let chunks = split_str_for_signaling(input, 8);
+        assert_eq!(chunks.concat(), input);
+        assert!(chunks
+            .iter()
+            .all(|chunk| chunk.is_char_boundary(chunk.len())));
+    }
+
+    #[test]
+    fn build_files_signaling_response_envelopes_chunks_large_payload() {
+        let response = serde_json::json!({
+            "channel": "files",
+            "response_to": "req-1",
+            "status": "ok",
+            "data": {
+                "entries": ["x".repeat(FILES_SIGNALING_RESPONSE_CHUNK_SIZE + 128)]
+            }
+        });
+        let envelopes = build_files_signaling_response_envelopes(
+            Some("sid".to_string()),
+            Some("mdi"),
+            response,
+        );
+        assert!(envelopes.len() > 3);
+        assert_eq!(envelopes.first().unwrap().message_type, "signal");
+        assert_eq!(
+            envelopes
+                .first()
+                .unwrap()
+                .payload
+                .as_ref()
+                .unwrap()
+                .get("frame")
+                .and_then(|f| f.get("op"))
+                .and_then(|op| op.as_str()),
+            Some("start")
+        );
+        assert_eq!(
+            envelopes
+                .last()
+                .unwrap()
+                .payload
+                .as_ref()
+                .unwrap()
+                .get("frame")
+                .and_then(|f| f.get("op"))
+                .and_then(|op| op.as_str()),
+            Some("end")
+        );
     }
 
     #[test]

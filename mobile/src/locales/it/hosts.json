@@ -121,6 +121,12 @@
   "time.days_ago": "{{count}} giorni fa",
   "detail.last_seen_prefix": "Ultima visita: {{time}}",
   "recent_workspaces.no_tabs": "Vuoto",
+  "recent_workspaces.terminal_count_one": "{{count}} terminale",
+  "recent_workspaces.terminal_count_other": "{{count}} terminali",
+  "recent_workspaces.file_count_one": "{{count}} file",
+  "recent_workspaces.file_count_other": "{{count}} file",
+  "recent_workspaces.web_count_one": "{{count}} anteprima web",
+  "recent_workspaces.web_count_other": "{{count}} anteprime web",
   "recent_workspaces.subtitle_one": "{{terminals}} terminale, {{files}} file",
   "recent_workspaces.subtitle_other": "{{terminals}} terminali, {{files}} file",
   "empty.action": "Associa primo host",
@@ -157,5 +163,7 @@
   "errors.create_pairing_code_failed": "Impossibile creare il codice di abbinamento",
   "errors.refresh_pairing_status_failed": "Impossibile aggiornare lo stato di abbinamento",
   "errors.recovery_failed": "Azione di ripristino non riuscita",
-  "security.trusted_device_required": "Accesso al dispositivo attendibile richiesto"
+  "security.trusted_device_required": "Accesso al dispositivo attendibile richiesto",
+  "projects": "Projects",
+  "detail.projects": "Projects"
 }

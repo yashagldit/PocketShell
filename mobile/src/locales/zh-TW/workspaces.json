@@ -20,9 +20,12 @@
   "tab_count_other": "{{count}} 個終端機",
   "tab_file_count_one": "{{count}} 個檔案",
   "tab_file_count_other": "{{count}} 個檔案",
+  "tab_web_count_one": "{{count}} 個網頁預覽",
+  "tab_web_count_other": "{{count}} 個網頁預覽",
   "tab_summary_empty": "空",
   "tab_label_terminal": "{{host}} 上的終端機",
   "tab_label_files": "{{host}} 上的檔案",
+  "tab_label_web": "{{host}} 上的網頁預覽",
   "on_host": "在 {{host}} 上",
   "errors.load_failed": "載入工作區失敗",
   "default_name": "工作區 {{index}}"

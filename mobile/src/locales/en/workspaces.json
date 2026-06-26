@@ -21,9 +21,12 @@
   "tab_count_other": "{{count}} terminals",
   "tab_file_count_one": "{{count}} file",
   "tab_file_count_other": "{{count}} files",
+  "tab_web_count_one": "{{count}} web preview",
+  "tab_web_count_other": "{{count}} web previews",
   "tab_summary_empty": "Empty",
   "tab_label_terminal": "Terminal on {{host}}",
   "tab_label_files": "Files on {{host}}",
+  "tab_label_web": "Web preview on {{host}}",
   "on_host": "on {{host}}",
   "errors.load_failed": "Failed to load workspaces"
 }

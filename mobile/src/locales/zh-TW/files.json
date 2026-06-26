@@ -183,6 +183,8 @@
   "viewer.pdf_loading": "正在載入 PDF...",
   "viewer.pdf_render_failed": "無法轉譯 PDF:",
   "viewer.media_unsupported": "您的瀏覽器不支援此媒體格式。",
+  "editor.word_wrap_on": "自動換行已開啟",
+  "editor.word_wrap_off": "自動換行已關閉",
   "errors.transfer_channel_unavailable": "此操作需要無法取得的直接傳輸通道",
   "errors.operation_timed_out": "檔案操作逾時",
   "errors.operation_failed": "檔案操作失敗",

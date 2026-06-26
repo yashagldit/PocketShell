@@ -183,6 +183,8 @@
   "viewer.pdf_loading": "PDF wird geladen...",
   "viewer.pdf_render_failed": "PDF konnte nicht gerendert werden:",
   "viewer.media_unsupported": "Ihr Browser unterstützt dieses Medienformat nicht.",
+  "editor.word_wrap_on": "Zeilenumbruch ein",
+  "editor.word_wrap_off": "Zeilenumbruch aus",
   "errors.transfer_channel_unavailable": "Dieser Vorgang erfordert einen direkten Übertragungskanal, der nicht verfügbar ist",
   "errors.operation_timed_out": "Dateivorgang abgelaufen",
   "errors.operation_failed": "Dateivorgang fehlgeschlagen",

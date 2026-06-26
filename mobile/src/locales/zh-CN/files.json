@@ -183,6 +183,8 @@
   "viewer.pdf_loading": "加载 PDF...",
   "viewer.pdf_render_failed": "无法渲染 PDF:",
   "viewer.media_unsupported": "您的浏览器不支持此媒体格式。",
+  "editor.word_wrap_on": "自动换行已开启",
+  "editor.word_wrap_off": "自动换行已关闭",
   "errors.transfer_channel_unavailable": "此操作需要直接传输通道，但该通道不可用",
   "errors.operation_timed_out": "文件操作超时",
   "errors.operation_failed": "文件操作失败",

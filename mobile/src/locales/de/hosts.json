@@ -122,6 +122,12 @@
   "time.days_ago": "vor {{count}}T",
   "detail.last_seen_prefix": "Zuletzt gesehen {{time}}",
   "recent_workspaces.no_tabs": "Leer",
+  "recent_workspaces.terminal_count_one": "{{count}} Terminal",
+  "recent_workspaces.terminal_count_other": "{{count}} Terminals",
+  "recent_workspaces.file_count_one": "{{count}} Datei",
+  "recent_workspaces.file_count_other": "{{count}} Dateien",
+  "recent_workspaces.web_count_one": "{{count}} Web-Vorschau",
+  "recent_workspaces.web_count_other": "{{count}} Web-Vorschauen",
   "recent_workspaces.subtitle_one": "{{terminals}} Terminal, {{files}} Datei",
   "recent_workspaces.subtitle_other": "{{terminals}} Terminals, {{files}} Dateien",
   "empty.action": "Koppele deinen ersten Host",
@@ -157,5 +163,7 @@
   "errors.create_pairing_code_failed": "Pairingcode konnte nicht erstellt werden",
   "errors.refresh_pairing_status_failed": "Pairingstatus konnte nicht aktualisiert werden",
   "errors.recovery_failed": "Wiederherstellungsvorgang fehlgeschlagen",
-  "security.trusted_device_required": "Zugriff mit vertrautem Gerät erforderlich"
+  "security.trusted_device_required": "Zugriff mit vertrautem Gerät erforderlich",
+  "projects": "Projects",
+  "detail.projects": "Projects"
 }

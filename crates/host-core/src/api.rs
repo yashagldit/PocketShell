@@ -251,13 +251,11 @@ impl BackendClient {
         &self,
         claim_token: &str,
     ) -> Result<HostInitiatedPollOutcome> {
-        let url = format!(
-            "{}/api/v1/pairing/host-initiated/{}/status",
-            self.base_url, claim_token
-        );
+        let url = format!("{}/api/v1/pairing/host-initiated/status", self.base_url);
         let res = self
             .client
-            .get(url)
+            .post(url)
+            .json(&serde_json::json!({ "claim_token": claim_token }))
             .send()
             .await
             .map_err(|e| HostError::Backend(e.to_string()))?;
@@ -941,8 +939,9 @@ mod tests {
     async fn poll_host_initiated_status_variants() {
         // pending
         let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/api/v1/pairing/host-initiated/t1/status"))
+        Mock::given(method("POST"))
+            .and(path("/api/v1/pairing/host-initiated/status"))
+            .and(body_json(json!({ "claim_token": "t1" })))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "status": "pending"
             })))
@@ -954,8 +953,9 @@ mod tests {
 
         // claimed
         let server2 = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/api/v1/pairing/host-initiated/t2/status"))
+        Mock::given(method("POST"))
+            .and(path("/api/v1/pairing/host-initiated/status"))
+            .and(body_json(json!({ "claim_token": "t2" })))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "status": "claimed",
                 "access_token": "at"
@@ -974,8 +974,9 @@ mod tests {
 
         // 410 -> AlreadyDelivered
         let server3 = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/api/v1/pairing/host-initiated/t3/status"))
+        Mock::given(method("POST"))
+            .and(path("/api/v1/pairing/host-initiated/status"))
+            .and(body_json(json!({ "claim_token": "t3" })))
             .respond_with(ResponseTemplate::new(410))
             .mount(&server3)
             .await;
@@ -985,8 +986,9 @@ mod tests {
 
         // 404 -> Expired
         let server4 = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/api/v1/pairing/host-initiated/t4/status"))
+        Mock::given(method("POST"))
+            .and(path("/api/v1/pairing/host-initiated/status"))
+            .and(body_json(json!({ "claim_token": "t4" })))
             .respond_with(ResponseTemplate::new(404))
             .mount(&server4)
             .await;

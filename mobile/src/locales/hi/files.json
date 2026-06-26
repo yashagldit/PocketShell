@@ -183,6 +183,8 @@
   "viewer.pdf_loading": "PDF लोड हो रहा है...",
   "viewer.pdf_render_failed": "PDF रेंडर करने में विफल:",
   "viewer.media_unsupported": "आपका ब्राउज़र इस मीडिया प्रारूप को समर्थन नहीं करता।",
+  "editor.word_wrap_on": "वर्ड रैप चालू",
+  "editor.word_wrap_off": "वर्ड रैप बंद",
   "errors.transfer_channel_unavailable": "इस ऑपरेशन के लिए एक सीधे स्थानांतरण चैनल की आवश्यकता है जो उपलब्ध नहीं है",
   "errors.operation_timed_out": "फाइल ऑपरेशन समय समाप्त हो गया",
   "errors.operation_failed": "फाइल ऑपरेशन विफल",

@@ -58,5 +58,6 @@
   "update.body": "Новая версия готова. Перезапустите, чтобы обновить сейчас, или примените позже.",
   "update.restart": "Перезапустить",
   "update.later": "Позже",
-  "boot.error_prefix": "ошибка:"
+  "boot.error_prefix": "ошибка:",
+  "nav.projects": "Projects"
 }

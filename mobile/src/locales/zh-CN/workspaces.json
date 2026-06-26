@@ -20,9 +20,12 @@
   "tab_count_other": "{{count}} 个终端",
   "tab_file_count_one": "{{count}} 个文件",
   "tab_file_count_other": "{{count}} 个文件",
+  "tab_web_count_one": "{{count}} 个网页预览",
+  "tab_web_count_other": "{{count}} 个网页预览",
   "tab_summary_empty": "空",
   "tab_label_terminal": "{{host}} 上的终端",
   "tab_label_files": "{{host}} 上的文件",
+  "tab_label_web": "{{host}} 上的网页预览",
   "on_host": "在 {{host}} 上",
   "errors.load_failed": "加载工作区失败",
   "default_name": "工作区 {{index}}"

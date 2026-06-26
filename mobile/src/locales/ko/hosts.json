@@ -121,6 +121,12 @@
   "time.days_ago": "{{count}}일 전",
   "detail.last_seen_prefix": "마지막 확인: {{time}}",
   "recent_workspaces.no_tabs": "비어 있음",
+  "recent_workspaces.terminal_count_one": "터미널 {{count}}개",
+  "recent_workspaces.terminal_count_other": "터미널 {{count}}개",
+  "recent_workspaces.file_count_one": "파일 {{count}}개",
+  "recent_workspaces.file_count_other": "파일 {{count}}개",
+  "recent_workspaces.web_count_one": "웹 미리보기 {{count}}개",
+  "recent_workspaces.web_count_other": "웹 미리보기 {{count}}개",
   "recent_workspaces.subtitle_one": "터미널 {{terminals}}개, 파일 {{files}}개",
   "recent_workspaces.subtitle_other": "터미널 {{terminals}}개, 파일 {{files}}개",
   "empty.action": "첫 번째 호스트 페어링",
@@ -157,5 +163,7 @@
   "errors.create_pairing_code_failed": "페어링 코드 생성 실패",
   "errors.refresh_pairing_status_failed": "페어링 상태 새로고침 실패",
   "errors.recovery_failed": "복구 작업 실패",
-  "security.trusted_device_required": "신뢰할 수 있는 기기 액세스 필요"
+  "security.trusted_device_required": "신뢰할 수 있는 기기 액세스 필요",
+  "projects": "Projects",
+  "detail.projects": "Projects"
 }

@@ -58,5 +58,6 @@
   "update.body": "새 버전이 준비되었습니다. 지금 다시 시작하여 업데이트하거나 나중에 적용됩니다.",
   "update.restart": "지금 다시 시작",
   "update.later": "나중에",
-  "boot.error_prefix": "오류:"
+  "boot.error_prefix": "오류:",
+  "nav.projects": "Projects"
 }

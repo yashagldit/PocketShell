@@ -20,9 +20,12 @@
   "tab_count_other": "{{count}} терминалов",
   "tab_file_count_one": "{{count}} файл",
   "tab_file_count_other": "{{count}} файлов",
+  "tab_web_count_one": "{{count}} веб-превью",
+  "tab_web_count_other": "{{count}} веб-превью",
   "tab_summary_empty": "пусто",
   "tab_label_terminal": "Терминал на {{host}}",
   "tab_label_files": "Файлы на {{host}}",
+  "tab_label_web": "Веб-превью на {{host}}",
   "on_host": "на {{host}}",
   "errors.load_failed": "Не удалось загрузить рабочие пространства",
   "default_name": "Рабочее пространство {{index}}"

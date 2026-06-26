@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
+use sysinfo::{ProcessesToUpdate, System};
 
 const MAX_SCROLLBACK_BYTES: usize = 512 * 1024;
 const REMOTE_TERMINAL_ENV: &str = "POCKETSHELL_REMOTE_TERMINAL";
@@ -64,15 +65,131 @@ pub struct SessionAttentionEvent {
     pub session_id: String,
     pub kind: AttentionKind,
     pub command_duration: Option<Duration>,
+    pub attention_context: AttentionContext,
+    pub foreground_process: Option<String>,
 }
 
 impl SessionAttentionEvent {
-    fn from_pending(session_id: String, p: PendingAttention) -> Self {
+    fn from_pending(session_id: String, p: PendingAttention, process: ForegroundProcess) -> Self {
         Self {
             session_id,
             kind: p.kind,
             command_duration: p.command_duration,
+            attention_context: process.attention_context,
+            foreground_process: process.name,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttentionContext {
+    AgentTui,
+    Tui,
+    Shell,
+    Unknown,
+}
+
+impl AttentionContext {
+    pub fn wire_str(self) -> &'static str {
+        match self {
+            Self::AgentTui => "agent_tui",
+            Self::Tui => "tui",
+            Self::Shell => "shell",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ForegroundProcess {
+    name: Option<String>,
+    attention_context: AttentionContext,
+}
+
+fn normalize_process_name(name: &str) -> String {
+    let base = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    base.trim().trim_end_matches(".exe").to_ascii_lowercase()
+}
+
+fn classify_process_name(name: &str) -> AttentionContext {
+    let normalized = normalize_process_name(name);
+    match normalized.as_str() {
+        "claude" | "codex" | "gemini" | "aider" | "opencode" => AttentionContext::AgentTui,
+        "vim" | "nvim" | "vi" | "emacs" | "nano" | "less" | "more" | "man" | "top" | "htop"
+        | "btop" | "btm" | "lazygit" | "tig" | "ssh" => AttentionContext::Tui,
+        "sh" | "bash" | "zsh" | "fish" | "nu" | "pwsh" | "powershell" | "cmd" => {
+            AttentionContext::Shell
+        }
+        _ => AttentionContext::Unknown,
+    }
+}
+
+fn detect_foreground_process(root_pid: Option<u32>) -> ForegroundProcess {
+    let Some(root_pid) = root_pid else {
+        return ForegroundProcess {
+            name: None,
+            attention_context: AttentionContext::Unknown,
+        };
+    };
+
+    let mut system = System::new();
+    system.refresh_processes(ProcessesToUpdate::All, true);
+    let root = sysinfo::Pid::from_u32(root_pid);
+    let mut descendants: Vec<(u32, String, AttentionContext)> = Vec::new();
+
+    for process in system.processes().values() {
+        let mut current = process.parent();
+        let mut is_descendant = false;
+        while let Some(parent) = current {
+            if parent == root {
+                is_descendant = true;
+                break;
+            }
+            current = system.process(parent).and_then(|p| p.parent());
+        }
+        if is_descendant {
+            let name = process.name().to_string_lossy().to_string();
+            let context = classify_process_name(&name);
+            descendants.push((process.pid().as_u32(), name, context));
+        }
+    }
+
+    if let Some((_, name, context)) = descendants
+        .iter()
+        .find(|(_, _, context)| *context == AttentionContext::AgentTui)
+    {
+        return ForegroundProcess {
+            name: Some(name.clone()),
+            attention_context: *context,
+        };
+    }
+
+    if let Some((_, name, context)) = descendants
+        .iter()
+        .find(|(_, _, context)| *context == AttentionContext::Tui)
+    {
+        return ForegroundProcess {
+            name: Some(name.clone()),
+            attention_context: *context,
+        };
+    }
+
+    if let Some((_, name, context)) = descendants.iter().max_by_key(|(pid, _, _)| *pid) {
+        return ForegroundProcess {
+            name: Some(name.clone()),
+            attention_context: *context,
+        };
+    }
+
+    let root_process = system.process(root);
+    let name = root_process.map(|p| p.name().to_string_lossy().to_string());
+    let attention_context = name
+        .as_deref()
+        .map(classify_process_name)
+        .unwrap_or(AttentionContext::Unknown);
+    ForegroundProcess {
+        name,
+        attention_context,
     }
 }
 
@@ -82,6 +199,7 @@ struct PtySession {
     output_rx: mpsc::Receiver<(u64, Vec<u8>)>,
     stop: Arc<AtomicBool>,
     child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
+    root_pid: Option<u32>,
     scrollback: Arc<Mutex<VecDeque<u8>>>,
     /// Whether this session remains resumable after viewers detach.
     persistent: bool,
@@ -403,6 +521,7 @@ impl SessionManager {
                 output_rx,
                 stop,
                 child: dummy_child,
+                root_pid: None,
                 scrollback,
                 persistent: false,
                 tmux_session_name: None,
@@ -475,6 +594,7 @@ impl SessionManager {
             .slave
             .spawn_command(cmd)
             .map_err(|e| HostError::Pty(format!("spawn shell failed: {e}")))?;
+        let root_pid = child.process_id();
 
         // Assign the freshly spawned child to the kill-on-close job object so
         // an ungraceful daemon death can't leave an orphaned, spinning conhost
@@ -581,6 +701,7 @@ impl SessionManager {
                 output_rx,
                 stop,
                 child,
+                root_pid,
                 scrollback,
                 persistent,
                 tmux_session_name,
@@ -650,9 +771,11 @@ impl SessionManager {
         for (session_id, session) in &self.sessions {
             if let Ok(mut tracker) = session.attention.lock() {
                 if let Some(pending) = tracker.take_ready(now) {
+                    let process = detect_foreground_process(session.root_pid);
                     out.push(SessionAttentionEvent::from_pending(
                         session_id.clone(),
                         pending,
+                        process,
                     ));
                 }
             }
