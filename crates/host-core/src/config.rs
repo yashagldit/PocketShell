@@ -109,7 +109,7 @@ impl AppConfig {
     }
 
     pub fn paths() -> Result<AppPaths> {
-        let home = dirs::home_dir()
+        let home = resolved_home_dir()
             .ok_or_else(|| HostError::Config("unable to resolve home directory".to_string()))?;
 
         let state_dir = home.join(".pocketshell");
@@ -155,11 +155,27 @@ impl AppConfig {
     }
 }
 
+fn resolved_home_dir() -> Option<PathBuf> {
+    #[cfg(test)]
+    {
+        if let Some(path) = env::var_os("POCKETSHELL_TEST_HOME")
+            .map(PathBuf::from)
+            .filter(|p| !p.as_os_str().is_empty())
+        {
+            return Some(path);
+        }
+    }
+    dirs::home_dir()
+}
+
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use super::*;
+    #[cfg(unix)]
     use crate::test_support::HOME_LOCK as ENV_LOCK;
 
+    #[cfg(unix)]
     const ALL_VARS: &[&str] = &[
         "POCKETSHELL_BACKEND_URL",
         "POCKETSHELL_WS_URL",
@@ -175,6 +191,7 @@ mod tests {
         "POCKETSHELL_TRUSTED_DEVICES_SECS",
     ];
 
+    #[cfg(unix)]
     fn clear_all() {
         for v in ALL_VARS {
             // SAFETY: tests serialize via ENV_LOCK.

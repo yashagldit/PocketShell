@@ -2714,7 +2714,9 @@ fn pid_running(pid: i32) -> bool {
     // another process whose PID merely contains these digits). When the filter
     // matches nothing, tasklist prints a plain "INFO:" line with no CSV row.
     let needle = format!("\"{pid}\"");
-    std::process::Command::new("tasklist")
+    let mut command = std::process::Command::new("tasklist");
+    host_core::platform::hide_command_window(&mut command);
+    command
         .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).contains(&needle))
@@ -2750,7 +2752,9 @@ fn terminate_pid(pid: i32) {
         }
     }
     // Force-terminate the process and its children as a last resort.
-    let _ = std::process::Command::new("taskkill")
+    let mut command = std::process::Command::new("taskkill");
+    host_core::platform::hide_command_window(&mut command);
+    let _ = command
         .args(["/PID", &pid.to_string(), "/T", "/F"])
         .output();
 }

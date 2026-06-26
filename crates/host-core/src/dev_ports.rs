@@ -23,6 +23,8 @@
 //!   ports come back with `pid: null`. That is fine — the port and probe are
 //!   the load-bearing signals.
 //! - **macOS** — shell out to `lsof -nP -iTCP -sTCP:LISTEN` and parse it.
+//! - **Windows** - shell out to `netstat -ano -p tcp` and parse it, then
+//!   best-effort map the owning pid to a process name via `sysinfo`.
 //!
 //! Either way we keep only ports reachable over `localhost` (loopback or
 //! wildcard binds), because the forwarder always dials `localhost:<port>`.
@@ -161,7 +163,11 @@ pub fn list_listening_ports() -> Vec<ListeningPort> {
     {
         list_listening_ports_macos()
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(target_os = "windows")]
+    {
+        list_listening_ports_windows()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
         Vec::new()
     }
@@ -322,9 +328,9 @@ fn read_proc_comm(pid: u32) -> Option<String> {
 
 #[cfg(target_os = "macos")]
 fn list_listening_ports_macos() -> Vec<ListeningPort> {
-    let output = std::process::Command::new("lsof")
-        .args(["-nP", "-iTCP", "-sTCP:LISTEN"])
-        .output();
+    let mut command = std::process::Command::new("lsof");
+    crate::platform::hide_command_window(&mut command);
+    let output = command.args(["-nP", "-iTCP", "-sTCP:LISTEN"]).output();
     match output {
         Ok(out) if out.status.success() => parse_lsof_output(&String::from_utf8_lossy(&out.stdout)),
         Ok(out) => {
@@ -384,6 +390,108 @@ fn parse_lsof_output(text: &str) -> Vec<ListeningPort> {
 #[cfg(any(target_os = "macos", test))]
 fn lsof_addr_is_local(addr: &str) -> bool {
     matches!(addr, "*" | "0.0.0.0" | "127.0.0.1" | "[::1]" | "[::]") || addr.starts_with("127.")
+}
+
+// =====================================================================
+// Windows: netstat
+// =====================================================================
+
+#[cfg(target_os = "windows")]
+fn list_listening_ports_windows() -> Vec<ListeningPort> {
+    let mut command = std::process::Command::new("netstat");
+    crate::platform::hide_command_window(&mut command);
+    let output = command.args(["-ano", "-p", "tcp"]).output();
+    let mut ports = match output {
+        Ok(out) if out.status.success() => {
+            parse_windows_netstat_output(&String::from_utf8_lossy(&out.stdout))
+        }
+        Ok(out) => {
+            tracing::debug!(
+                "dev_ports: netstat exited {}: {}",
+                out.status,
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+            Vec::new()
+        }
+        Err(e) => {
+            tracing::debug!("dev_ports: netstat not available: {e}");
+            Vec::new()
+        }
+    };
+    attach_windows_process_names(&mut ports);
+    ports
+}
+
+/// Parse Windows `netstat -ano -p tcp` output. Expected rows look like:
+/// `TCP 127.0.0.1:3000 0.0.0.0:0 LISTENING 1234`
+/// or `TCP [::1]:5173 [::]:0 LISTENING 5678`.
+#[cfg(any(target_os = "windows", test))]
+fn parse_windows_netstat_output(text: &str) -> Vec<ListeningPort> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let f: Vec<&str> = line.split_whitespace().collect();
+        if f.len() < 5 || !f[0].eq_ignore_ascii_case("TCP") {
+            continue;
+        }
+        let Some(state) = f.get(f.len().saturating_sub(2)) else {
+            continue;
+        };
+        if !state.eq_ignore_ascii_case("LISTENING") {
+            continue;
+        }
+        let Some((addr, port)) = parse_windows_local_endpoint(f[1]) else {
+            continue;
+        };
+        if port == 0 || !windows_addr_is_local(addr) {
+            continue;
+        }
+        let pid = f.last().and_then(|s| s.parse::<u32>().ok());
+        out.push(ListeningPort {
+            port,
+            pid,
+            process_name: None,
+        });
+    }
+    out
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn parse_windows_local_endpoint(endpoint: &str) -> Option<(&str, u16)> {
+    if endpoint.starts_with('[') {
+        let end = endpoint.find("]:")?;
+        let addr = &endpoint[..=end];
+        let port = endpoint[end + 2..].parse::<u16>().ok()?;
+        return Some((addr, port));
+    }
+    let (addr, port_str) = endpoint.rsplit_once(':')?;
+    let port = port_str.parse::<u16>().ok()?;
+    Some((addr, port))
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_addr_is_local(addr: &str) -> bool {
+    matches!(
+        addr,
+        "*" | "0.0.0.0" | "127.0.0.1" | "[::]" | "[::1]" | "::" | "::1"
+    ) || addr.starts_with("127.")
+}
+
+#[cfg(target_os = "windows")]
+fn attach_windows_process_names(ports: &mut [ListeningPort]) {
+    if ports.iter().all(|p| p.pid.is_none()) {
+        return;
+    }
+    let system = sysinfo::System::new_all();
+    for port in ports {
+        let Some(pid) = port.pid else { continue };
+        let Some(process) = system.process(sysinfo::Pid::from_u32(pid)) else {
+            continue;
+        };
+        let name = process.name().to_string_lossy();
+        if !name.is_empty() {
+            port.process_name = Some(name.to_string());
+        }
+    }
 }
 
 // =====================================================================
@@ -637,6 +745,64 @@ postgres 4321 yash    5u  IPv4 0x111111111111111      0t0  TCP *:5432 (LISTEN)
         assert!(lsof_addr_is_local("0.0.0.0"));
         assert!(!lsof_addr_is_local("192.168.1.5"));
         assert!(!lsof_addr_is_local("10.0.0.1"));
+    }
+
+    #[test]
+    fn parse_windows_netstat_keeps_local_listeners() {
+        let sample = "\
+  Proto  Local Address          Foreign Address        State           PID
+  TCP    127.0.0.1:3000         0.0.0.0:0              LISTENING       12345
+  TCP    [::1]:5173             [::]:0                 LISTENING       23456
+  TCP    0.0.0.0:8080           0.0.0.0:0              LISTENING       34567
+  TCP    [::]:9229              [::]:0                 LISTENING       45678
+  TCP    192.168.1.5:22         0.0.0.0:0              LISTENING       56789
+  TCP    127.0.0.1:5000         127.0.0.1:6000         ESTABLISHED     67890
+";
+        let got = parse_windows_netstat_output(sample);
+        let ports: Vec<u16> = got.iter().map(|p| p.port).collect();
+        assert_eq!(ports, vec![3000, 5173, 8080, 9229]);
+        assert_eq!(got[0].pid, Some(12345));
+        assert_eq!(got[1].pid, Some(23456));
+    }
+
+    #[test]
+    fn parse_windows_netstat_skips_port_zero_and_malformed() {
+        let sample = "\
+  Proto  Local Address          Foreign Address        State           PID
+  TCP    127.0.0.1:0            0.0.0.0:0              LISTENING       12345
+  TCP    [::1:notaport          [::]:0                 LISTENING       23456
+  UDP    127.0.0.1:3000         *:*                                    34567
+";
+        assert!(parse_windows_netstat_output(sample).is_empty());
+    }
+
+    #[test]
+    fn windows_endpoint_parses_ipv4_and_ipv6() {
+        assert_eq!(
+            parse_windows_local_endpoint("127.0.0.1:3000"),
+            Some(("127.0.0.1", 3000))
+        );
+        assert_eq!(
+            parse_windows_local_endpoint("[::1]:5173"),
+            Some(("[::1]", 5173))
+        );
+        assert_eq!(
+            parse_windows_local_endpoint("[fe80::1%13]:8080"),
+            Some(("[fe80::1%13]", 8080))
+        );
+        assert_eq!(parse_windows_local_endpoint("127.0.0.1:notaport"), None);
+    }
+
+    #[test]
+    fn windows_addr_classification() {
+        assert!(windows_addr_is_local("*"));
+        assert!(windows_addr_is_local("0.0.0.0"));
+        assert!(windows_addr_is_local("127.0.0.1"));
+        assert!(windows_addr_is_local("127.0.0.2"));
+        assert!(windows_addr_is_local("[::]"));
+        assert!(windows_addr_is_local("[::1]"));
+        assert!(!windows_addr_is_local("192.168.1.5"));
+        assert!(!windows_addr_is_local("[fe80::1%13]"));
     }
 
     #[test]

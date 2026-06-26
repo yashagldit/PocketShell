@@ -326,7 +326,9 @@ pub async fn download_and_install_with(
     }
 
     info!("extracting {}", info.archive_name);
-    let status = Command::new("tar")
+    let mut command = Command::new("tar");
+    crate::platform::hide_command_window(&mut command);
+    let status = command
         .arg("-xzf")
         .arg(&archive_path)
         .arg("-C")
@@ -401,7 +403,9 @@ pub async fn download_and_install_with(
     // Strip it so the next exec doesn't get blocked by Gatekeeper, mirroring
     // the same step in install.sh. Best-effort.
     if cfg!(target_os = "macos") {
-        let _ = Command::new("xattr")
+        let mut command = Command::new("xattr");
+        crate::platform::hide_command_window(&mut command);
+        let _ = command
             .args(["-d", "com.apple.quarantine"])
             .arg(&current_exe)
             .status();
@@ -456,7 +460,9 @@ const COSIGN_OIDC_ISSUER: &str = "https://token.actions.githubusercontent.com";
 /// auto-install cosign — silently fetching another binary to verify this
 /// binary expands the trust surface in a non-obvious way.
 fn cosign_available() -> bool {
-    Command::new("cosign")
+    let mut command = Command::new("cosign");
+    crate::platform::hide_command_window(&mut command);
+    command
         .arg("version")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -471,7 +477,9 @@ fn cosign_available() -> bool {
 /// archived 2026-05-18). When sigstore-rs stabilizes, replace this with an
 /// in-process verifier and a baked-in TUF trust root.
 fn verify_cosign_bundle(artifact: &Path, bundle: &Path) -> Result<()> {
-    let output = Command::new("cosign")
+    let mut command = Command::new("cosign");
+    crate::platform::hide_command_window(&mut command);
+    let output = command
         .args(["verify-blob", "--new-bundle-format", "--bundle"])
         .arg(bundle)
         .args(["--certificate-identity-regexp", COSIGN_IDENTITY_REGEXP])
@@ -530,7 +538,9 @@ fn verify_macos_codesign(binary: &Path) -> Result<()> {
     // verify form requires the equals-sign syntax `-R=<requirement>` as a
     // single argv entry. Easy to get wrong — see `man codesign`.
     let req_arg = format!("-R={}", developer_id_requirement(EXPECTED_APPLE_TEAM_ID));
-    let output = Command::new("codesign")
+    let mut command = Command::new("codesign");
+    crate::platform::hide_command_window(&mut command);
+    let output = command
         .args(["--verify", "--strict"])
         .arg(&req_arg)
         .arg(binary)

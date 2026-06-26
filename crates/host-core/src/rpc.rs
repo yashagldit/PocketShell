@@ -521,7 +521,9 @@ fn method_kill_process(params: &Value) -> std::result::Result<Value, RpcError> {
     };
 
     tracing::info!("rpc system/kill_process pid={} signal={}", pid, sig_num);
-    let output = std::process::Command::new("kill")
+    let mut command = std::process::Command::new("kill");
+    crate::platform::hide_command_window(&mut command);
+    let output = command
         .arg(format!("-{}", sig_num))
         .arg(pid.to_string())
         .output()
@@ -580,10 +582,9 @@ pub fn try_reboot() -> std::result::Result<(), (&'static str, String)> {
     let mut last_err: Option<(&'static str, String)> = None;
 
     if cfg!(target_os = "linux") {
-        match std::process::Command::new("systemctl")
-            .arg("reboot")
-            .output()
-        {
+        let mut command = std::process::Command::new("systemctl");
+        crate::platform::hide_command_window(&mut command);
+        match command.arg("reboot").output() {
             Ok(out) if out.status.success() => return Ok(()),
             Ok(out) => {
                 let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
@@ -596,10 +597,9 @@ pub fn try_reboot() -> std::result::Result<(), (&'static str, String)> {
         }
     }
 
-    match std::process::Command::new("sudo")
-        .args(["-n", "reboot"])
-        .output()
-    {
+    let mut command = std::process::Command::new("sudo");
+    crate::platform::hide_command_window(&mut command);
+    match command.args(["-n", "reboot"]).output() {
         Ok(out) if out.status.success() => return Ok(()),
         Ok(out) => {
             let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
@@ -611,7 +611,9 @@ pub fn try_reboot() -> std::result::Result<(), (&'static str, String)> {
         }
     }
 
-    match std::process::Command::new("reboot").output() {
+    let mut command = std::process::Command::new("reboot");
+    crate::platform::hide_command_window(&mut command);
+    match command.output() {
         Ok(out) if out.status.success() => Ok(()),
         Ok(out) => {
             let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
@@ -857,8 +859,8 @@ mod tests {
         assert!(!is_stateful_method("nope"));
     }
 
-    /// Run `f` with `$HOME` pointed at a fresh tmpdir so the allowlist and
-    /// audit writes land there instead of the developer's real
+    /// Run `f` with home env vars pointed at a fresh tmpdir so the allowlist
+    /// and audit writes land there instead of the developer's real
     /// `~/.pocketshell`. Mirrors the helper in `exposed_ports::tests`.
     fn with_isolated_home<F: FnOnce()>(f: F) {
         let _g = crate::test_support::HOME_LOCK
@@ -866,13 +868,25 @@ mod tests {
             .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
         let prev_home = std::env::var_os("HOME");
+        let prev_userprofile = std::env::var_os("USERPROFILE");
+        let prev_test_home = std::env::var_os("POCKETSHELL_TEST_HOME");
         unsafe { std::env::set_var("HOME", tmp.path()) };
+        unsafe { std::env::set_var("USERPROFILE", tmp.path()) };
+        unsafe { std::env::set_var("POCKETSHELL_TEST_HOME", tmp.path()) };
         std::fs::create_dir_all(tmp.path().join(".pocketshell")).unwrap();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
         unsafe {
             match prev_home {
                 Some(v) => std::env::set_var("HOME", v),
                 None => std::env::remove_var("HOME"),
+            }
+            match prev_userprofile {
+                Some(v) => std::env::set_var("USERPROFILE", v),
+                None => std::env::remove_var("USERPROFILE"),
+            }
+            match prev_test_home {
+                Some(v) => std::env::set_var("POCKETSHELL_TEST_HOME", v),
+                None => std::env::remove_var("POCKETSHELL_TEST_HOME"),
             }
         }
         if let Err(e) = result {

@@ -834,6 +834,7 @@ pub async fn spawn_session(config: SpawnConfig) -> Result<Arc<AgentSession>, Spa
 
     for plan in &plans {
         let mut cmd = Command::new(&plan.program);
+        crate::platform::hide_tokio_command_window(&mut cmd);
         cmd.args(&plan.args);
         if let Some(cwd) = config.cwd.as_ref() {
             cmd.current_dir(cwd);
@@ -1194,7 +1195,9 @@ fn send_sigterm(pid: u32) {
         .map(|windir| std::path::PathBuf::from(windir).join("System32\\taskkill.exe"))
         .filter(|path| path.exists())
         .unwrap_or_else(|| std::path::PathBuf::from("taskkill"));
-    let output = std::process::Command::new(taskkill)
+    let mut command = std::process::Command::new(taskkill);
+    crate::platform::hide_command_window(&mut command);
+    let output = command
         .args(["/PID", &pid.to_string(), "/T", "/F"])
         .output();
     match output {
@@ -1955,6 +1958,7 @@ mod tests {
         let mut ok = false;
         for plan in &plans {
             let mut cmd = Command::new(&plan.program);
+            crate::platform::hide_tokio_command_window(&mut cmd);
             cmd.args(&plan.args);
             cmd.stdin(Stdio::piped())
                 .stdout(Stdio::piped())

@@ -338,6 +338,9 @@ fn decode_claude_project_dir(encoded: &str) -> Option<String> {
     if encoded == "-" {
         return Some("/".to_string());
     }
+    if let Some(path) = decode_windows_claude_project_dir(encoded) {
+        return Some(path);
+    }
     if let Some(path) = decode_existing_unix_claude_project_dir(encoded) {
         return Some(path);
     }
@@ -345,6 +348,37 @@ fn decode_claude_project_dir(encoded: &str) -> Option<String> {
         return Some(encoded.replace('-', "/"));
     }
     Some(encoded.to_string())
+}
+
+fn decode_windows_claude_project_dir(encoded: &str) -> Option<String> {
+    let bytes = encoded.as_bytes();
+    for (idx, window) in bytes.windows(3).enumerate() {
+        if !encoded[..idx].bytes().all(|b| b == b'-') {
+            return None;
+        }
+        let drive = window[0];
+        let drive_sep_is_double_dash = window[1] == b'-' && window[2] == b'-';
+        let drive_sep_is_colon_dash = window[1] == b':' && window[2] == b'-';
+        if !drive.is_ascii_alphabetic() || (!drive_sep_is_double_dash && !drive_sep_is_colon_dash) {
+            continue;
+        }
+        let rest = &encoded[idx + 3..];
+        let drive = drive as char;
+        let root = PathBuf::from(format!("{}:\\", drive.to_ascii_uppercase()));
+        let parts: Vec<&str> = rest.split('-').filter(|part| !part.is_empty()).collect();
+        if let Some(path) = resolve_existing_encoded_path(root, &parts) {
+            return Some(path.to_string_lossy().into_owned());
+        }
+        if rest.is_empty() {
+            return Some(format!("{}:\\", drive.to_ascii_uppercase()));
+        }
+        return Some(format!(
+            "{}:\\{}",
+            drive.to_ascii_uppercase(),
+            rest.replace('-', "\\")
+        ));
+    }
+    None
 }
 
 fn decode_existing_unix_claude_project_dir(encoded: &str) -> Option<String> {
@@ -878,6 +912,17 @@ mod tests {
         }
     }
 
+    fn encode_claude_project_dir_for_test(path: &Path) -> String {
+        let encoded = path
+            .to_string_lossy()
+            .replace(std::path::MAIN_SEPARATOR, "-");
+        if cfg!(windows) {
+            encoded.replacen(":-", "--", 1)
+        } else {
+            encoded
+        }
+    }
+
     #[test]
     fn extracts_title_from_string_content() {
         let content = serde_json::json!("hello world, this is a message");
@@ -1245,9 +1290,7 @@ not json
         let dir = tempfile::tempdir().unwrap();
         let project = dir.path().join("repo-with-dash");
         std::fs::create_dir(&project).unwrap();
-        let encoded_project = project
-            .to_string_lossy()
-            .replace(std::path::MAIN_SEPARATOR, "-");
+        let encoded_project = encode_claude_project_dir_for_test(&project);
         let claude_project_dir = dir.path().join(".claude/projects").join(encoded_project);
         std::fs::create_dir_all(&claude_project_dir).unwrap();
         let p = claude_project_dir.join("missing-cwd.jsonl");
@@ -1268,13 +1311,31 @@ not json
         let dir = tempfile::tempdir().unwrap();
         let project = dir.path().join("parent").join("child");
         std::fs::create_dir_all(&project).unwrap();
-        let encoded = project
-            .to_string_lossy()
-            .replace(std::path::MAIN_SEPARATOR, "-");
+        let encoded = encode_claude_project_dir_for_test(&project);
 
         assert_eq!(
             decode_claude_project_dir(&encoded).as_deref(),
             Some(project.to_string_lossy().as_ref()),
+        );
+    }
+
+    #[test]
+    fn decode_claude_project_dir_decodes_windows_drive_prefix() {
+        assert_eq!(
+            decode_claude_project_dir("D--Codes-PocketShellApp").as_deref(),
+            Some("D:\\Codes\\PocketShellApp")
+        );
+        assert_eq!(
+            decode_claude_project_dir("d--xampp-htdocs-cold").as_deref(),
+            Some("D:\\xampp\\htdocs\\cold")
+        );
+    }
+
+    #[test]
+    fn decode_claude_project_dir_decodes_prefixed_windows_drive_prefix() {
+        assert_eq!(
+            decode_claude_project_dir("----C--Users-Yash-Downloads").as_deref(),
+            Some("C:\\Users\\Yash\\Downloads")
         );
     }
 

@@ -1880,15 +1880,16 @@ fn handle_file_transfer_msg(
                             chrono::Utc::now().format("%Y%m%d-%H%M%S-%3f"),
                             ext,
                         );
-                        let temp_path = format!("/tmp/{}", temp_name);
+                        let temp_path = std::env::temp_dir().join(temp_name);
 
                         match std::fs::write(&temp_path, &image_bytes) {
                             Ok(_) => {
+                                let temp_path_string = temp_path.to_string_lossy().into_owned();
                                 info!(
                                     "file transfer complete: {} ({} bytes) -> {}",
                                     transfer.name,
                                     image_bytes.len(),
-                                    temp_path,
+                                    temp_path.display(),
                                 );
                                 // Terminal sessions have a PTY — inject the path
                                 // as stdin so it appears on the command line.
@@ -1896,7 +1897,7 @@ fn handle_file_transfer_msg(
                                 // the mobile inlines the path into the user
                                 // message instead.
                                 if sessions.is_active(session_id) {
-                                    let path_bytes = temp_path.as_bytes().to_vec();
+                                    let path_bytes = temp_path_string.as_bytes().to_vec();
                                     if let Err(e) = sessions.write_input(session_id, path_bytes) {
                                         warn!("failed to inject file path into PTY: {}", e,);
                                         return Some(FileTransferUpdate::Error {
@@ -1907,11 +1908,11 @@ fn handle_file_transfer_msg(
                                 }
                                 Some(FileTransferUpdate::Complete {
                                     request_id: transfer.request_id,
-                                    path: temp_path,
+                                    path: temp_path_string,
                                 })
                             }
                             Err(e) => {
-                                warn!("failed to write temp file {}: {}", temp_path, e);
+                                warn!("failed to write temp file {}: {}", temp_path.display(), e);
                                 Some(FileTransferUpdate::Error {
                                     request_id: transfer.request_id,
                                     message: format!("temp_write_failed: {e}"),
@@ -2044,7 +2045,9 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
     // predate the guard or slipped past a failed assignment. No-op off-Windows.
     let reaped = crate::job_object::sweep_orphaned_conpty_backends();
     if reaped > 0 {
-        warn!("reaped {reaped} orphaned ConPTY conhost.exe process(es) from a previous daemon death");
+        warn!(
+            "reaped {reaped} orphaned ConPTY conhost.exe process(es) from a previous daemon death"
+        );
     }
     let mut sessions = SessionManager::new(config.session_limit);
     let (webrtc_event_tx, mut webrtc_event_rx) =
@@ -4268,11 +4271,9 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                                                     sig_num_for_audit,
                                                     kill_bin.display()
                                                 );
-                                                match std::process::Command::new(&kill_bin)
-                                                    .arg(format!("-{}", sig_num_for_audit))
-                                                    .arg(pid.to_string())
-                                                    .output()
-                                                {
+                                                let mut command = std::process::Command::new(&kill_bin);
+                                                crate::platform::hide_command_window(&mut command);
+                                                match command.arg(format!("-{}", sig_num_for_audit)).arg(pid.to_string()).output() {
                                                     Ok(output) => {
                                                         if output.status.success() {
                                                             audit_kill(AuditEvent::new("process.killed"));

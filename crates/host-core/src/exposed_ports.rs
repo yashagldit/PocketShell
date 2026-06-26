@@ -132,14 +132,18 @@ mod tests {
     use super::*;
     use crate::test_support::HOME_LOCK as ENV_LOCK;
 
-    /// Run `f` with `$HOME` pointed at a fresh tmpdir so the store reads and
-    /// writes under it instead of the user's real `~/.pocketshell`. The
-    /// `HOME_LOCK` mutex serializes tests in this binary that mutate `$HOME`.
+    /// Run `f` with home env vars pointed at a fresh tmpdir so the store reads
+    /// and writes under it instead of the user's real `~/.pocketshell`. The
+    /// `HOME_LOCK` mutex serializes tests in this binary that mutate home env.
     fn with_isolated_home<F: FnOnce()>(f: F) {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
         let prev_home = std::env::var_os("HOME");
+        let prev_userprofile = std::env::var_os("USERPROFILE");
+        let prev_test_home = std::env::var_os("POCKETSHELL_TEST_HOME");
         unsafe { std::env::set_var("HOME", tmp.path()) };
+        unsafe { std::env::set_var("USERPROFILE", tmp.path()) };
+        unsafe { std::env::set_var("POCKETSHELL_TEST_HOME", tmp.path()) };
         // Force the .pocketshell dir to exist for atomic_write's chmod path.
         std::fs::create_dir_all(tmp.path().join(".pocketshell")).unwrap();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
@@ -147,6 +151,14 @@ mod tests {
             match prev_home {
                 Some(v) => std::env::set_var("HOME", v),
                 None => std::env::remove_var("HOME"),
+            }
+            match prev_userprofile {
+                Some(v) => std::env::set_var("USERPROFILE", v),
+                None => std::env::remove_var("USERPROFILE"),
+            }
+            match prev_test_home {
+                Some(v) => std::env::set_var("POCKETSHELL_TEST_HOME", v),
+                None => std::env::remove_var("POCKETSHELL_TEST_HOME"),
             }
         }
         if let Err(e) = result {

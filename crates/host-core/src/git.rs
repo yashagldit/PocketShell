@@ -14,9 +14,15 @@ fn git_dir(cwd: &str) -> Result<std::path::PathBuf> {
     Ok(resolved)
 }
 
+fn git_command() -> Command {
+    let mut command = Command::new("git");
+    crate::platform::hide_command_window(&mut command);
+    command
+}
+
 fn run_git(cwd: &str, args: &[&str]) -> Result<String> {
     let dir = git_dir(cwd)?;
-    let output = Command::new("git")
+    let output = git_command()
         .args(args)
         .current_dir(&dir)
         .output()
@@ -36,7 +42,7 @@ fn run_git(cwd: &str, args: &[&str]) -> Result<String> {
 
 fn run_git_allow_exit(cwd: &str, args: &[&str], allowed_codes: &[i32]) -> Result<String> {
     let dir = git_dir(cwd)?;
-    let output = Command::new("git")
+    let output = git_command()
         .args(args)
         .current_dir(&dir)
         .output()
@@ -57,13 +63,21 @@ fn run_git_allow_exit(cwd: &str, args: &[&str], allowed_codes: &[i32]) -> Result
 
 fn run_git_ok_stderr(cwd: &str, args: &[&str]) -> Result<String> {
     let dir = git_dir(cwd)?;
-    let output = Command::new("git")
+    let output = git_command()
         .args(args)
         .current_dir(&dir)
         .output()
         .map_err(|e| HostError::Backend(format!("git spawn failed: {e}")))?;
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     Ok(stdout)
+}
+
+fn null_device_path() -> &'static str {
+    if cfg!(windows) {
+        "NUL"
+    } else {
+        "/dev/null"
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -246,7 +260,14 @@ pub fn git_diff(cwd: &str, file: Option<&str>) -> Result<serde_json::Value> {
         let diff = if entries.iter().any(GitStatusEntry::is_untracked) {
             run_git_allow_exit(
                 cwd,
-                &["diff", "--no-color", "--no-index", "--", "/dev/null", f],
+                &[
+                    "diff",
+                    "--no-color",
+                    "--no-index",
+                    "--",
+                    null_device_path(),
+                    f,
+                ],
                 &[0, 1],
             )?
         } else {
@@ -446,20 +467,19 @@ fn is_git_worktree(dir: &Path) -> bool {
 mod tests {
     use super::*;
     use std::fs;
-    use std::process::Command;
 
     fn init_repo(dir: &Path) {
-        Command::new("git")
+        git_command()
             .args(["init", "-b", "main"])
             .current_dir(dir)
             .output()
             .expect("git init");
-        Command::new("git")
+        git_command()
             .args(["config", "user.email", "test@example.com"])
             .current_dir(dir)
             .output()
             .expect("git config email");
-        Command::new("git")
+        git_command()
             .args(["config", "user.name", "Test"])
             .current_dir(dir)
             .output()
@@ -467,12 +487,12 @@ mod tests {
     }
 
     fn commit_all(dir: &Path, message: &str) {
-        Command::new("git")
+        git_command()
             .args(["add", "."])
             .current_dir(dir)
             .output()
             .expect("git add");
-        Command::new("git")
+        git_command()
             .args(["commit", "-m", message])
             .current_dir(dir)
             .output()
@@ -498,7 +518,7 @@ mod tests {
         commit_all(dir.path(), "init");
 
         fs::write(dir.path().join("app.txt"), "new\n").unwrap();
-        Command::new("git")
+        git_command()
             .args(["add", "app.txt"])
             .current_dir(dir.path())
             .output()
@@ -589,6 +609,14 @@ mod tests {
     }
 
     #[test]
+    fn parse_status_z_preserves_arrow_in_file_names() {
+        let entries = parse_status_z("R  new -> name.txt\0old -> name.txt\0");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, "new -> name.txt");
+        assert_eq!(entries[0].orig_path.as_deref(), Some("old -> name.txt"));
+    }
+
+    #[test]
     fn git_discard_all_handles_initial_staged_file() {
         let dir = tempfile::tempdir().unwrap();
         init_repo(dir.path());
@@ -608,7 +636,7 @@ mod tests {
         init_repo(dir.path());
         fs::write(dir.path().join("old.txt"), "hello\n").unwrap();
         commit_all(dir.path(), "init");
-        Command::new("git")
+        git_command()
             .args(["mv", "old.txt", "new.txt"])
             .current_dir(dir.path())
             .output()
@@ -622,13 +650,14 @@ mod tests {
         assert_eq!(status["dirty"].as_bool(), Some(false));
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn git_status_preserves_arrow_in_file_names() {
         let dir = tempfile::tempdir().unwrap();
         init_repo(dir.path());
         fs::write(dir.path().join("old -> name.txt"), "hello\n").unwrap();
         commit_all(dir.path(), "init");
-        Command::new("git")
+        git_command()
             .args(["mv", "old -> name.txt", "new -> name.txt"])
             .current_dir(dir.path())
             .output()

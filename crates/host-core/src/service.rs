@@ -294,7 +294,9 @@ fn is_systemd_running() -> bool {
 }
 
 fn has_systemctl() -> bool {
-    Command::new("systemctl")
+    let mut command = Command::new("systemctl");
+    crate::platform::hide_command_window(&mut command);
+    command
         .arg("--version")
         .output()
         .map(|o| o.status.success())
@@ -302,7 +304,9 @@ fn has_systemctl() -> bool {
 }
 
 fn command_status_output(program: &str, args: &[&str]) -> io::Result<(ExitStatus, String)> {
-    let output = Command::new(program).args(args).output()?;
+    let mut command = Command::new(program);
+    crate::platform::hide_command_window(&mut command);
+    let output = command.args(args).output()?;
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
     Ok((output.status, stderr))
 }
@@ -470,6 +474,7 @@ fn run_privileged(context: &str, args: &[&str]) -> Result<()> {
         c.args(args);
         c
     };
+    crate::platform::hide_command_window(&mut cmd);
     let output = cmd
         .output()
         .map_err(|e| HostError::Config(format!("{context}: {e}")))?;
@@ -780,7 +785,9 @@ fn windows_task_xml(exe_path: &str, user: &str) -> String {
 /// Windows; English covers our installs and CI, and a false negative only
 /// causes a harmless redundant `/Run`, which `IgnoreNew` collapses.)
 fn is_windows_task_running() -> bool {
-    Command::new("schtasks")
+    let mut command = Command::new("schtasks");
+    crate::platform::hide_command_window(&mut command);
+    command
         .args(["/Query", "/TN", WINDOWS_TASK_NAME, "/FO", "LIST", "/V"])
         .output()
         .map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).contains("Running"))
@@ -791,7 +798,9 @@ fn is_windows_task_running() -> bool {
 /// running). `/Query` exits non-zero when the task does not exist, which is
 /// locale-independent.
 fn is_windows_task_installed() -> bool {
-    Command::new("schtasks")
+    let mut command = Command::new("schtasks");
+    crate::platform::hide_command_window(&mut command);
+    command
         .args(["/Query", "/TN", WINDOWS_TASK_NAME])
         .output()
         .map(|o| o.status.success())

@@ -136,10 +136,9 @@ fn collect_network_connections() -> Option<NetworkConnection> {
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     let netstat = resolve_system_binary("netstat", &[]);
 
-    let output = std::process::Command::new(&netstat)
-        .args(["-n", "-p", "tcp"])
-        .output()
-        .ok()?;
+    let mut command = std::process::Command::new(&netstat);
+    crate::platform::hide_command_window(&mut command);
+    let output = command.args(["-n", "-p", "tcp"]).output().ok()?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
 
@@ -184,7 +183,9 @@ fn collect_logged_in_users() -> Option<Vec<LoggedInUser>> {
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     let who = resolve_system_binary("who", &[]);
 
-    let output = std::process::Command::new(&who).output().ok()?;
+    let mut command = std::process::Command::new(&who);
+    crate::platform::hide_command_window(&mut command);
+    let output = command.output().ok()?;
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     let users: Vec<LoggedInUser> = stdout
@@ -220,10 +221,9 @@ fn collect_battery() -> Option<f32> {
     #[cfg(target_os = "macos")]
     {
         let pmset = resolve_system_binary("pmset", &["/usr/bin/pmset"]);
-        let output = std::process::Command::new(&pmset)
-            .args(["-g", "batt"])
-            .output()
-            .ok()?;
+        let mut command = std::process::Command::new(&pmset);
+        crate::platform::hide_command_window(&mut command);
+        let output = command.args(["-g", "batt"]).output().ok()?;
         let text = String::from_utf8_lossy(&output.stdout);
         for line in text.lines() {
             if line.contains("InternalBattery") {

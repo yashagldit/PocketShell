@@ -13,6 +13,10 @@
 
 use std::fs::File;
 use std::io;
+use std::process::Command;
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// Take an exclusive advisory lock on `file`, blocking until it's available.
 ///
@@ -50,6 +54,30 @@ pub fn is_root() -> bool {
     {
         false
     }
+}
+
+/// Suppress transient console windows for helper subprocesses on Windows.
+///
+/// This is intentionally a no-op on Unix. It is for captured/background helper
+/// commands such as `git`, `netstat`, `taskkill`, and service-manager probes.
+pub fn hide_command_window(command: &mut Command) -> &mut Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
+}
+
+/// Tokio variant of [`hide_command_window`] for long-running piped children.
+pub fn hide_tokio_command_window(
+    command: &mut tokio::process::Command,
+) -> &mut tokio::process::Command {
+    #[cfg(windows)]
+    {
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
 }
 
 #[cfg(test)]
