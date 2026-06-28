@@ -76,6 +76,7 @@ jobs:
       POCKETSHELL_DEFAULT_BACKEND_URL: ${{ secrets.POCKETSHELL_DEFAULT_BACKEND_URL }}
       POCKETSHELL_DEFAULT_WS_URL: ${{ secrets.POCKETSHELL_DEFAULT_WS_URL }}
       HAS_APPLE_SIGNING: ${{ secrets.APPLE_DEVELOPER_ID_CERT_P12 != '' && secrets.APPLE_DEVELOPER_ID_CERT_PASSWORD != '' && secrets.APPLE_DEVELOPER_ID_NAME != '' }}
+      CARGO_TARGET_DIR: target
       # Re-bind matrix values into env so shell scripts never interpolate
       # workflow expressions directly (defense-in-depth against actions
       # injection, even though these values are workflow-controlled).
