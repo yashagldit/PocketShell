@@ -75,6 +75,7 @@ jobs:
       # broken binary, so we fail loudly if the secrets aren't set.
       POCKETSHELL_DEFAULT_BACKEND_URL: ${{ secrets.POCKETSHELL_DEFAULT_BACKEND_URL }}
       POCKETSHELL_DEFAULT_WS_URL: ${{ secrets.POCKETSHELL_DEFAULT_WS_URL }}
+      HAS_APPLE_SIGNING: ${{ secrets.APPLE_DEVELOPER_ID_CERT_P12 != '' && secrets.APPLE_DEVELOPER_ID_CERT_PASSWORD != '' && secrets.APPLE_DEVELOPER_ID_NAME != '' }}
       # Re-bind matrix values into env so shell scripts never interpolate
       # workflow expressions directly (defense-in-depth against actions
       # injection, even though these values are workflow-controlled).
@@ -146,14 +147,14 @@ jobs:
       # signing identity, every new build's hash invalidates the ACL and the
       # user gets "pocketshell wants to access your keychain" on every update.
       - name: Import code signing certificate (macOS only)
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && env.HAS_APPLE_SIGNING == 'true'
         uses: Apple-Actions/import-codesign-certs@v3
         with:
           p12-file-base64: ${{ secrets.APPLE_DEVELOPER_ID_CERT_P12 }}
           p12-password: ${{ secrets.APPLE_DEVELOPER_ID_CERT_PASSWORD }}
 
       - name: Codesign binary (macOS only)
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && env.HAS_APPLE_SIGNING == 'true'
         env:
           IDENTITY: ${{ secrets.APPLE_DEVELOPER_ID_NAME }}
         run: |
