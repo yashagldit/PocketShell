@@ -456,30 +456,30 @@ fn method_version_info() -> Value {
 }
 
 /// Stateless handler for `ports/list_dev`. Enumerates locally-listening TCP
-/// ports and, by default, probes each to classify it as a dev server and
-/// flag whether it is already exposed for forwarding.
+/// ports, probes them, and returns only ports that answer as HTTP plus whether
+/// each is already exposed for forwarding.
 ///
 /// Read-only: this never exposes a port — that still requires a TTY action
 /// (`pocketshell expose <port>`). See [`crate::dev_ports`] for the threat
 /// model rationale.
 ///
 /// Params (all optional):
-/// - `probe`: bool (default `true`) — when false, skip the HTTP probe and
-///   return ports without `server_kind`/`is_http` (fast, no sockets opened).
+/// - `probe`: bool — accepted for backward compatibility, but ignored. This
+///   endpoint always probes so it never returns raw non-HTTP system listeners.
 ///
 /// Response: `{ ports: [{ port, pid?, process_name?, is_exposed, is_http,
 /// server_kind?, server_header?, probe_status? }], probed, captured_at_ms }`.
 async fn method_list_dev_ports(params: &Value) -> std::result::Result<Value, RpcError> {
-    let probe = params
+    let _requested_probe = params
         .get("probe")
         .and_then(|v| v.as_bool())
         .unwrap_or(true);
-    let ports = crate::dev_ports::list_dev_ports(probe).await;
+    let ports = crate::dev_ports::list_dev_ports(true).await;
     serde_json::to_value(&ports)
         .map(|ports| {
             serde_json::json!({
                 "ports": ports,
-                "probed": probe,
+                "probed": true,
                 "captured_at_ms": now_ms(),
             })
         })
@@ -1181,9 +1181,10 @@ mod tests {
 
     #[tokio::test]
     async fn list_dev_ports_returns_array_shape() {
-        // probe:false avoids opening any sockets — we only assert the
-        // response shape and that enumeration doesn't error. The actual port
-        // list depends on the test host, so we don't assert contents.
+        // probe:false is accepted for older clients but ignored: discovery
+        // must still probe so raw system listeners are not returned. The
+        // actual HTTP port list depends on the test host, so we don't assert
+        // contents.
         let req = RpcRequest {
             id: "ports".into(),
             method: "ports/list_dev".into(),
@@ -1198,7 +1199,7 @@ mod tests {
         );
         let result = resp.result.unwrap();
         assert!(result.get("ports").unwrap().is_array());
-        assert_eq!(result.get("probed").and_then(|v| v.as_bool()), Some(false));
+        assert_eq!(result.get("probed").and_then(|v| v.as_bool()), Some(true));
         assert!(result
             .get("captured_at_ms")
             .and_then(|v| v.as_i64())

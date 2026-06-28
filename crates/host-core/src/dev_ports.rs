@@ -1,4 +1,4 @@
-//! Discovery of locally-listening TCP ports for the `ports/list_dev` control
+//! Discovery of locally-listening HTTP ports for the `ports/list_dev` control
 //! RPC. Lets the mobile app present "here are the dev servers running on your
 //! host" with a tap-to-expose affordance, instead of making the user guess a
 //! port and switch to a terminal blind.
@@ -9,10 +9,10 @@
 //! requires `pocketshell expose <port>` in a TTY (or the daemon TUI) — that
 //! is the deliberate trust boundary from `TODO-dev-server-forward.md`: a
 //! stolen phone cannot make a local service reachable without the operator
-//! typing a command. *Listing* what is already listening is safe: the paired
-//! device has shell access, so it could run `ss`/`lsof` over the terminal
-//! channel anyway. We surface the same information more conveniently and tag
-//! each port with `is_exposed` so the UI knows whether forwarding will work.
+//! typing a command. Listing HTTP listeners is safe: the paired device has
+//! shell access, so it could run `ss`/`lsof` over the terminal channel anyway.
+//! We surface the useful subset more conveniently and tag each port with
+//! `is_exposed` so the UI knows whether forwarding will work.
 //!
 //! ## Platform strategy
 //!
@@ -26,8 +26,9 @@
 //! - **Windows** - shell out to `netstat -ano -p tcp` and parse it, then
 //!   best-effort map the owning pid to a process name via `sysinfo`.
 //!
-//! Either way we keep only ports reachable over `localhost` (loopback or
-//! wildcard binds), because the forwarder always dials `localhost:<port>`.
+//! Either way we enumerate only ports reachable over `localhost` (loopback or
+//! wildcard binds), because the forwarder always dials `localhost:<port>`, and
+//! then probe them so the RPC returns only HTTP-speaking listeners.
 
 use crate::exposed_ports::ExposedPortsStore;
 use serde::Serialize;
@@ -84,10 +85,10 @@ pub struct DevPort {
     pub probe_status: Option<u16>,
 }
 
-/// Scan listening ports, mark allowlist status, and (when `probe`) classify
-/// each as an HTTP dev server. Returns ports sorted ascending. Never errors —
-/// platform failures degrade to an empty / partial list and are logged.
-pub async fn list_dev_ports(probe: bool) -> Vec<DevPort> {
+/// Scan listening ports, mark allowlist status, and keep only ports that
+/// answer as HTTP. Returns ports sorted ascending. Never errors — platform
+/// failures degrade to an empty / partial list and are logged.
+pub async fn list_dev_ports(_probe: bool) -> Vec<DevPort> {
     let listening = list_listening_ports();
 
     // Dedupe by port: a server bound to both IPv4 and IPv6 shows up twice,
@@ -107,22 +108,6 @@ pub async fn list_dev_ports(probe: bool) -> Vec<DevPort> {
     };
 
     let ports: Vec<ListeningPort> = by_port.into_values().collect();
-
-    if !probe {
-        return ports
-            .into_iter()
-            .map(|lp| DevPort {
-                port: lp.port,
-                pid: lp.pid,
-                process_name: lp.process_name,
-                is_exposed: exposed.contains(&lp.port),
-                is_http: false,
-                server_kind: None,
-                server_header: None,
-                probe_status: None,
-            })
-            .collect();
-    }
 
     // Probe concurrently with a fan-out cap so a host with many listeners
     // doesn't open hundreds of sockets at once or stall the RPC.
@@ -149,6 +134,7 @@ pub async fn list_dev_ports(probe: bool) -> Vec<DevPort> {
         .collect()
         .await;
 
+    results.retain(|d| d.is_http);
     results.sort_by_key(|d| d.port);
     results
 }

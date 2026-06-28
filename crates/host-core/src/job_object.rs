@@ -110,8 +110,11 @@ mod imp {
             cb_job_object_information_length: u32,
         ) -> Bool;
         fn AssignProcessToJobObject(h_job: Handle, h_process: Handle) -> Bool;
-        fn OpenProcess(dw_desired_access: u32, b_inherit_handle: Bool, dw_process_id: u32)
-            -> Handle;
+        fn OpenProcess(
+            dw_desired_access: u32,
+            b_inherit_handle: Bool,
+            dw_process_id: u32,
+        ) -> Handle;
         fn CloseHandle(h_object: Handle) -> Bool;
     }
 
@@ -220,9 +223,7 @@ mod imp {
         let me = sysinfo::Pid::from_u32(std::process::id());
         sys.processes()
             .iter()
-            .filter(|(_, p)| {
-                p.parent() == Some(me) && p.name().eq_ignore_ascii_case("conhost.exe")
-            })
+            .filter(|(_, p)| p.parent() == Some(me) && p.name().eq_ignore_ascii_case("conhost.exe"))
             .map(|(pid, _)| pid.as_u32())
             .collect()
     }
