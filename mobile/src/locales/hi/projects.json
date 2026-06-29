@@ -218,5 +218,6 @@
   "tabs.terminal_state": "टर्मिनल {{state}}",
   "web.title_port": "वेब :{{port}}",
   "chats.no_matching": "मिलती चैट नहीं",
-  "chats.show_more": "और दिखाएं"
+  "chats.show_more": "और दिखाएं",
+  "chats.unlock_history": "{{count}} पुराने चैट अनलॉक करें"
 }

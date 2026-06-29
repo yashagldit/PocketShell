@@ -8,6 +8,13 @@
   "email_field": "이메일",
   "version_field": "버전",
   "build_field": "빌드",
+  "app_update.check_button": "업데이트 확인",
+  "app_update.checking": "확인 중...",
+  "app_update.ready_title": "업데이트 준비됨",
+  "app_update.ready_body": "EAS에서 새 업데이트를 다운로드했습니다. 지금 다시 시작해 적용하세요.",
+  "app_update.up_to_date": "PocketShell이 최신 상태입니다",
+  "app_update.unavailable": "이 빌드에서는 업데이트를 사용할 수 없습니다",
+  "app_update.failed": "업데이트를 확인할 수 없습니다",
   "export_device_key": "장치 키 내보내기",
   "import_device_key": "장치 키 가져오기",
   "sign_out": "로그아웃",
@@ -112,7 +119,7 @@
   "pro_gate.alerts.title": "더 많은 알림",
   "pro_gate.alerts.message": "무료 계정은 최대 {{count}}개의 활성 알림을 가질 수 있습니다. 무제한 알림을 원하면 PocketShell Pro로 업그레이드하세요.",
   "pro_gate.chat_history.title": "전체 채팅 기록",
-  "pro_gate.chat_history.message": "무료 계정은 최근 {{days}}일간의 채팅 세션에 접근할 수 있습니다. 전체 기록을 보려면 PocketShell Pro로 업그레이드하세요.",
+  "pro_gate.chat_history.message": "무료 계정은 최근 {{count}}개의 채팅 세션에 접근할 수 있습니다. 전체 기록을 보려면 PocketShell Pro로 업그레이드하세요.",
   "pro_gate.host_limit.title": "호스트 한도 도달",
   "pro_gate.host_limit.message": "Pro 계정은 최대 {{proCount}}개의 호스트를 페어링할 수 있습니다. 새 호스트를 페어링하려면 기존 호스트를 삭제하거나, 더 필요하면 지원팀에 문의하세요.",
   "pro_gate.generic.title": "한도 도달",
@@ -135,5 +142,7 @@
   "feedback.submit_success": "감사합니다 — 피드백이 전송되었어요!",
   "feedback.submit_failed": "피드백을 보낼 수 없습니다. 다시 시도해 주세요.",
   "key_restored_repair_required": "기기 키가 복원되었습니다. 연결하기 전에 각 호스트에서 이 기기를 다시 페어링하거나 승인하세요.",
-  "key_restored_sync_failed": "기기 키는 로컬에서 복원되었지만 호스트 접근을 복원할 수 없습니다. 연결하기 전에 이 기기를 다시 페어링하거나 승인하세요."
+  "key_restored_sync_failed": "기기 키는 로컬에서 복원되었지만 호스트 접근을 복원할 수 없습니다. 연결하기 전에 이 기기를 다시 페어링하거나 승인하세요.",
+  "pro_gate.project_spaces.title": "프로젝트 공간 추가",
+  "pro_gate.project_spaces.message": "무료 계정은 최대 {{count}}개의 프로젝트 공간을 저장할 수 있습니다. 무제한 프로젝트 공간을 사용하려면 PocketShell Pro로 업그레이드하세요."
 }

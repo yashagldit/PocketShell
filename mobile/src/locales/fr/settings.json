@@ -8,6 +8,13 @@
   "email_field": "Email",
   "version_field": "Version",
   "build_field": "Build",
+  "app_update.check_button": "Rechercher des mises à jour",
+  "app_update.checking": "Recherche...",
+  "app_update.ready_title": "Mise à jour prête",
+  "app_update.ready_body": "Une nouvelle mise à jour a été téléchargée depuis EAS. Redémarrez maintenant pour l'appliquer.",
+  "app_update.up_to_date": "PocketShell est à jour",
+  "app_update.unavailable": "Les mises à jour ne sont pas disponibles dans ce build",
+  "app_update.failed": "Impossible de rechercher des mises à jour",
   "export_device_key": "Exporter la clé de l'appareil",
   "import_device_key": "Importer la clé de l'appareil",
   "sign_out": "Se déconnecter",
@@ -112,7 +119,7 @@
   "pro_gate.alerts.title": "Plus d'alertes",
   "pro_gate.alerts.message": "Les comptes gratuits peuvent avoir jusqu'à {{count}} alertes actives. Passez à PocketShell Pro pour des alertes illimitées.",
   "pro_gate.chat_history.title": "Historique de chat complet",
-  "pro_gate.chat_history.message": "Les comptes gratuits peuvent accéder aux sessions de chat des {{days}} derniers jours. Passez à PocketShell Pro pour voir tout votre historique.",
+  "pro_gate.chat_history.message": "Les comptes gratuits peuvent accéder aux {{count}} dernières sessions de chat. Passez à PocketShell Pro pour consulter tout votre historique.",
   "pro_gate.host_limit.title": "Limite d'hôtes atteinte",
   "pro_gate.host_limit.message": "Les comptes Pro peuvent appairer jusqu'à {{proCount}} hôtes. Supprimez un hôte existant pour en appairer un nouveau, ou contactez le support si vous en avez besoin de plus.",
   "pro_gate.generic.title": "Limite atteinte",
@@ -135,5 +142,7 @@
   "feedback.submit_success": "Merci — votre commentaire est en route !",
   "feedback.submit_failed": "Impossible d'envoyer le commentaire. Veuillez réessayer.",
   "key_restored_repair_required": "Cle d appareil restauree. Reassociez ou approuvez cet appareil sur chaque hote avant de vous connecter.",
-  "key_restored_sync_failed": "La cle d appareil a ete restauree localement, mais l acces aux hotes n a pas pu etre restaure. Reassociez ou approuvez cet appareil avant de vous connecter."
+  "key_restored_sync_failed": "La cle d appareil a ete restauree localement, mais l acces aux hotes n a pas pu etre restaure. Reassociez ou approuvez cet appareil avant de vous connecter.",
+  "pro_gate.project_spaces.title": "Plus d’espaces projet",
+  "pro_gate.project_spaces.message": "Les comptes gratuits peuvent enregistrer jusqu’à {{count}} espaces projet. Passez à PocketShell Pro pour des espaces projet illimités."
 }

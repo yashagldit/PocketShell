@@ -218,5 +218,6 @@
   "tabs.terminal_state": "Terminal {{state}}",
   "web.title_port": "Web :{{port}}",
   "chats.no_matching": "No hay chats coincidentes",
-  "chats.show_more": "Mostrar mas"
+  "chats.show_more": "Mostrar mas",
+  "chats.unlock_history": "Desbloquear {{count}} chats anteriores"
 }

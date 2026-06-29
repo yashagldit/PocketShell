@@ -218,5 +218,6 @@
   "tabs.terminal_state": "터미널 {{state}}",
   "web.title_port": "웹 :{{port}}",
   "chats.no_matching": "일치하는 채팅 없음",
-  "chats.show_more": "더 보기"
+  "chats.show_more": "더 보기",
+  "chats.unlock_history": "이전 채팅 {{count}}개 잠금 해제"
 }

@@ -218,5 +218,6 @@
   "tabs.terminal_state": "終端{{state}}",
   "web.title_port": "網址：{{port}}",
   "chats.no_matching": "沒有符合的聊天",
-  "chats.show_more": "顯示更多"
+  "chats.show_more": "顯示更多",
+  "chats.unlock_history": "解鎖 {{count}} 個較早聊天"
 }

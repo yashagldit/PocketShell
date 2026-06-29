@@ -218,5 +218,6 @@
   "tabs.terminal_state": "Терминал {{state}}",
   "web.title_port": "Веб: {{port}}",
   "chats.no_matching": "Нет подходящих чатов",
-  "chats.show_more": "Показать еще"
+  "chats.show_more": "Показать еще",
+  "chats.unlock_history": "Разблокировать {{count}} старых чатов"
 }

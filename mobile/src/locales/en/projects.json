@@ -54,6 +54,7 @@
   "editor.discard_body": "This file has unsaved edits.",
   "editor.discard_confirm": "Discard",
   "chats.new": "New chat",
+  "chats.search_placeholder": "Search chats",
   "chats.empty_title": "No chats in this project",
   "chats.empty_subtitle": "Start a Codex or Claude session in this folder.",
   "git.load_failed": "Could not load git status",
@@ -218,5 +219,6 @@
   "tabs.terminal_state": "Terminal {{state}}",
   "web.title_port": "Web :{{port}}",
   "chats.no_matching": "No matching chats",
-  "chats.show_more": "Show more"
+  "chats.show_more": "Show more",
+  "chats.unlock_history": "Unlock {{count}} older chats"
 }
