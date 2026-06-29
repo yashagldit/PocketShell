@@ -192,5 +192,7 @@
   "errors.terminal_channel_closed": "Le canal de fichier WebRTC du terminal n'est pas ouvert",
   "errors.terminal_upload_failed": "Le téléchargement du fichier terminal a échoué",
   "errors.files_channel_closed": "Le canal WebRTC des fichiers n'est pas ouvert",
-  "errors.signaling_unavailable": "La connexion de signalisation est indisponible"
+  "errors.signaling_unavailable": "La connexion de signalisation est indisponible",
+  "action.paste": "Paste",
+  "action.open_terminal": "Open in Terminal"
 }

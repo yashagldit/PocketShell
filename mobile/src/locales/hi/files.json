@@ -192,5 +192,7 @@
   "errors.terminal_channel_closed": "Terminal WebRTC फाइल चैनल खुला नहीं है",
   "errors.terminal_upload_failed": "Terminal फाइल अपलोड विफल",
   "errors.files_channel_closed": "Files WebRTC चैनल खुला नहीं है",
-  "errors.signaling_unavailable": "सिग्नलिंग कनेक्शन उपलब्ध नहीं है"
+  "errors.signaling_unavailable": "सिग्नलिंग कनेक्शन उपलब्ध नहीं है",
+  "action.paste": "Paste",
+  "action.open_terminal": "Open in Terminal"
 }

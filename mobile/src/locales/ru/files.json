@@ -192,5 +192,7 @@
   "errors.terminal_channel_closed": "WebRTC канал файлов терминала не открыт",
   "errors.terminal_upload_failed": "Загрузка файла терминала не удалась",
   "errors.files_channel_closed": "WebRTC канал файлов не открыт",
-  "errors.signaling_unavailable": "Соединение сигнализации недоступно"
+  "errors.signaling_unavailable": "Соединение сигнализации недоступно",
+  "action.paste": "Paste",
+  "action.open_terminal": "Open in Terminal"
 }

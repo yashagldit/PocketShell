@@ -133,5 +133,7 @@
   "feedback.contact_placeholder": "you@example.com",
   "feedback.submit": "Отправить",
   "feedback.submit_success": "Спасибо — ваш отзыв отправлен!",
-  "feedback.submit_failed": "Не удалось отправить отзыв. Пожалуйста, попробуйте снова."
+  "feedback.submit_failed": "Не удалось отправить отзыв. Пожалуйста, попробуйте снова.",
+  "key_restored_repair_required": "Device key restored. Re-pair or approve this device on each host before connecting.",
+  "key_restored_sync_failed": "Device key restored locally, but host access could not be restored. Re-pair or approve this device before connecting."
 }
