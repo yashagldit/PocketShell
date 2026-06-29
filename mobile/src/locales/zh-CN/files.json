@@ -193,6 +193,8 @@
   "errors.terminal_upload_failed": "终端文件上传失败",
   "errors.files_channel_closed": "文件 WebRTC 通道未打开",
   "errors.signaling_unavailable": "信令连接不可用",
-  "action.paste": "Paste",
-  "action.open_terminal": "Open in Terminal"
+  "action.paste": "粘贴",
+  "action.open_terminal": "在终端中打开",
+  "action.close_actions": "关闭文件操作",
+  "editor.markdown_preview": "Markdown 预览"
 }

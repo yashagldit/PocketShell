@@ -193,6 +193,8 @@
   "errors.terminal_upload_failed": "Le téléchargement du fichier terminal a échoué",
   "errors.files_channel_closed": "Le canal WebRTC des fichiers n'est pas ouvert",
   "errors.signaling_unavailable": "La connexion de signalisation est indisponible",
-  "action.paste": "Paste",
-  "action.open_terminal": "Open in Terminal"
+  "action.paste": "Coller",
+  "action.open_terminal": "Ouvrir dans le terminal",
+  "action.close_actions": "Fermer les actions de fichier",
+  "editor.markdown_preview": "Apercu Markdown"
 }

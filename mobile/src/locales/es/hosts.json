@@ -164,6 +164,6 @@
   "errors.refresh_pairing_status_failed": "Error al actualizar estado de emparejamiento",
   "errors.recovery_failed": "La acción de recuperación falló",
   "security.trusted_device_required": "Se requiere acceso de dispositivo de confianza",
-  "projects": "Projects",
-  "detail.projects": "Projects"
+  "projects": "Proyectos",
+  "detail.projects": "Proyectos"
 }

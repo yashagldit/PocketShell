@@ -164,6 +164,6 @@
   "errors.refresh_pairing_status_failed": "Impossible d'actualiser l'état d'appairage",
   "errors.recovery_failed": "L'action de récupération a échoué",
   "security.trusted_device_required": "Accès à l'appareil approuvé requis",
-  "projects": "Projects",
-  "detail.projects": "Projects"
+  "projects": "Projets",
+  "detail.projects": "Projets"
 }

@@ -134,6 +134,6 @@
   "feedback.submit": "Envoyer",
   "feedback.submit_success": "Merci — votre commentaire est en route !",
   "feedback.submit_failed": "Impossible d'envoyer le commentaire. Veuillez réessayer.",
-  "key_restored_repair_required": "Device key restored. Re-pair or approve this device on each host before connecting.",
-  "key_restored_sync_failed": "Device key restored locally, but host access could not be restored. Re-pair or approve this device before connecting."
+  "key_restored_repair_required": "Cle d appareil restauree. Reassociez ou approuvez cet appareil sur chaque hote avant de vous connecter.",
+  "key_restored_sync_failed": "La cle d appareil a ete restauree localement, mais l acces aux hotes n a pas pu etre restaure. Reassociez ou approuvez cet appareil avant de vous connecter."
 }

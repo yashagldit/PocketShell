@@ -164,6 +164,6 @@
   "errors.refresh_pairing_status_failed": "Pairingstatus konnte nicht aktualisiert werden",
   "errors.recovery_failed": "Wiederherstellungsvorgang fehlgeschlagen",
   "security.trusted_device_required": "Zugriff mit vertrautem Gerät erforderlich",
-  "projects": "Projects",
-  "detail.projects": "Projects"
+  "projects": "Projekte",
+  "detail.projects": "Projekte"
 }

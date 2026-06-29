@@ -164,6 +164,6 @@
   "errors.refresh_pairing_status_failed": "無法重新整理配對狀態",
   "errors.recovery_failed": "復原操作失敗",
   "security.trusted_device_required": "需要受信任的裝置存取",
-  "projects": "Projects",
-  "detail.projects": "Projects"
+  "projects": "專案",
+  "detail.projects": "專案"
 }

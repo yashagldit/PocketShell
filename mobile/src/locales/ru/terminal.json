@@ -151,11 +151,11 @@
   "overlay.negotiating_hint": "Согласование обычно завершается в течение нескольких секунд.",
   "selection_modal_title": "Выбрать текст",
   "selection_modal_empty": "Вывод терминала ещё недоступен.",
-  "connection_state.disconnected": "disconnected",
-  "connection_state.connected": "connected",
-  "connection_state.connecting": "connecting",
-  "connection_state.failed": "failed",
-  "connection_state.reconnecting": "reconnecting",
-  "connection_state.detached": "detached",
-  "connection_state.requesting": "requesting"
+  "connection_state.disconnected": "отключено",
+  "connection_state.connected": "подключено",
+  "connection_state.connecting": "подключение",
+  "connection_state.failed": "ошибка",
+  "connection_state.reconnecting": "переподключение",
+  "connection_state.detached": "отсоединено",
+  "connection_state.requesting": "запрос"
 }

@@ -164,6 +164,6 @@
   "errors.refresh_pairing_status_failed": "ペアリングステータスを更新できませんでした",
   "errors.recovery_failed": "復旧アクションが失敗しました",
   "security.trusted_device_required": "信頼できるデバイスのアクセスが必要です",
-  "projects": "Projects",
-  "detail.projects": "Projects"
+  "projects": "プロジェクト",
+  "detail.projects": "プロジェクト"
 }

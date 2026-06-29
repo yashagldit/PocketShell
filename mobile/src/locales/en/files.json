@@ -194,5 +194,7 @@
   "errors.terminal_channel_closed": "Terminal WebRTC file channel is not open",
   "errors.terminal_upload_failed": "Terminal file upload failed",
   "errors.files_channel_closed": "Files WebRTC channel is not open",
-  "errors.signaling_unavailable": "Signaling connection is unavailable"
+  "errors.signaling_unavailable": "Signaling connection is unavailable",
+  "action.close_actions": "Close file actions",
+  "editor.markdown_preview": "Markdown preview"
 }

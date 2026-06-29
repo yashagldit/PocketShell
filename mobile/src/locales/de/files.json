@@ -193,6 +193,8 @@
   "errors.terminal_upload_failed": "Terminal-Datei-Upload fehlgeschlagen",
   "errors.files_channel_closed": "WebRTC-Dateikanal ist nicht geöffnet",
   "errors.signaling_unavailable": "Signalisierungsverbindung ist nicht verfügbar",
-  "action.paste": "Paste",
-  "action.open_terminal": "Open in Terminal"
+  "action.paste": "Einfuegen",
+  "action.open_terminal": "Im Terminal oeffnen",
+  "action.close_actions": "Dateiaktionen schliessen",
+  "editor.markdown_preview": "Markdown-Vorschau"
 }

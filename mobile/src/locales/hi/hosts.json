@@ -164,6 +164,6 @@
   "errors.refresh_pairing_status_failed": "पेयरिंग स्टेटस रीफ्रेश करने में विफल",
   "errors.recovery_failed": "रिकवरी कार्रवाई विफल",
   "security.trusted_device_required": "विश्वसनीय डिवाइस एक्सेस आवश्यक है",
-  "projects": "Projects",
-  "detail.projects": "Projects"
+  "projects": "प्रोजेक्ट",
+  "detail.projects": "प्रोजेक्ट"
 }

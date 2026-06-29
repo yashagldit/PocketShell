@@ -134,6 +134,6 @@
   "feedback.submit": "Invia",
   "feedback.submit_success": "Grazie — il tuo feedback è in viaggio!",
   "feedback.submit_failed": "Impossibile inviare il feedback. Riprova.",
-  "key_restored_repair_required": "Device key restored. Re-pair or approve this device on each host before connecting.",
-  "key_restored_sync_failed": "Device key restored locally, but host access could not be restored. Re-pair or approve this device before connecting."
+  "key_restored_repair_required": "Chiave dispositivo ripristinata. Associa di nuovo o approva questo dispositivo su ogni host prima di connetterti.",
+  "key_restored_sync_failed": "Chiave dispositivo ripristinata localmente, ma non e stato possibile ripristinare l accesso agli host. Associa di nuovo o approva questo dispositivo prima di connetterti."
 }

@@ -193,6 +193,8 @@
   "errors.terminal_upload_failed": "터미널 파일 업로드 실패",
   "errors.files_channel_closed": "파일 WebRTC 채널이 열려있지 않습니다",
   "errors.signaling_unavailable": "신호 연결을 사용할 수 없습니다",
-  "action.paste": "Paste",
-  "action.open_terminal": "Open in Terminal"
+  "action.paste": "붙여넣기",
+  "action.open_terminal": "터미널에서 열기",
+  "action.close_actions": "파일 작업 닫기",
+  "editor.markdown_preview": "Markdown 미리보기"
 }

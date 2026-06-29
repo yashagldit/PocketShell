@@ -134,6 +134,6 @@
   "feedback.submit": "보내기",
   "feedback.submit_success": "감사합니다 — 피드백이 전송되었어요!",
   "feedback.submit_failed": "피드백을 보낼 수 없습니다. 다시 시도해 주세요.",
-  "key_restored_repair_required": "Device key restored. Re-pair or approve this device on each host before connecting.",
-  "key_restored_sync_failed": "Device key restored locally, but host access could not be restored. Re-pair or approve this device before connecting."
+  "key_restored_repair_required": "기기 키가 복원되었습니다. 연결하기 전에 각 호스트에서 이 기기를 다시 페어링하거나 승인하세요.",
+  "key_restored_sync_failed": "기기 키는 로컬에서 복원되었지만 호스트 접근을 복원할 수 없습니다. 연결하기 전에 이 기기를 다시 페어링하거나 승인하세요."
 }

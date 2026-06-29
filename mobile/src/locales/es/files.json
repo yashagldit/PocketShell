@@ -193,6 +193,8 @@
   "errors.terminal_upload_failed": "La carga de archivo de terminal falló",
   "errors.files_channel_closed": "El canal WebRTC de archivos no está abierto",
   "errors.signaling_unavailable": "La conexión de señalización no está disponible",
-  "action.paste": "Paste",
-  "action.open_terminal": "Open in Terminal"
+  "action.paste": "Pegar",
+  "action.open_terminal": "Abrir en terminal",
+  "action.close_actions": "Cerrar acciones de archivo",
+  "editor.markdown_preview": "Vista previa de Markdown"
 }

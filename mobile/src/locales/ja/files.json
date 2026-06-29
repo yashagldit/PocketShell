@@ -193,6 +193,8 @@
   "errors.terminal_upload_failed": "ターミナルファイルアップロードが失敗しました",
   "errors.files_channel_closed": "ファイル WebRTC チャネルが開いていません",
   "errors.signaling_unavailable": "シグナリング接続が利用できません",
-  "action.paste": "Paste",
-  "action.open_terminal": "Open in Terminal"
+  "action.paste": "貼り付け",
+  "action.open_terminal": "ターミナルで開く",
+  "action.close_actions": "ファイル操作を閉じる",
+  "editor.markdown_preview": "Markdown プレビュー"
 }
