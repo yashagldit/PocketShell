@@ -138,6 +138,7 @@
   "git.no_matching_changes": "Nenhuma alteração correspondente",
   "git.commit_message_placeholder": "Mensagem do commit",
   "git.full_file_diff_readonly": "Diferença completa do arquivo - somente leitura",
+  "git.truncated": "Truncado",
   "git.previous_change": "Mudança anterior",
   "git.next_change": "Próxima alteração",
   "git.working_tree": "Árvore de trabalho",
@@ -216,9 +217,15 @@
   "toolbar.project_actions": "Acoes do projeto",
   "toolbar.browse_project": "Navegar no projeto",
   "tabs.terminal_state": "Terminal {{state}}",
+  "tabs.terminal_title": "Terminal",
   "web.title_port": "Rede: {{port}}",
   "chats.no_matching": "Nenhum chat correspondente",
   "chats.show_more": "Mostrar mais",
   "chats.unlock_history": "Desbloquear {{count}} chats anteriores",
-  "chats.search_placeholder": "Pesquisar chats"
+  "chats.search_placeholder": "Pesquisar chats",
+  "terminal.close_live_title": "Fechar sessão do terminal?",
+  "terminal.close_live_message": "{{title}} está conectado. Desanexe para mantê-lo em execução ou encerre a sessão remota.",
+  "terminal.close_detach": "Desanexar",
+  "terminal.close_end_session": "Encerrar sessão",
+  "terminal.signaling_badge": "SINALIZAÇÃO"
 }

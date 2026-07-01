@@ -197,6 +197,7 @@
   "action.open_terminal": "ターミナルで開く",
   "action.close_actions": "ファイル操作を閉じる",
   "editor.markdown_preview": "Markdown プレビュー",
+  "editor.plain": "プレーンテキスト",
   "editor.find": "ファイル内を検索",
   "editor.search_find": "検索",
   "editor.search_replace": "置換",

@@ -138,6 +138,7 @@
   "git.no_matching_changes": "沒有匹配的更改",
   "git.commit_message_placeholder": "提交訊息",
   "git.full_file_diff_readonly": "完整文件差異 - 唯讀",
+  "git.truncated": "已截斷",
   "git.previous_change": "之前的變更",
   "git.next_change": "下一步更改",
   "git.working_tree": "工作樹",
@@ -216,9 +217,15 @@
   "toolbar.project_actions": "專案操作",
   "toolbar.browse_project": "瀏覽專案",
   "tabs.terminal_state": "終端{{state}}",
+  "tabs.terminal_title": "終端機",
   "web.title_port": "網址：{{port}}",
   "chats.no_matching": "沒有符合的聊天",
   "chats.show_more": "顯示更多",
   "chats.unlock_history": "解鎖 {{count}} 個較早聊天",
-  "chats.search_placeholder": "搜尋聊天"
+  "chats.search_placeholder": "搜尋聊天",
+  "terminal.close_live_title": "關閉終端機工作階段？",
+  "terminal.close_live_message": "{{title}} 已連線。分離可保持執行，或結束遠端工作階段。",
+  "terminal.close_detach": "分離",
+  "terminal.close_end_session": "結束工作階段",
+  "terminal.signaling_badge": "訊號"
 }

@@ -138,6 +138,7 @@
   "git.no_matching_changes": "일치하는 변경사항 없음",
   "git.commit_message_placeholder": "커밋 메시지",
   "git.full_file_diff_readonly": "전체 파일 비교 - 읽기 전용",
+  "git.truncated": "잘림",
   "git.previous_change": "이전 변경사항",
   "git.next_change": "다음 변경사항",
   "git.working_tree": "작업 트리",
@@ -216,9 +217,15 @@
   "toolbar.project_actions": "프로젝트 작업",
   "toolbar.browse_project": "프로젝트 탐색",
   "tabs.terminal_state": "터미널 {{state}}",
+  "tabs.terminal_title": "터미널",
   "web.title_port": "웹 :{{port}}",
   "chats.no_matching": "일치하는 채팅 없음",
   "chats.show_more": "더 보기",
   "chats.unlock_history": "이전 채팅 {{count}}개 잠금 해제",
-  "chats.search_placeholder": "채팅 검색"
+  "chats.search_placeholder": "채팅 검색",
+  "terminal.close_live_title": "터미널 세션을 닫을까요?",
+  "terminal.close_live_message": "{{title}}이(가) 연결되어 있습니다. 계속 실행하려면 분리하고, 원격 세션을 끝내려면 종료하세요.",
+  "terminal.close_detach": "분리",
+  "terminal.close_end_session": "세션 종료",
+  "terminal.signaling_badge": "시그널링"
 }

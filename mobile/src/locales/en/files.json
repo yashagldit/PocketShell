@@ -197,6 +197,7 @@
   "errors.signaling_unavailable": "Signaling connection is unavailable",
   "action.close_actions": "Close file actions",
   "editor.markdown_preview": "Markdown preview",
+  "editor.plain": "Plain text",
   "editor.find": "Find in file",
   "editor.search_find": "Find",
   "editor.search_replace": "Replace",

@@ -197,6 +197,7 @@
   "action.open_terminal": "터미널에서 열기",
   "action.close_actions": "파일 작업 닫기",
   "editor.markdown_preview": "Markdown 미리보기",
+  "editor.plain": "일반 텍스트",
   "editor.find": "파일에서 찾기",
   "editor.search_find": "찾기",
   "editor.search_replace": "바꾸기",

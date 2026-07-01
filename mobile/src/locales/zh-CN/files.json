@@ -197,6 +197,7 @@
   "action.open_terminal": "在终端中打开",
   "action.close_actions": "关闭文件操作",
   "editor.markdown_preview": "Markdown 预览",
+  "editor.plain": "纯文本",
   "editor.find": "在文件中查找",
   "editor.search_find": "查找",
   "editor.search_replace": "替换",

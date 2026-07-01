@@ -197,6 +197,7 @@
   "action.open_terminal": "Открыть в терминале",
   "action.close_actions": "Закрыть действия с файлом",
   "editor.markdown_preview": "Предпросмотр Markdown",
+  "editor.plain": "Обычный текст",
   "editor.find": "Найти в файле",
   "editor.search_find": "Найти",
   "editor.search_replace": "Заменить",

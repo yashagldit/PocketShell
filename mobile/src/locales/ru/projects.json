@@ -138,6 +138,7 @@
   "git.no_matching_changes": "Нет соответствующих изменений",
   "git.commit_message_placeholder": "Сообщение коммита",
   "git.full_file_diff_readonly": "Полная разница файлов – только чтение",
+  "git.truncated": "Обрезано",
   "git.previous_change": "Предыдущее изменение",
   "git.next_change": "Следующее изменение",
   "git.working_tree": "Рабочее дерево",
@@ -216,9 +217,15 @@
   "toolbar.project_actions": "Действия проекта",
   "toolbar.browse_project": "Обзор проекта",
   "tabs.terminal_state": "Терминал {{state}}",
+  "tabs.terminal_title": "Терминал",
   "web.title_port": "Веб: {{port}}",
   "chats.no_matching": "Нет подходящих чатов",
   "chats.show_more": "Показать еще",
   "chats.unlock_history": "Разблокировать {{count}} старых чатов",
-  "chats.search_placeholder": "Поиск чатов"
+  "chats.search_placeholder": "Поиск чатов",
+  "terminal.close_live_title": "Закрыть сеанс терминала?",
+  "terminal.close_live_message": "{{title}} подключен. Отсоедините, чтобы оставить его запущенным, или завершите удаленный сеанс.",
+  "terminal.close_detach": "Отсоединить",
+  "terminal.close_end_session": "Завершить сеанс",
+  "terminal.signaling_badge": "СИГНАЛИНГ"
 }

@@ -138,6 +138,7 @@
   "git.no_matching_changes": "कोई मिलान परिवर्तन नहीं",
   "git.commit_message_placeholder": "कमिट संदेश",
   "git.full_file_diff_readonly": "पूर्ण फ़ाइल अंतर - केवल पढ़ने के लिए",
+  "git.truncated": "छोटा किया गया",
   "git.previous_change": "पिछला परिवर्तन",
   "git.next_change": "अगला बदलाव",
   "git.working_tree": "काम करने वाला पेड़",
@@ -216,9 +217,15 @@
   "toolbar.project_actions": "प्रोजेक्ट कार्रवाइयां",
   "toolbar.browse_project": "प्रोजेक्ट ब्राउज़ करें",
   "tabs.terminal_state": "टर्मिनल {{state}}",
+  "tabs.terminal_title": "टर्मिनल",
   "web.title_port": "वेब :{{port}}",
   "chats.no_matching": "मिलती चैट नहीं",
   "chats.show_more": "और दिखाएं",
   "chats.unlock_history": "{{count}} पुराने चैट अनलॉक करें",
-  "chats.search_placeholder": "चैट खोजें"
+  "chats.search_placeholder": "चैट खोजें",
+  "terminal.close_live_title": "टर्मिनल सत्र बंद करें?",
+  "terminal.close_live_message": "{{title}} कनेक्ट है। इसे चालू रखने के लिए अलग करें, या रिमोट सत्र समाप्त करें।",
+  "terminal.close_detach": "अलग करें",
+  "terminal.close_end_session": "सत्र समाप्त करें",
+  "terminal.signaling_badge": "सिग्नलिंग"
 }

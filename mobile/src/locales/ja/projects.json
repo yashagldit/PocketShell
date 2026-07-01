@@ -138,6 +138,7 @@
   "git.no_matching_changes": "一致する変更はありません",
   "git.commit_message_placeholder": "コミットメッセージ",
   "git.full_file_diff_readonly": "完全なファイルの差分 - 読み取り専用",
+  "git.truncated": "切り詰め済み",
   "git.previous_change": "前回の変更",
   "git.next_change": "次の変更",
   "git.working_tree": "ワーキングツリー",
@@ -216,9 +217,15 @@
   "toolbar.project_actions": "プロジェクト操作",
   "toolbar.browse_project": "プロジェクトを参照",
   "tabs.terminal_state": "端子 {{state}}",
+  "tabs.terminal_title": "ターミナル",
   "web.title_port": "ウェブ:{{port}}",
   "chats.no_matching": "一致するチャットなし",
   "chats.show_more": "さらに表示",
   "chats.unlock_history": "過去のチャット{{count}}件をロック解除",
-  "chats.search_placeholder": "チャットを検索"
+  "chats.search_placeholder": "チャットを検索",
+  "terminal.close_live_title": "ターミナルセッションを閉じますか？",
+  "terminal.close_live_message": "{{title}} は接続中です。実行したままにするにはデタッチし、リモートセッションを終了するには終了してください。",
+  "terminal.close_detach": "デタッチ",
+  "terminal.close_end_session": "セッションを終了",
+  "terminal.signaling_badge": "シグナリング"
 }

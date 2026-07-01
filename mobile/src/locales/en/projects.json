@@ -139,6 +139,7 @@
   "git.no_matching_changes": "No matching changes",
   "git.commit_message_placeholder": "Commit message",
   "git.full_file_diff_readonly": "Full file diff - read-only",
+  "git.truncated": "Truncated",
   "git.previous_change": "Previous change",
   "git.next_change": "Next change",
   "git.working_tree": "Working tree",
@@ -217,8 +218,14 @@
   "toolbar.project_actions": "Project actions",
   "toolbar.browse_project": "Browse project",
   "tabs.terminal_state": "Terminal {{state}}",
+  "tabs.terminal_title": "Terminal",
   "web.title_port": "Web :{{port}}",
   "chats.no_matching": "No matching chats",
   "chats.show_more": "Show more",
-  "chats.unlock_history": "Unlock {{count}} older chats"
+  "chats.unlock_history": "Unlock {{count}} older chats",
+  "terminal.close_live_title": "Close terminal session?",
+  "terminal.close_live_message": "{{title}} is connected. Detach to keep it running, or end the remote session.",
+  "terminal.close_detach": "Detach",
+  "terminal.close_end_session": "End session",
+  "terminal.signaling_badge": "SIGNALING"
 }

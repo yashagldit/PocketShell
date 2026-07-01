@@ -197,6 +197,7 @@
   "action.open_terminal": "टर्मिनल में खोलें",
   "action.close_actions": "फ़ाइल कार्रवाइयां बंद करें",
   "editor.markdown_preview": "Markdown पूर्वावलोकन",
+  "editor.plain": "सादा पाठ",
   "editor.find": "फ़ाइल में खोजें",
   "editor.search_find": "खोजें",
   "editor.search_replace": "बदलें",

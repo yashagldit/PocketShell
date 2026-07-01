@@ -197,6 +197,7 @@
   "action.open_terminal": "Im Terminal oeffnen",
   "action.close_actions": "Dateiaktionen schliessen",
   "editor.markdown_preview": "Markdown-Vorschau",
+  "editor.plain": "Klartext",
   "editor.find": "In Datei suchen",
   "editor.search_find": "Suchen",
   "editor.search_replace": "Ersetzen",

@@ -138,6 +138,7 @@
   "git.no_matching_changes": "没有匹配的更改",
   "git.commit_message_placeholder": "提交消息",
   "git.full_file_diff_readonly": "完整文件差异 - 只读",
+  "git.truncated": "已截断",
   "git.previous_change": "之前的变更",
   "git.next_change": "下一步更改",
   "git.working_tree": "工作树",
@@ -216,9 +217,15 @@
   "toolbar.project_actions": "项目操作",
   "toolbar.browse_project": "浏览项目",
   "tabs.terminal_state": "终端{{state}}",
+  "tabs.terminal_title": "终端",
   "web.title_port": "网址：{{port}}",
   "chats.no_matching": "没有匹配聊天",
   "chats.show_more": "显示更多",
   "chats.unlock_history": "解锁 {{count}} 个较早聊天",
-  "chats.search_placeholder": "搜索聊天"
+  "chats.search_placeholder": "搜索聊天",
+  "terminal.close_live_title": "关闭终端会话？",
+  "terminal.close_live_message": "{{title}} 已连接。分离可保持运行，或结束远程会话。",
+  "terminal.close_detach": "分离",
+  "terminal.close_end_session": "结束会话",
+  "terminal.signaling_badge": "信令"
 }

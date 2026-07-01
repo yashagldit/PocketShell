@@ -197,6 +197,7 @@
   "action.open_terminal": "在終端機中開啟",
   "action.close_actions": "關閉檔案操作",
   "editor.markdown_preview": "Markdown 預覽",
+  "editor.plain": "純文字",
   "editor.find": "在檔案中尋找",
   "editor.search_find": "尋找",
   "editor.search_replace": "取代",

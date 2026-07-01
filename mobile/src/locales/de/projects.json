@@ -138,6 +138,7 @@
   "git.no_matching_changes": "Keine passenden Aenderungen",
   "git.commit_message_placeholder": "Commit-Nachricht",
   "git.full_file_diff_readonly": "Vollstaendiger Datei-Diff - nur lesbar",
+  "git.truncated": "Gekürzt",
   "git.previous_change": "Vorherige Aenderung",
   "git.next_change": "Naechste Aenderung",
   "git.working_tree": "Arbeitsbaum",
@@ -216,9 +217,15 @@
   "toolbar.project_actions": "Projektaktionen",
   "toolbar.browse_project": "Projekt durchsuchen",
   "tabs.terminal_state": "Terminal {{state}}",
+  "tabs.terminal_title": "Terminal",
   "web.title_port": "Web :{{port}}",
   "chats.no_matching": "Keine passenden Chats",
   "chats.show_more": "Mehr anzeigen",
   "chats.unlock_history": "{{count}} ältere Chats freischalten",
-  "chats.search_placeholder": "Chats durchsuchen"
+  "chats.search_placeholder": "Chats durchsuchen",
+  "terminal.close_live_title": "Terminalsitzung schließen?",
+  "terminal.close_live_message": "{{title}} ist verbunden. Trennen Sie die Ansicht, um die Sitzung weiterlaufen zu lassen, oder beenden Sie die Remote-Sitzung.",
+  "terminal.close_detach": "Trennen",
+  "terminal.close_end_session": "Sitzung beenden",
+  "terminal.signaling_badge": "SIGNALISIERUNG"
 }
