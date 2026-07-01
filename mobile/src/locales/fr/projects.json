@@ -219,5 +219,6 @@
   "web.title_port": "Web :{{port}}",
   "chats.no_matching": "Aucune discussion correspondante",
   "chats.show_more": "Afficher plus",
-  "chats.unlock_history": "Déverrouiller {{count}} anciens chats"
+  "chats.unlock_history": "Déverrouiller {{count}} anciens chats",
+  "chats.search_placeholder": "Rechercher des chats"
 }

@@ -196,5 +196,17 @@
   "action.paste": "Colar",
   "action.open_terminal": "Abrir no terminal",
   "action.close_actions": "Fechar acoes do arquivo",
-  "editor.markdown_preview": "Previa de Markdown"
+  "editor.markdown_preview": "Previa de Markdown",
+  "editor.find": "Localizar no arquivo",
+  "editor.search_find": "Localizar",
+  "editor.search_replace": "Substituir",
+  "editor.search_next": "próximo",
+  "editor.search_previous": "anterior",
+  "editor.search_all": "todos",
+  "editor.search_match_case": "diferenciar maiúsculas",
+  "editor.search_regexp": "regex",
+  "editor.search_by_word": "palavra inteira",
+  "editor.search_replace_one": "substituir",
+  "editor.search_replace_all": "substituir tudo",
+  "editor.search_close": "fechar"
 }

@@ -219,5 +219,6 @@
   "web.title_port": "Web :{{port}}",
   "chats.no_matching": "Keine passenden Chats",
   "chats.show_more": "Mehr anzeigen",
-  "chats.unlock_history": "{{count}} ältere Chats freischalten"
+  "chats.unlock_history": "{{count}} ältere Chats freischalten",
+  "chats.search_placeholder": "Chats durchsuchen"
 }

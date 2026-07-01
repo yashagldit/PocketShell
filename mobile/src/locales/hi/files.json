@@ -196,5 +196,17 @@
   "action.paste": "चिपकाएं",
   "action.open_terminal": "टर्मिनल में खोलें",
   "action.close_actions": "फ़ाइल कार्रवाइयां बंद करें",
-  "editor.markdown_preview": "Markdown पूर्वावलोकन"
+  "editor.markdown_preview": "Markdown पूर्वावलोकन",
+  "editor.find": "फ़ाइल में खोजें",
+  "editor.search_find": "खोजें",
+  "editor.search_replace": "बदलें",
+  "editor.search_next": "अगला",
+  "editor.search_previous": "पिछला",
+  "editor.search_all": "सभी",
+  "editor.search_match_case": "केस मिलाएँ",
+  "editor.search_regexp": "रेगेक्स",
+  "editor.search_by_word": "पूर्ण शब्द",
+  "editor.search_replace_one": "बदलें",
+  "editor.search_replace_all": "सभी बदलें",
+  "editor.search_close": "बंद करें"
 }

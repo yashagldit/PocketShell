@@ -196,5 +196,17 @@
   "action.paste": "Einfuegen",
   "action.open_terminal": "Im Terminal oeffnen",
   "action.close_actions": "Dateiaktionen schliessen",
-  "editor.markdown_preview": "Markdown-Vorschau"
+  "editor.markdown_preview": "Markdown-Vorschau",
+  "editor.find": "In Datei suchen",
+  "editor.search_find": "Suchen",
+  "editor.search_replace": "Ersetzen",
+  "editor.search_next": "weiter",
+  "editor.search_previous": "zurück",
+  "editor.search_all": "alle",
+  "editor.search_match_case": "Groß-/Kleinschreibung",
+  "editor.search_regexp": "Regex",
+  "editor.search_by_word": "ganzes Wort",
+  "editor.search_replace_one": "ersetzen",
+  "editor.search_replace_all": "alle ersetzen",
+  "editor.search_close": "schließen"
 }

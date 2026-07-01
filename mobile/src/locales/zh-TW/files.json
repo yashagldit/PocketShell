@@ -196,5 +196,17 @@
   "action.paste": "貼上",
   "action.open_terminal": "在終端機中開啟",
   "action.close_actions": "關閉檔案操作",
-  "editor.markdown_preview": "Markdown 預覽"
+  "editor.markdown_preview": "Markdown 預覽",
+  "editor.find": "在檔案中尋找",
+  "editor.search_find": "尋找",
+  "editor.search_replace": "取代",
+  "editor.search_next": "下一個",
+  "editor.search_previous": "上一個",
+  "editor.search_all": "全部",
+  "editor.search_match_case": "區分大小寫",
+  "editor.search_regexp": "正規表示式",
+  "editor.search_by_word": "全字匹配",
+  "editor.search_replace_one": "取代",
+  "editor.search_replace_all": "全部取代",
+  "editor.search_close": "關閉"
 }

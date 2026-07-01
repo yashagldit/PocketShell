@@ -196,5 +196,17 @@
   "action.paste": "Pegar",
   "action.open_terminal": "Abrir en terminal",
   "action.close_actions": "Cerrar acciones de archivo",
-  "editor.markdown_preview": "Vista previa de Markdown"
+  "editor.markdown_preview": "Vista previa de Markdown",
+  "editor.find": "Buscar en el archivo",
+  "editor.search_find": "Buscar",
+  "editor.search_replace": "Reemplazar",
+  "editor.search_next": "siguiente",
+  "editor.search_previous": "anterior",
+  "editor.search_all": "todos",
+  "editor.search_match_case": "coincidir mayúsculas",
+  "editor.search_regexp": "regex",
+  "editor.search_by_word": "palabra completa",
+  "editor.search_replace_one": "reemplazar",
+  "editor.search_replace_all": "reemplazar todo",
+  "editor.search_close": "cerrar"
 }

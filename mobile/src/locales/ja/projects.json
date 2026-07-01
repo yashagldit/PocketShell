@@ -219,5 +219,6 @@
   "web.title_port": "ウェブ:{{port}}",
   "chats.no_matching": "一致するチャットなし",
   "chats.show_more": "さらに表示",
-  "chats.unlock_history": "過去のチャット{{count}}件をロック解除"
+  "chats.unlock_history": "過去のチャット{{count}}件をロック解除",
+  "chats.search_placeholder": "チャットを検索"
 }

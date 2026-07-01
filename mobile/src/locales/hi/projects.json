@@ -219,5 +219,6 @@
   "web.title_port": "वेब :{{port}}",
   "chats.no_matching": "मिलती चैट नहीं",
   "chats.show_more": "और दिखाएं",
-  "chats.unlock_history": "{{count}} पुराने चैट अनलॉक करें"
+  "chats.unlock_history": "{{count}} पुराने चैट अनलॉक करें",
+  "chats.search_placeholder": "चैट खोजें"
 }

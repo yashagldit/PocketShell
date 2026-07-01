@@ -196,5 +196,17 @@
   "action.paste": "粘贴",
   "action.open_terminal": "在终端中打开",
   "action.close_actions": "关闭文件操作",
-  "editor.markdown_preview": "Markdown 预览"
+  "editor.markdown_preview": "Markdown 预览",
+  "editor.find": "在文件中查找",
+  "editor.search_find": "查找",
+  "editor.search_replace": "替换",
+  "editor.search_next": "下一个",
+  "editor.search_previous": "上一个",
+  "editor.search_all": "全部",
+  "editor.search_match_case": "区分大小写",
+  "editor.search_regexp": "正则表达式",
+  "editor.search_by_word": "全字匹配",
+  "editor.search_replace_one": "替换",
+  "editor.search_replace_all": "全部替换",
+  "editor.search_close": "关闭"
 }

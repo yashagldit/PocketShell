@@ -196,5 +196,17 @@
   "action.paste": "Coller",
   "action.open_terminal": "Ouvrir dans le terminal",
   "action.close_actions": "Fermer les actions de fichier",
-  "editor.markdown_preview": "Apercu Markdown"
+  "editor.markdown_preview": "Apercu Markdown",
+  "editor.find": "Rechercher dans le fichier",
+  "editor.search_find": "Rechercher",
+  "editor.search_replace": "Remplacer",
+  "editor.search_next": "suivant",
+  "editor.search_previous": "précédent",
+  "editor.search_all": "tous",
+  "editor.search_match_case": "respecter la casse",
+  "editor.search_regexp": "regex",
+  "editor.search_by_word": "mot entier",
+  "editor.search_replace_one": "remplacer",
+  "editor.search_replace_all": "tout remplacer",
+  "editor.search_close": "fermer"
 }

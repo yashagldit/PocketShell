@@ -196,5 +196,17 @@
   "errors.files_channel_closed": "Files WebRTC channel is not open",
   "errors.signaling_unavailable": "Signaling connection is unavailable",
   "action.close_actions": "Close file actions",
-  "editor.markdown_preview": "Markdown preview"
+  "editor.markdown_preview": "Markdown preview",
+  "editor.find": "Find in file",
+  "editor.search_find": "Find",
+  "editor.search_replace": "Replace",
+  "editor.search_next": "next",
+  "editor.search_previous": "previous",
+  "editor.search_all": "all",
+  "editor.search_match_case": "match case",
+  "editor.search_regexp": "regexp",
+  "editor.search_by_word": "by word",
+  "editor.search_replace_one": "replace",
+  "editor.search_replace_all": "replace all",
+  "editor.search_close": "close"
 }

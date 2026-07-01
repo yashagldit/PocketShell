@@ -196,5 +196,17 @@
   "action.paste": "붙여넣기",
   "action.open_terminal": "터미널에서 열기",
   "action.close_actions": "파일 작업 닫기",
-  "editor.markdown_preview": "Markdown 미리보기"
+  "editor.markdown_preview": "Markdown 미리보기",
+  "editor.find": "파일에서 찾기",
+  "editor.search_find": "찾기",
+  "editor.search_replace": "바꾸기",
+  "editor.search_next": "다음",
+  "editor.search_previous": "이전",
+  "editor.search_all": "모두",
+  "editor.search_match_case": "대소문자 구분",
+  "editor.search_regexp": "정규식",
+  "editor.search_by_word": "단어 단위",
+  "editor.search_replace_one": "바꾸기",
+  "editor.search_replace_all": "모두 바꾸기",
+  "editor.search_close": "닫기"
 }

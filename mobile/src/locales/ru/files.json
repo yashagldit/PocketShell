@@ -196,5 +196,17 @@
   "action.paste": "Вставить",
   "action.open_terminal": "Открыть в терминале",
   "action.close_actions": "Закрыть действия с файлом",
-  "editor.markdown_preview": "Предпросмотр Markdown"
+  "editor.markdown_preview": "Предпросмотр Markdown",
+  "editor.find": "Найти в файле",
+  "editor.search_find": "Найти",
+  "editor.search_replace": "Заменить",
+  "editor.search_next": "далее",
+  "editor.search_previous": "назад",
+  "editor.search_all": "все",
+  "editor.search_match_case": "учитывать регистр",
+  "editor.search_regexp": "рег. выражение",
+  "editor.search_by_word": "слово целиком",
+  "editor.search_replace_one": "заменить",
+  "editor.search_replace_all": "заменить все",
+  "editor.search_close": "закрыть"
 }

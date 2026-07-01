@@ -219,5 +219,6 @@
   "web.title_port": "网址：{{port}}",
   "chats.no_matching": "没有匹配聊天",
   "chats.show_more": "显示更多",
-  "chats.unlock_history": "解锁 {{count}} 个较早聊天"
+  "chats.unlock_history": "解锁 {{count}} 个较早聊天",
+  "chats.search_placeholder": "搜索聊天"
 }
