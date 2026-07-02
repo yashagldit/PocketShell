@@ -201,11 +201,15 @@ mod tests {
                 source: Source::Claude,
                 file_path: PathBuf::from(&claude),
                 mtime_micros: crate::coding_sessions::system_time_micros(t0),
+                mtime_system: t0,
+                size_bytes: fs::metadata(&claude).unwrap().len(),
             },
             SessionCandidate {
                 source: Source::Codex,
                 file_path: PathBuf::from(&codex),
                 mtime_micros: crate::coding_sessions::system_time_micros(t1),
+                mtime_system: t1,
+                size_bytes: fs::metadata(&codex).unwrap().len(),
             },
         ];
         let out = aggregate_projects(candidates);

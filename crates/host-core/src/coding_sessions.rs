@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
 
 const TITLE_MAX_CHARS: usize = 80;
@@ -20,6 +21,7 @@ const CODEX_SCAN_LINE_CAP: usize = 500;
 const DEFAULT_LIMIT: usize = 50;
 const MAX_LIMIT: usize = 200;
 const DEFAULT_PROJECT_SESSION_LIMIT: usize = 5;
+const SESSION_PARSE_CACHE_MAX_ENTRIES: usize = 20_000;
 
 #[derive(Default)]
 struct CodexTitleStores {
@@ -39,6 +41,8 @@ pub(crate) struct SessionCandidate {
     pub(crate) source: Source,
     pub(crate) file_path: PathBuf,
     pub(crate) mtime_micros: i64,
+    pub(crate) mtime_system: SystemTime,
+    pub(crate) size_bytes: u64,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -61,6 +65,86 @@ pub struct SessionInfo {
     /// running. Mobile uses this to badge rows as "live" so the user can tap
     /// them and reattach instead of spawning a new `--resume` child.
     pub alive: bool,
+}
+
+#[derive(Clone)]
+enum CachedTitle {
+    Fixed(String),
+    Codex {
+        thread_event: Option<String>,
+        first_response_user: Option<String>,
+        first_event_user: Option<String>,
+    },
+}
+
+#[derive(Clone)]
+struct CachedSessionInfo {
+    session_id: String,
+    source: Source,
+    file_path: String,
+    title: CachedTitle,
+    project_path: String,
+    size_bytes: u64,
+    mtime: String,
+}
+
+struct SessionParseCacheEntry {
+    mtime_micros: i64,
+    size_bytes: u64,
+    parsed: Option<CachedSessionInfo>,
+}
+
+static SESSION_PARSE_CACHE: OnceLock<Mutex<HashMap<PathBuf, SessionParseCacheEntry>>> =
+    OnceLock::new();
+static CODEX_TITLE_STORE_CACHE: OnceLock<Mutex<HashMap<PathBuf, CodexTitleStoreCacheEntry>>> =
+    OnceLock::new();
+
+struct CodexTitleStoreCacheEntry {
+    mtime_micros: Option<i64>,
+    size_bytes: u64,
+    titles: HashMap<String, String>,
+}
+
+fn session_parse_cache() -> &'static Mutex<HashMap<PathBuf, SessionParseCacheEntry>> {
+    SESSION_PARSE_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn codex_title_store_cache() -> &'static Mutex<HashMap<PathBuf, CodexTitleStoreCacheEntry>> {
+    CODEX_TITLE_STORE_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(test)]
+static SESSION_PARSE_MISS_COUNT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+static SESSION_PARSE_MISS_PATH_COUNTS: OnceLock<Mutex<HashMap<PathBuf, usize>>> = OnceLock::new();
+
+#[cfg(test)]
+fn reset_session_parse_miss_count() {
+    SESSION_PARSE_MISS_COUNT.store(0, std::sync::atomic::Ordering::SeqCst);
+    SESSION_PARSE_MISS_PATH_COUNTS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+}
+
+#[cfg(test)]
+fn session_parse_miss_count_for(path: &Path) -> usize {
+    SESSION_PARSE_MISS_PATH_COUNTS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(path)
+        .copied()
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+fn reset_coding_session_caches_for_test() {
+    session_parse_cache().lock().unwrap().clear();
+    codex_title_store_cache().lock().unwrap().clear();
+    reset_session_parse_miss_count();
 }
 
 #[derive(Serialize)]
@@ -90,6 +174,27 @@ pub async fn list_sessions(
     project_session_limit: Option<usize>,
 ) -> Result<serde_json::Value> {
     let home = dirs::home_dir().ok_or_else(|| HostError::Backend("home dir not found".into()))?;
+    list_sessions_in_home(
+        home,
+        limit,
+        cursor,
+        alive_ids,
+        project_path,
+        group_by_project,
+        project_session_limit,
+    )
+    .await
+}
+
+async fn list_sessions_in_home(
+    home: PathBuf,
+    limit: Option<usize>,
+    cursor: Option<String>,
+    alive_ids: HashSet<String>,
+    project_path: Option<String>,
+    group_by_project: bool,
+    project_session_limit: Option<usize>,
+) -> Result<serde_json::Value> {
     let limit = limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
     let cursor = cursor
         .as_deref()
@@ -110,6 +215,7 @@ pub async fn list_sessions(
     candidates.extend(codex_res.map_err(task_err)?);
 
     candidates.sort_by(compare_candidates);
+    prune_session_parse_cache(&candidates);
     let total = candidates.len();
 
     if let Some(project_filter) = project_filter {
@@ -156,15 +262,14 @@ pub async fn list_sessions(
 
     let mut sessions = Vec::new();
     for candidate in page_candidates.into_iter().take(limit) {
-        let parsed = match candidate.source {
-            Source::Claude => parse_claude_session(&candidate.file_path),
-            Source::Codex => parse_codex_session(
-                &candidate.file_path,
-                codex_titles.as_ref().expect("codex titles loaded"),
-            ),
-        };
-        if let Some(mut session) = parsed {
-            session.alive = alive_ids.contains(&session.session_id);
+        let parsed = cached_parse_session(&candidate);
+        if let Some(session) = parsed.and_then(|parsed| {
+            session_from_cached(
+                &parsed,
+                codex_titles.as_ref(),
+                alive_ids.contains(&parsed.session_id),
+            )
+        }) {
             sessions.push(session);
         }
     }
@@ -189,14 +294,16 @@ async fn list_grouped_project_sessions(
     let mut total = 0usize;
 
     for candidate in candidates {
-        let parsed = match candidate.source {
-            Source::Claude => parse_claude_session(&candidate.file_path),
-            Source::Codex => parse_codex_session(&candidate.file_path, &codex_titles),
-        };
-        let Some(mut session) = parsed else {
+        let parsed = cached_parse_session(&candidate);
+        let Some(session) = parsed.and_then(|parsed| {
+            session_from_cached(
+                &parsed,
+                Some(&codex_titles),
+                alive_ids.contains(&parsed.session_id),
+            )
+        }) else {
             continue;
         };
-        session.alive = alive_ids.contains(&session.session_id);
 
         total += 1;
         let key = normalize_project_path(&session.project_path);
@@ -276,11 +383,10 @@ async fn list_project_sessions(
     let mut last_returned_candidate = None;
 
     for candidate in candidates.into_iter() {
-        let parsed = match candidate.source {
-            Source::Claude => parse_claude_session(&candidate.file_path),
-            Source::Codex => parse_codex_session(&candidate.file_path, &codex_titles),
-        };
-        let Some(mut session) = parsed else {
+        let parsed = cached_parse_session(&candidate);
+        let Some(mut session) =
+            parsed.and_then(|parsed| session_from_cached(&parsed, Some(&codex_titles), false))
+        else {
             continue;
         };
         if normalize_project_path(&session.project_path) != project_filter {
@@ -410,6 +516,107 @@ fn resolve_existing_encoded_path(base: PathBuf, parts: &[&str]) -> Option<PathBu
     None
 }
 
+fn cached_parse_session(candidate: &SessionCandidate) -> Option<CachedSessionInfo> {
+    if let Some(hit) = {
+        let cache = session_parse_cache().lock().unwrap();
+        cache.get(&candidate.file_path).and_then(|entry| {
+            if entry.mtime_micros == candidate.mtime_micros
+                && entry.size_bytes == candidate.size_bytes
+            {
+                Some(entry.parsed.clone())
+            } else {
+                None
+            }
+        })
+    } {
+        return hit;
+    }
+
+    #[cfg(test)]
+    {
+        SESSION_PARSE_MISS_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        *SESSION_PARSE_MISS_PATH_COUNTS
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(candidate.file_path.clone())
+            .or_insert(0) += 1;
+    }
+
+    let parsed = match candidate.source {
+        Source::Claude => parse_claude_session_cached(candidate),
+        Source::Codex => parse_codex_session_cached(candidate),
+    };
+
+    let mut cache = session_parse_cache().lock().unwrap();
+    cache.insert(
+        candidate.file_path.clone(),
+        SessionParseCacheEntry {
+            mtime_micros: candidate.mtime_micros,
+            size_bytes: candidate.size_bytes,
+            parsed: parsed.clone(),
+        },
+    );
+    parsed
+}
+
+fn prune_session_parse_cache(candidates: &[SessionCandidate]) {
+    let seen: HashSet<&Path> = candidates.iter().map(|c| c.file_path.as_path()).collect();
+    let mut cache = session_parse_cache().lock().unwrap();
+    cache.retain(|path, _| seen.contains(path.as_path()));
+
+    if cache.len() <= SESSION_PARSE_CACHE_MAX_ENTRIES {
+        return;
+    }
+
+    let mut entries: Vec<(PathBuf, i64)> = cache
+        .iter()
+        .map(|(path, entry)| (path.clone(), entry.mtime_micros))
+        .collect();
+    entries.sort_by_key(|(_, mtime)| *mtime);
+    let remove_count = cache.len() - SESSION_PARSE_CACHE_MAX_ENTRIES;
+    for (path, _) in entries.into_iter().take(remove_count) {
+        cache.remove(&path);
+    }
+}
+
+fn session_from_cached(
+    cached: &CachedSessionInfo,
+    codex_titles: Option<&CodexTitleStores>,
+    alive: bool,
+) -> Option<SessionInfo> {
+    let title = match &cached.title {
+        CachedTitle::Fixed(title) => title.clone(),
+        CachedTitle::Codex {
+            thread_event,
+            first_response_user,
+            first_event_user,
+        } => {
+            let titles = codex_titles?;
+            titles
+                .session_index
+                .get(&cached.session_id)
+                .cloned()
+                .or_else(|| thread_event.clone())
+                .or_else(|| titles.global_state.get(&cached.session_id).cloned())
+                .or_else(|| first_response_user.clone())
+                .or_else(|| first_event_user.clone())
+                .unwrap_or_else(|| "Codex Session".to_string())
+        }
+    };
+
+    Some(SessionInfo {
+        session_id: cached.session_id.clone(),
+        source: cached.source,
+        file_path: cached.file_path.clone(),
+        title,
+        project_path: cached.project_path.clone(),
+        size_bytes: cached.size_bytes,
+        mtime: cached.mtime.clone(),
+        alive,
+    })
+}
+
 fn task_err(e: tokio::task::JoinError) -> HostError {
     HostError::Backend(format!("coding_sessions scan panicked: {e}"))
 }
@@ -453,12 +660,9 @@ pub(crate) fn collect_claude_candidates(claude_dir: &Path) -> Vec<SessionCandida
     out
 }
 
-fn parse_claude_session(file_path: &Path) -> Option<SessionInfo> {
+fn parse_claude_session_cached(candidate: &SessionCandidate) -> Option<CachedSessionInfo> {
+    let file_path = &candidate.file_path;
     let file = fs::File::open(file_path).ok()?;
-    let metadata = file.metadata().ok()?;
-    let size_bytes = metadata.len();
-    let mtime_system = metadata.modified().ok()?;
-
     let reader = BufReader::new(file);
 
     let mut session_id = String::new();
@@ -538,16 +742,21 @@ fn parse_claude_session(file_path: &Path) -> Option<SessionInfo> {
         cwd = decode_claude_project_path_from_file(file_path).unwrap_or_default();
     }
 
-    Some(SessionInfo {
+    Some(CachedSessionInfo {
         session_id,
         source: Source::Claude,
         file_path: file_path.to_string_lossy().into_owned(),
-        title,
+        title: CachedTitle::Fixed(title),
         project_path: cwd,
-        size_bytes,
-        mtime: format_mtime(mtime_system),
-        alive: false,
+        size_bytes: candidate.size_bytes,
+        mtime: format_mtime(candidate.mtime_system),
     })
+}
+
+#[cfg(test)]
+fn parse_claude_session(file_path: &Path) -> Option<SessionInfo> {
+    let candidate = make_candidate(Source::Claude, file_path.to_path_buf())?;
+    cached_parse_session(&candidate).and_then(|cached| session_from_cached(&cached, None, false))
 }
 
 pub(crate) fn collect_codex_candidates(codex_dir: &Path) -> Vec<SessionCandidate> {
@@ -645,19 +854,62 @@ fn load_codex_global_state_titles(global_state_path: &Path) -> HashMap<String, S
         .collect()
 }
 
+fn load_cached_title_store(
+    path: &Path,
+    loader: impl FnOnce(&Path) -> HashMap<String, String>,
+) -> HashMap<String, String> {
+    let metadata = fs::metadata(path).ok();
+    let mtime_micros = metadata
+        .as_ref()
+        .and_then(|m| m.modified().ok())
+        .map(system_time_micros);
+    let size_bytes = metadata.as_ref().map(fs::Metadata::len).unwrap_or(0);
+
+    if let Some(hit) = {
+        let cache = codex_title_store_cache().lock().unwrap();
+        cache.get(path).and_then(|entry| {
+            if entry.mtime_micros == mtime_micros && entry.size_bytes == size_bytes {
+                Some(entry.titles.clone())
+            } else {
+                None
+            }
+        })
+    } {
+        return hit;
+    }
+
+    let titles = metadata
+        .as_ref()
+        .filter(|m| m.is_file())
+        .map(|_| loader(path))
+        .unwrap_or_default();
+    let mut cache = codex_title_store_cache().lock().unwrap();
+    cache.insert(
+        path.to_path_buf(),
+        CodexTitleStoreCacheEntry {
+            mtime_micros,
+            size_bytes,
+            titles: titles.clone(),
+        },
+    );
+    titles
+}
+
 fn load_codex_title_stores(codex_dir: &Path) -> CodexTitleStores {
     CodexTitleStores {
-        session_index: load_codex_index(&codex_dir.join("session_index.jsonl")),
-        global_state: load_codex_global_state_titles(&codex_dir.join(".codex-global-state.json")),
+        session_index: load_cached_title_store(&codex_dir.join("session_index.jsonl"), |path| {
+            load_codex_index(path)
+        }),
+        global_state: load_cached_title_store(
+            &codex_dir.join(".codex-global-state.json"),
+            |path| load_codex_global_state_titles(path),
+        ),
     }
 }
 
-fn parse_codex_session(file_path: &Path, titles: &CodexTitleStores) -> Option<SessionInfo> {
+fn parse_codex_session_cached(candidate: &SessionCandidate) -> Option<CachedSessionInfo> {
+    let file_path = &candidate.file_path;
     let file = fs::File::open(file_path).ok()?;
-    let metadata = file.metadata().ok()?;
-    let size_bytes = metadata.len();
-    let mtime_system = metadata.modified().ok()?;
-
     let reader = BufReader::new(file);
     let mut lines = reader.lines();
     let first_line = lines.next()?.ok()?;
@@ -734,26 +986,26 @@ fn parse_codex_session(file_path: &Path, titles: &CodexTitleStores) -> Option<Se
         }
     }
 
-    let title = titles
-        .session_index
-        .get(&session_id)
-        .cloned()
-        .or(thread_event_title)
-        .or_else(|| titles.global_state.get(&session_id).cloned())
-        .or(first_response_user_title)
-        .or(first_event_user_title)
-        .unwrap_or_else(|| "Codex Session".to_string());
-
-    Some(SessionInfo {
+    Some(CachedSessionInfo {
         session_id,
         source: Source::Codex,
         file_path: file_path.to_string_lossy().into_owned(),
-        title,
+        title: CachedTitle::Codex {
+            thread_event: thread_event_title,
+            first_response_user: first_response_user_title,
+            first_event_user: first_event_user_title,
+        },
         project_path: cwd,
-        size_bytes,
-        mtime: format_mtime(mtime_system),
-        alive: false,
+        size_bytes: candidate.size_bytes,
+        mtime: format_mtime(candidate.mtime_system),
     })
+}
+
+#[cfg(test)]
+fn parse_codex_session(file_path: &Path, titles: &CodexTitleStores) -> Option<SessionInfo> {
+    let candidate = make_candidate(Source::Codex, file_path.to_path_buf())?;
+    cached_parse_session(&candidate)
+        .and_then(|cached| session_from_cached(&cached, Some(titles), false))
 }
 
 fn make_candidate(source: Source, file_path: PathBuf) -> Option<SessionCandidate> {
@@ -766,6 +1018,8 @@ fn make_candidate(source: Source, file_path: PathBuf) -> Option<SessionCandidate
         source,
         file_path,
         mtime_micros: system_time_micros(mtime_system),
+        mtime_system,
+        size_bytes: metadata.len(),
     })
 }
 
@@ -921,6 +1175,46 @@ mod tests {
         } else {
             encoded
         }
+    }
+
+    fn session_candidate_for_test(
+        source: Source,
+        file_path: PathBuf,
+        mtime_micros: i64,
+    ) -> SessionCandidate {
+        let metadata = std::fs::metadata(&file_path).unwrap();
+        SessionCandidate {
+            source,
+            file_path,
+            mtime_micros,
+            mtime_system: metadata.modified().unwrap(),
+            size_bytes: metadata.len(),
+        }
+    }
+
+    fn coding_session_cache_test_lock() -> &'static tokio::sync::Mutex<()> {
+        static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+    }
+
+    fn write_home_claude_session(home: &Path, name: &str, title: &str) -> PathBuf {
+        let project_dir = home.join(".claude/projects/-work-project");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        let path = project_dir.join(format!("{name}.jsonl"));
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{"type":"system","sessionId":"{name}","cwd":"/work/project"}}
+{{"type":"user","message":{{"content":"{title}"}}}}
+"#
+            ),
+        )
+        .unwrap();
+        path
+    }
+
+    fn cache_contains(path: &Path) -> bool {
+        session_parse_cache().lock().unwrap().contains_key(path)
     }
 
     #[test]
@@ -1368,21 +1662,9 @@ not json
             })
             .collect();
         let candidates = vec![
-            SessionCandidate {
-                source: Source::Claude,
-                file_path: paths[0].clone(),
-                mtime_micros: 300,
-            },
-            SessionCandidate {
-                source: Source::Claude,
-                file_path: paths[1].clone(),
-                mtime_micros: 200,
-            },
-            SessionCandidate {
-                source: Source::Claude,
-                file_path: paths[2].clone(),
-                mtime_micros: 100,
-            },
+            session_candidate_for_test(Source::Claude, paths[0].clone(), 300),
+            session_candidate_for_test(Source::Claude, paths[1].clone(), 200),
+            session_candidate_for_test(Source::Claude, paths[2].clone(), 100),
         ];
 
         let first = list_project_sessions(
@@ -1444,11 +1726,7 @@ not json
                 ),
             )
             .unwrap();
-            candidates.push(SessionCandidate {
-                source: Source::Claude,
-                file_path: path,
-                mtime_micros: mtime,
-            });
+            candidates.push(session_candidate_for_test(Source::Claude, path, mtime));
         }
         candidates.sort_by(compare_candidates);
 
@@ -1474,6 +1752,126 @@ not json
         assert_eq!(totals[1]["total"], 3);
         assert_eq!(totals[1]["loaded"], 2);
         assert!(totals[1]["next_cursor"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn list_sessions_populates_cache_and_reparses_modified_file() {
+        let _guard = coding_session_cache_test_lock().lock().await;
+        reset_coding_session_caches_for_test();
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_home_claude_session(dir.path(), "sess-cache", "first cache title");
+
+        let first = list_sessions_in_home(
+            dir.path().to_path_buf(),
+            Some(10),
+            None,
+            HashSet::new(),
+            None,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(first["sessions"][0]["title"], "first cache title");
+        assert!(cache_contains(&path));
+        assert_eq!(session_parse_miss_count_for(&path), 1);
+
+        let second = list_sessions_in_home(
+            dir.path().to_path_buf(),
+            Some(10),
+            None,
+            HashSet::new(),
+            None,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(second["sessions"][0]["title"], "first cache title");
+        assert_eq!(session_parse_miss_count_for(&path), 1);
+
+        let before = std::fs::metadata(&path).unwrap();
+        for attempt in 0..10 {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            std::fs::write(
+                &path,
+                format!(
+                    r#"{{"type":"system","sessionId":"sess-cache","cwd":"/work/project"}}
+{{"type":"user","message":{{"content":"second cache title with more bytes {attempt}"}}}}
+"#
+                ),
+            )
+            .unwrap();
+            let after = std::fs::metadata(&path).unwrap();
+            if after.len() != before.len()
+                || system_time_micros(after.modified().unwrap())
+                    != system_time_micros(before.modified().unwrap())
+            {
+                break;
+            }
+        }
+
+        let third = list_sessions_in_home(
+            dir.path().to_path_buf(),
+            Some(10),
+            None,
+            HashSet::new(),
+            None,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(third["sessions"][0]["title"]
+            .as_str()
+            .unwrap()
+            .starts_with("second cache title with more bytes"));
+        assert_eq!(session_parse_miss_count_for(&path), 2);
+    }
+
+    #[tokio::test]
+    async fn list_sessions_evicts_deleted_file_from_cache_after_rescan() {
+        let _guard = coding_session_cache_test_lock().lock().await;
+        reset_coding_session_caches_for_test();
+        let dir = tempfile::tempdir().unwrap();
+        let kept = write_home_claude_session(dir.path(), "sess-kept", "kept cache title");
+        let deleted = write_home_claude_session(dir.path(), "sess-deleted", "deleted cache title");
+
+        let first = list_sessions_in_home(
+            dir.path().to_path_buf(),
+            Some(10),
+            None,
+            HashSet::new(),
+            None,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(first["sessions"].as_array().unwrap().len(), 2);
+        assert!(cache_contains(&kept));
+        assert!(cache_contains(&deleted));
+        assert_eq!(session_parse_miss_count_for(&kept), 1);
+        assert_eq!(session_parse_miss_count_for(&deleted), 1);
+
+        std::fs::remove_file(&deleted).unwrap();
+
+        let second = list_sessions_in_home(
+            dir.path().to_path_buf(),
+            Some(10),
+            None,
+            HashSet::new(),
+            None,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(second["sessions"].as_array().unwrap().len(), 1);
+        assert!(cache_contains(&kept));
+        assert!(!cache_contains(&deleted));
+        assert_eq!(session_parse_miss_count_for(&kept), 1);
+        assert_eq!(session_parse_miss_count_for(&deleted), 1);
     }
 
     #[test]

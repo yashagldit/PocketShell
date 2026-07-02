@@ -1,10 +1,14 @@
 //! Thin wrappers around the `git` CLI for project-scoped VCS queries from mobile.
 
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, ExitStatus, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use crate::error::{HostError, Result};
 use crate::files::resolve_path;
+
+const GIT_REMOTE_TIMEOUT: Duration = Duration::from_secs(60);
 
 fn git_dir(cwd: &str) -> Result<std::path::PathBuf> {
     let resolved = resolve_path(cwd)?;
@@ -72,11 +76,128 @@ fn run_git_ok_stderr(cwd: &str, args: &[&str]) -> Result<String> {
     Ok(stdout)
 }
 
+struct TimedGitOutput {
+    status: ExitStatus,
+    stdout: String,
+    stderr: String,
+    timed_out: bool,
+}
+
+fn run_git_with_timeout(cwd: &str, args: &[&str], timeout: Duration) -> Result<TimedGitOutput> {
+    let dir = git_dir(cwd)?;
+    let mut child = git_command()
+        .args(args)
+        .current_dir(&dir)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| HostError::Backend(format!("git spawn failed: {e}")))?;
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| HostError::Backend("git stdout pipe unavailable".into()))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| HostError::Backend("git stderr pipe unavailable".into()))?;
+
+    let stdout_reader = thread::spawn(move || {
+        let mut buf = Vec::new();
+        let mut stdout = stdout;
+        std::io::Read::read_to_end(&mut stdout, &mut buf).map(|_| buf)
+    });
+    let stderr_reader = thread::spawn(move || {
+        let mut buf = Vec::new();
+        let mut stderr = stderr;
+        std::io::Read::read_to_end(&mut stderr, &mut buf).map(|_| buf)
+    });
+
+    let started = Instant::now();
+    let (status, timed_out) = loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|e| HostError::Backend(format!("git wait failed: {e}")))?
+        {
+            break (status, false);
+        }
+        if started.elapsed() >= timeout {
+            let _ = child.kill();
+            let status = child
+                .wait()
+                .map_err(|e| HostError::Backend(format!("git wait failed: {e}")))?;
+            break (status, true);
+        }
+        thread::sleep(Duration::from_millis(50));
+    };
+
+    let stdout = stdout_reader
+        .join()
+        .map_err(|_| HostError::Backend("git stdout reader panicked".into()))?
+        .map_err(|e| HostError::Backend(format!("git stdout read failed: {e}")))?;
+    let stderr = stderr_reader
+        .join()
+        .map_err(|_| HostError::Backend("git stderr reader panicked".into()))?
+        .map_err(|e| HostError::Backend(format!("git stderr read failed: {e}")))?;
+
+    Ok(TimedGitOutput {
+        status,
+        stdout: String::from_utf8_lossy(&stdout).to_string(),
+        stderr: String::from_utf8_lossy(&stderr).to_string(),
+        timed_out,
+    })
+}
+
+fn combined_output(output: &TimedGitOutput) -> String {
+    match (output.stderr.trim(), output.stdout.trim()) {
+        ("", "") => String::new(),
+        ("", stdout) => stdout.to_string(),
+        (stderr, "") => stderr.to_string(),
+        (stderr, stdout) => format!("{stderr}\n{stdout}"),
+    }
+}
+
+fn timed_git_ok(output: TimedGitOutput) -> Result<String> {
+    let combined = combined_output(&output);
+    if output.timed_out {
+        let seconds = GIT_REMOTE_TIMEOUT.as_secs();
+        let msg = if combined.is_empty() {
+            format!("git timed out after {seconds}s")
+        } else {
+            format!("git timed out after {seconds}s: {combined}")
+        };
+        return Err(HostError::Backend(msg));
+    }
+    if !output.status.success() {
+        let msg = if combined.is_empty() {
+            format!("git exited with {}", output.status)
+        } else {
+            combined
+        };
+        return Err(HostError::Backend(msg));
+    }
+    Ok(combined)
+}
+
 fn null_device_path() -> &'static str {
     if cfg!(windows) {
         "NUL"
     } else {
         "/dev/null"
+    }
+}
+
+fn is_valid_git_hash(hash: &str) -> bool {
+    (4..=64).contains(&hash.len()) && hash.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+fn require_git_hash(hash: &str) -> Result<&str> {
+    let hash = hash.trim();
+    if is_valid_git_hash(hash) {
+        Ok(hash)
+    } else {
+        Err(HostError::Backend("invalid commit hash".into()))
     }
 }
 
@@ -140,6 +261,52 @@ fn parse_status_z(out: &str) -> Vec<GitStatusEntry> {
             path,
             orig_path,
         });
+    }
+    entries
+}
+
+fn name_status_label(status: u8) -> &'static str {
+    match status {
+        b'A' => "new",
+        b'D' => "deleted",
+        b'R' => "renamed",
+        b'C' => "copied",
+        b'M' => "modified",
+        _ => "changed",
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GitNameStatusEntry {
+    path: String,
+    old_path: Option<String>,
+    status: &'static str,
+}
+
+fn parse_name_status_z(out: &str) -> Vec<GitNameStatusEntry> {
+    let mut entries = Vec::new();
+    let mut parts = out.split('\0').filter(|part| !part.is_empty());
+    while let Some(record) = parts.next() {
+        let status = record.as_bytes().first().copied().unwrap_or(b'?');
+        if matches!(status, b'R' | b'C') {
+            let Some(old_path) = parts.next() else {
+                break;
+            };
+            let Some(path) = parts.next() else {
+                break;
+            };
+            entries.push(GitNameStatusEntry {
+                path: path.to_string(),
+                old_path: Some(old_path.to_string()),
+                status: name_status_label(status),
+            });
+        } else if let Some(path) = parts.next() {
+            entries.push(GitNameStatusEntry {
+                path: path.to_string(),
+                old_path: None,
+                status: name_status_label(status),
+            });
+        }
     }
     entries
 }
@@ -251,48 +418,50 @@ pub fn git_status(cwd: &str) -> Result<serde_json::Value> {
 }
 
 /// Unified diff for one file or entire worktree when `file` is None.
-pub fn git_diff(cwd: &str, file: Option<&str>) -> Result<serde_json::Value> {
-    if let Some(f) = file {
-        if f.trim().is_empty() {
-            return Err(HostError::Backend("empty file path".into()));
+pub fn git_diff(cwd: &str, file: Option<&str>, commit: Option<&str>) -> Result<serde_json::Value> {
+    let file = require_file_path(file)?;
+    let commit = commit.map(require_git_hash).transpose()?;
+    let diff = match (commit, file) {
+        (Some(commit), Some(f)) => run_git(cwd, &["show", commit, "--format=", "--", f])?,
+        (Some(commit), None) => run_git(cwd, &["show", commit, "--format="])?,
+        (None, Some(f)) => {
+            let entries = status_entries(cwd, Some(f))?;
+            if entries.iter().any(GitStatusEntry::is_untracked) {
+                run_git_allow_exit(
+                    cwd,
+                    &[
+                        "diff",
+                        "--no-color",
+                        "--no-index",
+                        "--",
+                        null_device_path(),
+                        f,
+                    ],
+                    &[0, 1],
+                )?
+            } else {
+                run_git(cwd, &["diff", "--no-color", "HEAD", "--", f])
+                    .or_else(|_| run_git(cwd, &["diff", "--no-color", "--", f]))?
+            }
         }
-        let entries = status_entries(cwd, Some(f))?;
-        let diff = if entries.iter().any(GitStatusEntry::is_untracked) {
-            run_git_allow_exit(
-                cwd,
-                &[
-                    "diff",
-                    "--no-color",
-                    "--no-index",
-                    "--",
-                    null_device_path(),
-                    f,
-                ],
-                &[0, 1],
-            )?
-        } else {
-            run_git(cwd, &["diff", "--no-color", "HEAD", "--", f])
-                .or_else(|_| run_git(cwd, &["diff", "--no-color", "--", f]))?
-        };
-        return Ok(serde_json::json!({
-            "diff": diff,
-            "file": file,
-        }));
-    }
-
-    let diff = run_git(cwd, &["diff", "--no-color", "HEAD"])
-        .or_else(|_| run_git(cwd, &["diff", "--no-color"]))?;
+        (None, None) => run_git(cwd, &["diff", "--no-color", "HEAD"])
+            .or_else(|_| run_git(cwd, &["diff", "--no-color"]))?,
+    };
     Ok(serde_json::json!({
         "diff": diff,
         "file": file,
+        "commit": commit,
     }))
 }
 
 /// Recent commits on current branch.
-pub fn git_log(cwd: &str, limit: usize) -> Result<serde_json::Value> {
+pub fn git_log(cwd: &str, limit: usize, skip: u32) -> Result<serde_json::Value> {
     let lim = limit.clamp(1, 50);
-    let fmt = "--pretty=format:%H%x1f%s%x1f%ar";
-    let out = run_git(cwd, &["log", "-n", &lim.to_string(), fmt])?;
+    let skip = skip.clamp(0, 10_000);
+    let limit_arg = lim.to_string();
+    let skip_arg = format!("--skip={skip}");
+    let fmt = "--pretty=format:%H%x1f%s%x1f%ar%x1f%an";
+    let out = run_git(cwd, &["log", "-n", &limit_arg, &skip_arg, fmt])?;
     let commits: Vec<serde_json::Value> = out
         .lines()
         .filter(|l| !l.is_empty())
@@ -303,10 +472,46 @@ pub fn git_log(cwd: &str, limit: usize) -> Result<serde_json::Value> {
                 "short_hash": parts.first().map(|h| &h[..h.len().min(7)]).unwrap_or(""),
                 "subject": parts.get(1).copied().unwrap_or(""),
                 "relative": parts.get(2).copied().unwrap_or(""),
+                "author": parts.get(3).copied().unwrap_or(""),
             })
         })
         .collect();
     Ok(serde_json::json!({ "commits": commits }))
+}
+
+pub fn git_pull(cwd: &str) -> Result<serde_json::Value> {
+    let output = run_git_with_timeout(cwd, &["pull"], GIT_REMOTE_TIMEOUT)?;
+    Ok(serde_json::json!({ "output": timed_git_ok(output)?.trim() }))
+}
+
+fn git_push_needs_upstream(output: &str) -> bool {
+    output.contains("has no upstream branch") || output.contains("--set-upstream")
+}
+
+pub fn git_push(cwd: &str) -> Result<serde_json::Value> {
+    let output = run_git_with_timeout(cwd, &["push"], GIT_REMOTE_TIMEOUT)?;
+    if output.status.success() && !output.timed_out {
+        return Ok(serde_json::json!({ "output": combined_output(&output).trim() }));
+    }
+
+    let combined = combined_output(&output);
+    if !output.timed_out && git_push_needs_upstream(&combined) {
+        let branch = run_git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+        let branch = branch.trim();
+        if branch == "HEAD" {
+            return Err(HostError::Backend("cannot push from detached HEAD".into()));
+        }
+        let output = run_git_with_timeout(
+            cwd,
+            &["push", "--set-upstream", "origin", branch],
+            GIT_REMOTE_TIMEOUT,
+        )?;
+        return Ok(serde_json::json!({ "output": timed_git_ok(output)?.trim() }));
+    }
+
+    Err(timed_git_ok(output)
+        .err()
+        .unwrap_or_else(|| HostError::Backend(combined)))
 }
 
 fn require_file_path(file: Option<&str>) -> Result<Option<&str>> {
@@ -410,6 +615,81 @@ pub fn git_commit(cwd: &str, message: &str) -> Result<serde_json::Value> {
         "ok": true,
         "hash": hash.trim(),
         "output": output.trim(),
+    }))
+}
+
+pub fn git_commit_files(cwd: &str, hash: &str) -> Result<serde_json::Value> {
+    let hash = require_git_hash(hash)?;
+    let parent = format!("{hash}^");
+    let out =
+        run_git(cwd, &["diff", "--name-status", "-M", "-z", &parent, hash]).or_else(|_| {
+            run_git(
+                cwd,
+                &[
+                    "diff-tree",
+                    "-r",
+                    "--root",
+                    "--no-commit-id",
+                    "--name-status",
+                    "-M",
+                    "-z",
+                    hash,
+                ],
+            )
+        })?;
+    let files: Vec<serde_json::Value> = parse_name_status_z(&out)
+        .into_iter()
+        .map(|entry| {
+            let mut file = serde_json::json!({
+                "path": entry.path,
+                "status": entry.status,
+            });
+            if let Some(old_path) = entry.old_path {
+                file["old_path"] = serde_json::Value::String(old_path);
+            }
+            file
+        })
+        .collect();
+    Ok(serde_json::json!({ "files": files }))
+}
+
+pub fn git_show_file(cwd: &str, hash: &str, file: &str) -> Result<serde_json::Value> {
+    let hash = require_git_hash(hash)?;
+    if file.trim().is_empty() {
+        return Err(HostError::Backend("empty file path".into()));
+    }
+    if file.contains('\0') {
+        return Err(HostError::Backend("invalid file path".into()));
+    }
+
+    let dir = git_dir(cwd)?;
+    let spec = format!("{hash}:{file}");
+    let output = git_command()
+        .args(["show", &spec])
+        .current_dir(&dir)
+        .output()
+        .map_err(|e| HostError::Backend(format!("git spawn failed: {e}")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let msg = if stderr.trim().is_empty() {
+            format!("git exited with {}", output.status)
+        } else {
+            stderr.trim().to_string()
+        };
+        return Err(HostError::Backend(msg));
+    }
+    if output.stdout.contains(&0) {
+        return Err(HostError::Backend(
+            "binary file output is not supported".into(),
+        ));
+    }
+    if output.stdout.len() > 1_572_864 {
+        return Err(HostError::Backend(
+            "file content exceeds 1.5 MB limit".into(),
+        ));
+    }
+    Ok(serde_json::json!({
+        "content": String::from_utf8_lossy(&output.stdout),
     }))
 }
 
@@ -524,7 +804,7 @@ mod tests {
             .output()
             .unwrap();
 
-        let diff = git_diff(&dir.path().to_string_lossy(), Some("app.txt")).unwrap();
+        let diff = git_diff(&dir.path().to_string_lossy(), Some("app.txt"), None).unwrap();
         let text = diff["diff"].as_str().unwrap();
         assert!(text.contains("-old"));
         assert!(text.contains("+new"));
@@ -539,7 +819,7 @@ mod tests {
 
         fs::write(dir.path().join("new.txt"), "hello\n").unwrap();
 
-        let diff = git_diff(&dir.path().to_string_lossy(), Some("new.txt")).unwrap();
+        let diff = git_diff(&dir.path().to_string_lossy(), Some("new.txt"), None).unwrap();
         let text = diff["diff"].as_str().unwrap();
         assert!(text.contains("+++ b/new.txt") || text.contains("+++ new.txt"));
         assert!(text.contains("+hello"));
@@ -614,6 +894,52 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].path, "new -> name.txt");
         assert_eq!(entries[0].orig_path.as_deref(), Some("old -> name.txt"));
+    }
+
+    #[test]
+    fn parse_name_status_z_handles_rename_records() {
+        let entries =
+            parse_name_status_z("M\0app.txt\0R100\0old.txt\0new.txt\0C75\0a.txt\0b.txt\0");
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].path, "app.txt");
+        assert_eq!(entries[0].old_path, None);
+        assert_eq!(entries[0].status, "modified");
+        assert_eq!(entries[1].path, "new.txt");
+        assert_eq!(entries[1].old_path.as_deref(), Some("old.txt"));
+        assert_eq!(entries[1].status, "renamed");
+        assert_eq!(entries[2].path, "b.txt");
+        assert_eq!(entries[2].old_path.as_deref(), Some("a.txt"));
+        assert_eq!(entries[2].status, "copied");
+    }
+
+    #[test]
+    fn git_hash_validation_accepts_and_rejects_expected_values() {
+        assert!(is_valid_git_hash("abcd"));
+        assert!(is_valid_git_hash(
+            "ABCDEF1234567890abcdef1234567890abcdef12"
+        ));
+        assert!(is_valid_git_hash(
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        ));
+        assert!(!is_valid_git_hash("abc"));
+        assert!(!is_valid_git_hash(
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0"
+        ));
+        assert!(!is_valid_git_hash("abcd/ef"));
+        assert!(!is_valid_git_hash("abcd..ef"));
+        assert!(!is_valid_git_hash("abcd\0ef"));
+        assert!(!is_valid_git_hash("-abcd"));
+    }
+
+    #[test]
+    fn git_push_no_upstream_detection_matches_git_stderr() {
+        assert!(git_push_needs_upstream(
+            "fatal: The current branch feature has no upstream branch."
+        ));
+        assert!(git_push_needs_upstream(
+            "To push the current branch and set the remote as upstream, use\n\n    git push --set-upstream origin feature"
+        ));
+        assert!(!git_push_needs_upstream("fatal: Authentication failed"));
     }
 
     #[test]
