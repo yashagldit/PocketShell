@@ -158,6 +158,7 @@
   "files.rename_failed_title": "Rename failed",
   "files.rename_failed_message": "Could not rename item",
   "files.paste_into_folder": "Paste into a folder",
+  "files.paste_into_project_root": "Paste {{name}} into project root",
   "files.not_supported_title": "Not Supported",
   "files.cross_host_dir_unsupported": "Cross-host directory transfer is not supported yet.",
   "files.transfer_failed_title": "Transfer Failed",

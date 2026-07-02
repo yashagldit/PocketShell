@@ -157,6 +157,7 @@
   "files.rename_failed_title": "Переименование не удалось",
   "files.rename_failed_message": "Не удалось переименовать элемент",
   "files.paste_into_folder": "Вставить в папку",
+  "files.paste_into_project_root": "Вставить {{name}} в корень проекта",
   "files.not_supported_title": "Не поддерживается",
   "files.cross_host_dir_unsupported": "Передача каталогов между хостами пока не поддерживается.",
   "files.transfer_failed_title": "Передача не удалась",

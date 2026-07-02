@@ -157,6 +157,7 @@
   "files.rename_failed_title": "Falha ao renomear",
   "files.rename_failed_message": "Não foi possível renomear o item",
   "files.paste_into_folder": "Cole em uma pasta",
+  "files.paste_into_project_root": "Colar {{name}} na raiz do projeto",
   "files.not_supported_title": "Não compatível",
   "files.cross_host_dir_unsupported": "A transferência de diretório entre hosts ainda não é suportada.",
   "files.transfer_failed_title": "Falha na transferência",

@@ -157,6 +157,7 @@
   "files.rename_failed_title": "Échec du changement de nom",
   "files.rename_failed_message": "Impossible de renommer l'élément",
   "files.paste_into_folder": "Coller dans un dossier",
+  "files.paste_into_project_root": "Coller {{name}} à la racine du projet",
   "files.not_supported_title": "Non pris en charge",
   "files.cross_host_dir_unsupported": "Le transfert de répertoires entre hôtes n’est pas encore pris en charge.",
   "files.transfer_failed_title": "Échec du transfert",

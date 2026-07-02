@@ -157,6 +157,7 @@
   "files.rename_failed_title": "重命名失败",
   "files.rename_failed_message": "无法重命名项目",
   "files.paste_into_folder": "粘贴到文件夹中",
+  "files.paste_into_project_root": "将 {{name}} 粘贴到项目根目录",
   "files.not_supported_title": "不支持",
   "files.cross_host_dir_unsupported": "尚不支持跨主机目录传输。",
   "files.transfer_failed_title": "转账失败",

@@ -157,6 +157,7 @@
   "files.rename_failed_title": "名前の変更に失敗しました",
   "files.rename_failed_message": "アイテムの名前を変更できませんでした",
   "files.paste_into_folder": "フォルダーに貼り付けます",
+  "files.paste_into_project_root": "{{name}} をプロジェクトのルートに貼り付け",
   "files.not_supported_title": "サポートされていません",
   "files.cross_host_dir_unsupported": "クロスホストディレクトリ転送はまだサポートされていません。",
   "files.transfer_failed_title": "転送に失敗しました",

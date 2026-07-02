@@ -157,6 +157,7 @@
   "files.rename_failed_title": "नाम बदलें विफल",
   "files.rename_failed_message": "आइटम का नाम नहीं बदला जा सका",
   "files.paste_into_folder": "किसी फ़ोल्डर में चिपकाएँ",
+  "files.paste_into_project_root": "{{name}} को प्रोजेक्ट रूट में चिपकाएँ",
   "files.not_supported_title": "समर्थित नहीं",
   "files.cross_host_dir_unsupported": "क्रॉस-होस्ट निर्देशिका स्थानांतरण अभी तक समर्थित नहीं है.",
   "files.transfer_failed_title": "स्थानांतरण विफल",

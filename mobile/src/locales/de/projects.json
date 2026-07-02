@@ -157,6 +157,7 @@
   "files.rename_failed_title": "Umbenennen fehlgeschlagen",
   "files.rename_failed_message": "Element konnte nicht umbenannt werden",
   "files.paste_into_folder": "In einen Ordner einfuegen",
+  "files.paste_into_project_root": "{{name}} im Projektstamm einfuegen",
   "files.not_supported_title": "Nicht unterstuetzt",
   "files.cross_host_dir_unsupported": "Host-uebergreifende Ordneruebertragung wird noch nicht unterstuetzt.",
   "files.transfer_failed_title": "Uebertragung fehlgeschlagen",

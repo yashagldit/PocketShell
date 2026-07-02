@@ -157,6 +157,7 @@
   "files.rename_failed_title": "Rinomina non riuscita",
   "files.rename_failed_message": "Impossibile rinominare l'elemento",
   "files.paste_into_folder": "Incolla in una cartella",
+  "files.paste_into_project_root": "Incolla {{name}} nella radice del progetto",
   "files.not_supported_title": "Non supportato",
   "files.cross_host_dir_unsupported": "Il trasferimento di directory tra host non è ancora supportato.",
   "files.transfer_failed_title": "Trasferimento non riuscito",
