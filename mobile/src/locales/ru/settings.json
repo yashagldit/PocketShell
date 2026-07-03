@@ -8,6 +8,13 @@
   "email_field": "Email",
   "version_field": "Версия",
   "build_field": "Сборка",
+  "app_update.check_button": "Проверить обновления",
+  "app_update.checking": "Проверка...",
+  "app_update.ready_title": "Обновление готово",
+  "app_update.ready_body": "Новое обновление загружено из EAS. Перезапустите приложение, чтобы применить его.",
+  "app_update.up_to_date": "PocketShell обновлен",
+  "app_update.unavailable": "Обновления недоступны в этой сборке",
+  "app_update.failed": "Не удалось проверить обновления",
   "export_device_key": "Экспорт ключа устройства",
   "import_device_key": "Импорт ключа устройства",
   "sign_out": "Выйти",
@@ -112,7 +119,7 @@
   "pro_gate.alerts.title": "Больше оповещений",
   "pro_gate.alerts.message": "Бесплатные аккаунты могут иметь до {{count}} активных оповещений. Перейдите на PocketShell Pro для неограниченных оповещений.",
   "pro_gate.chat_history.title": "Полная история чатов",
-  "pro_gate.chat_history.message": "Бесплатные аккаунты имеют доступ к чат-сессиям за последние {{days}} дней. Перейдите на PocketShell Pro, чтобы видеть всю историю.",
+  "pro_gate.chat_history.message": "Бесплатные аккаунты могут открывать последние {{count}} сеансов чата. Перейдите на PocketShell Pro, чтобы просматривать всю историю.",
   "pro_gate.host_limit.title": "Достигнут лимит хостов",
   "pro_gate.host_limit.message": "Аккаунты Pro могут сопрягать до {{proCount}} хостов. Удалите существующий хост, чтобы сопрячь новый, или обратитесь в поддержку, если вам нужно больше.",
   "pro_gate.generic.title": "Достигнут лимит",
@@ -133,5 +140,9 @@
   "feedback.contact_placeholder": "you@example.com",
   "feedback.submit": "Отправить",
   "feedback.submit_success": "Спасибо — ваш отзыв отправлен!",
-  "feedback.submit_failed": "Не удалось отправить отзыв. Пожалуйста, попробуйте снова."
+  "feedback.submit_failed": "Не удалось отправить отзыв. Пожалуйста, попробуйте снова.",
+  "key_restored_repair_required": "Ключ устройства восстановлен. Перед подключением заново свяжите или одобрите это устройство на каждом хосте.",
+  "key_restored_sync_failed": "Ключ устройства восстановлен локально, но доступ к хостам восстановить не удалось. Перед подключением заново свяжите или одобрите это устройство.",
+  "pro_gate.project_spaces.title": "Больше проектных пространств",
+  "pro_gate.project_spaces.message": "Бесплатные аккаунты могут сохранять до {{count}} проектных пространств. Перейдите на PocketShell Pro, чтобы использовать неограниченное количество проектных пространств."
 }

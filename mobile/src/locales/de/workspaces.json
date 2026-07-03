@@ -28,5 +28,5 @@
   "tab_label_web": "Web-Vorschau auf {{host}}",
   "on_host": "auf {{host}}",
   "errors.load_failed": "Workspaces konnten nicht geladen werden",
-  "default_name": "Arbeitsbereich {{index}}"
+  "default_name": "Workspace {{index}}"
 }

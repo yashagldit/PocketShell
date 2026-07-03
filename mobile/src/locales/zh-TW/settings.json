@@ -8,6 +8,13 @@
   "email_field": "電子郵件",
   "version_field": "版本",
   "build_field": "構建版本",
+  "app_update.check_button": "檢查更新",
+  "app_update.checking": "正在檢查...",
+  "app_update.ready_title": "更新已準備好",
+  "app_update.ready_body": "已從 EAS 下載新更新。立即重新啟動以套用。",
+  "app_update.up_to_date": "PocketShell 已是最新版本",
+  "app_update.unavailable": "此建置中無法使用更新",
+  "app_update.failed": "無法檢查更新",
   "export_device_key": "匯出設備金鑰",
   "import_device_key": "匯入設備金鑰",
   "sign_out": "登出",
@@ -112,7 +119,7 @@
   "pro_gate.alerts.title": "更多警示",
   "pro_gate.alerts.message": "免費帳戶最多可有 {{count}} 個有效警示。升級到 PocketShell Pro 享受無限警示。",
   "pro_gate.chat_history.title": "完整聊天歷史",
-  "pro_gate.chat_history.message": "免費帳戶可存取最近 {{days}} 天的聊天工作階段。升級至 PocketShell Pro 即可檢視完整歷史記錄。",
+  "pro_gate.chat_history.message": "免費帳戶可存取最新 {{count}} 個聊天工作階段。升級至 PocketShell Pro 即可查看完整歷史記錄。",
   "pro_gate.host_limit.title": "已達主機上限",
   "pro_gate.host_limit.message": "Pro 帳戶最多可配對 {{proCount}} 個主機。移除現有主機以配對新主機,如需更多請聯絡支援。",
   "pro_gate.generic.title": "已達上限",
@@ -133,5 +140,9 @@
   "feedback.contact_placeholder": "you@example.com",
   "feedback.submit": "傳送",
   "feedback.submit_success": "謝謝 — 您的意見已傳送！",
-  "feedback.submit_failed": "無法傳送意見回饋。請再試一次。"
+  "feedback.submit_failed": "無法傳送意見回饋。請再試一次。",
+  "key_restored_repair_required": "裝置金鑰已復原。連線前請在每台主機上重新配對或核准此裝置。",
+  "key_restored_sync_failed": "裝置金鑰已在本機復原，但無法恢復主機存取權。連線前請重新配對或核准此裝置。",
+  "pro_gate.project_spaces.title": "更多專案空間",
+  "pro_gate.project_spaces.message": "免費帳戶最多可儲存 {{count}} 個專案空間。升級至 PocketShell Pro 即可使用無限專案空間。"
 }

@@ -8,6 +8,13 @@
   "email_field": "E-mail",
   "version_field": "Versão",
   "build_field": "Build",
+  "app_update.check_button": "Verificar atualizações",
+  "app_update.checking": "Verificando...",
+  "app_update.ready_title": "Atualização pronta",
+  "app_update.ready_body": "Uma nova atualização foi baixada do EAS. Reinicie agora para aplicar.",
+  "app_update.up_to_date": "PocketShell está atualizado",
+  "app_update.unavailable": "Atualizações não estão disponíveis nesta build",
+  "app_update.failed": "Não foi possível verificar atualizações",
   "export_device_key": "Exportar chave do dispositivo",
   "import_device_key": "Importar chave do dispositivo",
   "sign_out": "Sair",
@@ -112,7 +119,7 @@
   "pro_gate.alerts.title": "Mais alertas",
   "pro_gate.alerts.message": "Contas gratuitas podem ter até {{count}} alertas ativos. Atualize para o PocketShell Pro para alertas ilimitados.",
   "pro_gate.chat_history.title": "Histórico de chat completo",
-  "pro_gate.chat_history.message": "Contas gratuitas podem acessar sessões de chat dos últimos {{days}} dias. Faça upgrade para o PocketShell Pro para ver todo o histórico.",
+  "pro_gate.chat_history.message": "Contas gratuitas podem acessar as {{count}} sessões de chat mais recentes. Faça upgrade para o PocketShell Pro para ver todo o histórico.",
   "pro_gate.host_limit.title": "Limite de hosts atingido",
   "pro_gate.host_limit.message": "Contas Pro podem parear até {{proCount}} hosts. Remova um host existente para parear um novo, ou contate o suporte se precisar de mais.",
   "pro_gate.generic.title": "Limite atingido",
@@ -133,5 +140,9 @@
   "feedback.contact_placeholder": "voce@exemplo.com",
   "feedback.submit": "Enviar",
   "feedback.submit_success": "Obrigado — seu feedback foi enviado!",
-  "feedback.submit_failed": "Não foi possível enviar o feedback. Tente novamente."
+  "feedback.submit_failed": "Não foi possível enviar o feedback. Tente novamente.",
+  "key_restored_repair_required": "Chave do dispositivo restaurada. Emparelhe novamente ou aprove este dispositivo em cada host antes de conectar.",
+  "key_restored_sync_failed": "A chave do dispositivo foi restaurada localmente, mas o acesso aos hosts nao pode ser restaurado. Emparelhe novamente ou aprove este dispositivo antes de conectar.",
+  "pro_gate.project_spaces.title": "Mais espaços de projeto",
+  "pro_gate.project_spaces.message": "Contas gratuitas podem salvar até {{count}} espaços de projeto. Faça upgrade para o PocketShell Pro para ter espaços de projeto ilimitados."
 }

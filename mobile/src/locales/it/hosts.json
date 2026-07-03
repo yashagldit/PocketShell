@@ -164,6 +164,6 @@
   "errors.refresh_pairing_status_failed": "Impossibile aggiornare lo stato di abbinamento",
   "errors.recovery_failed": "Azione di ripristino non riuscita",
   "security.trusted_device_required": "Accesso al dispositivo attendibile richiesto",
-  "projects": "Projects",
-  "detail.projects": "Projects"
+  "projects": "Progetti",
+  "detail.projects": "Progetti"
 }

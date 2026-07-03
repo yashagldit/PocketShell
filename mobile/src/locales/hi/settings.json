@@ -8,6 +8,13 @@
   "email_field": "ईमेल",
   "version_field": "संस्करण",
   "build_field": "बिल्ड",
+  "app_update.check_button": "अपडेट जांचें",
+  "app_update.checking": "जांच हो रही है...",
+  "app_update.ready_title": "अपडेट तैयार है",
+  "app_update.ready_body": "EAS से नया अपडेट डाउनलोड हो गया है। लागू करने के लिए अभी रीस्टार्ट करें।",
+  "app_update.up_to_date": "PocketShell अप टू डेट है",
+  "app_update.unavailable": "इस बिल्ड में अपडेट उपलब्ध नहीं हैं",
+  "app_update.failed": "अपडेट जांच नहीं सके",
   "export_device_key": "डिवाइस कुंजी निर्यात करें",
   "import_device_key": "डिवाइस कुंजी आयात करें",
   "sign_out": "साइन आउट",
@@ -112,7 +119,7 @@
   "pro_gate.alerts.title": "अधिक अलर्ट",
   "pro_gate.alerts.message": "मुफ्त खातों में {{count}} सक्रिय अलर्ट तक हो सकते हैं। असीमित अलर्ट के लिए PocketShell Pro में अपग्रेड करें।",
   "pro_gate.chat_history.title": "पूर्ण चैट इतिहास",
-  "pro_gate.chat_history.message": "मुफ़्त खाते पिछले {{days}} दिनों के चैट सत्र देख सकते हैं। पूरा इतिहास देखने के लिए PocketShell Pro में अपग्रेड करें।",
+  "pro_gate.chat_history.message": "मुफ़्त खाते नवीनतम {{count}} चैट सत्रों तक पहुँच सकते हैं। पूरा इतिहास देखने के लिए PocketShell Pro में अपग्रेड करें।",
   "pro_gate.host_limit.title": "होस्ट सीमा पहुँच गई",
   "pro_gate.host_limit.message": "Pro खाते {{proCount}} होस्ट तक जोड़ सकते हैं। नया जोड़ने के लिए मौजूदा होस्ट हटाएँ, या अधिक चाहिए तो समर्थन से संपर्क करें।",
   "pro_gate.generic.title": "सीमा पहुँच गई",
@@ -133,5 +140,9 @@
   "feedback.contact_placeholder": "you@example.com",
   "feedback.submit": "भेजें",
   "feedback.submit_success": "धन्यवाद — आपका फ़ीडबैक भेज दिया गया!",
-  "feedback.submit_failed": "फ़ीडबैक नहीं भेज सके। कृपया फिर से प्रयास करें।"
+  "feedback.submit_failed": "फ़ीडबैक नहीं भेज सके। कृपया फिर से प्रयास करें।",
+  "key_restored_repair_required": "डिवाइस कुंजी बहाल हो गई। कनेक्ट करने से पहले हर होस्ट पर इस डिवाइस को फिर से पेयर या अनुमोदित करें।",
+  "key_restored_sync_failed": "डिवाइस कुंजी स्थानीय रूप से बहाल हुई, लेकिन होस्ट एक्सेस बहाल नहीं हो सका। कनेक्ट करने से पहले इस डिवाइस को फिर से पेयर या अनुमोदित करें।",
+  "pro_gate.project_spaces.title": "अधिक प्रोजेक्ट स्पेस",
+  "pro_gate.project_spaces.message": "मुफ़्त खाते {{count}} तक प्रोजेक्ट स्पेस सहेज सकते हैं। असीमित प्रोजेक्ट स्पेस के लिए PocketShell Pro में अपग्रेड करें।"
 }

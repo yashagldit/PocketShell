@@ -164,6 +164,6 @@
   "errors.refresh_pairing_status_failed": "刷新配对状态失败",
   "errors.recovery_failed": "恢复操作失败",
   "security.trusted_device_required": "需要可信设备访问",
-  "projects": "Projects",
-  "detail.projects": "Projects"
+  "projects": "项目",
+  "detail.projects": "项目"
 }

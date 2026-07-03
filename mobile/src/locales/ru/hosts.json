@@ -164,6 +164,6 @@
   "errors.refresh_pairing_status_failed": "Не удалось обновить статус сопряжения",
   "errors.recovery_failed": "Действие восстановления не удалось",
   "security.trusted_device_required": "Требуется доступ с доверенного устройства",
-  "projects": "Projects",
-  "detail.projects": "Projects"
+  "projects": "Проекты",
+  "detail.projects": "Проекты"
 }

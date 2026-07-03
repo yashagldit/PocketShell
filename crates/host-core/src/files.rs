@@ -580,11 +580,38 @@ pub async fn handle_files_action_with_context(
             "git_status" => crate::git::git_status(&path_str),
             "git_diff" => {
                 let file = payload.get("file").and_then(|v| v.as_str());
-                crate::git::git_diff(&path_str, file)
+                let commit = payload.get("commit").and_then(|v| v.as_str());
+                crate::git::git_diff(&path_str, file, commit)
             }
             "git_log" => {
                 let limit = payload.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
-                crate::git::git_log(&path_str, limit)
+                let skip = payload.get("skip").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                crate::git::git_log(&path_str, limit, skip)
+            }
+            "git_pull" => audit_mutation(
+                &ctx,
+                "file.git_pull",
+                &path_str,
+                None,
+                None,
+                crate::git::git_pull(&path_str),
+            ),
+            "git_push" => audit_mutation(
+                &ctx,
+                "file.git_push",
+                &path_str,
+                None,
+                None,
+                crate::git::git_push(&path_str),
+            ),
+            "git_commit_files" => {
+                let hash = payload.get("hash").and_then(|v| v.as_str()).unwrap_or("");
+                crate::git::git_commit_files(&path_str, hash)
+            }
+            "git_show_file" => {
+                let hash = payload.get("hash").and_then(|v| v.as_str()).unwrap_or("");
+                let file = payload.get("file").and_then(|v| v.as_str()).unwrap_or("");
+                crate::git::git_show_file(&path_str, hash, file)
             }
             "git_stage" => {
                 let file = payload.get("file").and_then(|v| v.as_str());

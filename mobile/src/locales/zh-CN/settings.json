@@ -8,6 +8,13 @@
   "email_field": "邮箱",
   "version_field": "版本",
   "build_field": "构建版本",
+  "app_update.check_button": "检查更新",
+  "app_update.checking": "正在检查...",
+  "app_update.ready_title": "更新已准备好",
+  "app_update.ready_body": "已从 EAS 下载新更新。立即重启以应用。",
+  "app_update.up_to_date": "PocketShell 已是最新版本",
+  "app_update.unavailable": "此构建中更新不可用",
+  "app_update.failed": "无法检查更新",
   "export_device_key": "导出设备密钥",
   "import_device_key": "导入设备密钥",
   "sign_out": "退出登录",
@@ -112,7 +119,7 @@
   "pro_gate.alerts.title": "更多警报",
   "pro_gate.alerts.message": "免费账户最多可有 {{count}} 个活动警报。升级到 PocketShell Pro 享受无限警报。",
   "pro_gate.chat_history.title": "完整聊天历史",
-  "pro_gate.chat_history.message": "免费账户可访问最近 {{days}} 天的聊天会话。升级到 PocketShell Pro 即可查看全部历史记录。",
+  "pro_gate.chat_history.message": "免费账户可访问最新 {{count}} 个聊天会话。升级到 PocketShell Pro 即可查看完整历史记录。",
   "pro_gate.host_limit.title": "已达到主机限制",
   "pro_gate.host_limit.message": "Pro 账户最多可配对 {{proCount}} 个主机。移除现有主机以配对新主机,如需更多请联系支持。",
   "pro_gate.generic.title": "已达到限制",
@@ -133,5 +140,9 @@
   "feedback.contact_placeholder": "you@example.com",
   "feedback.submit": "发送",
   "feedback.submit_success": "感谢您 — 反馈已发送！",
-  "feedback.submit_failed": "无法发送反馈。请重试。"
+  "feedback.submit_failed": "无法发送反馈。请重试。",
+  "key_restored_repair_required": "设备密钥已恢复。连接前请在每台主机上重新配对或批准此设备。",
+  "key_restored_sync_failed": "设备密钥已在本地恢复，但无法恢复主机访问权限。连接前请重新配对或批准此设备。",
+  "pro_gate.project_spaces.title": "更多项目空间",
+  "pro_gate.project_spaces.message": "免费账户最多可保存 {{count}} 个项目空间。升级到 PocketShell Pro 即可使用无限项目空间。"
 }

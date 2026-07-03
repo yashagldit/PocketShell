@@ -8,6 +8,13 @@
   "email_field": "E-Mail",
   "version_field": "Version",
   "build_field": "Build",
+  "app_update.check_button": "Nach Updates suchen",
+  "app_update.checking": "Wird geprüft...",
+  "app_update.ready_title": "Update bereit",
+  "app_update.ready_body": "Ein neues Update wurde von EAS heruntergeladen. Starte neu, um es anzuwenden.",
+  "app_update.up_to_date": "PocketShell ist aktuell",
+  "app_update.unavailable": "Updates sind in diesem Build nicht verfügbar",
+  "app_update.failed": "Updates konnten nicht geprüft werden",
   "export_device_key": "Geräteschlüssel exportieren",
   "import_device_key": "Geräteschlüssel importieren",
   "sign_out": "Abmelden",
@@ -112,7 +119,7 @@
   "pro_gate.alerts.title": "Mehr Benachrichtigungen",
   "pro_gate.alerts.message": "Kostenlose Konten können bis zu {{count}} aktive Benachrichtigungen haben. Upgrade auf PocketShell Pro für unbegrenzte Benachrichtigungen.",
   "pro_gate.chat_history.title": "Vollständiger Chatverlauf",
-  "pro_gate.chat_history.message": "Kostenlose Konten können auf Chat-Sitzungen der letzten {{days}} Tage zugreifen. Upgrade auf PocketShell Pro, um den gesamten Verlauf zu sehen.",
+  "pro_gate.chat_history.message": "Kostenlose Konten können auf die neuesten {{count}} Chat-Sitzungen zugreifen. Upgrade auf PocketShell Pro, um deinen vollständigen Verlauf anzuzeigen.",
   "pro_gate.host_limit.title": "Host-Limit erreicht",
   "pro_gate.host_limit.message": "Pro-Konten können bis zu {{proCount}} Hosts koppeln. Entferne einen vorhandenen Host, um einen neuen zu koppeln, oder kontaktiere den Support, wenn du mehr benötigst.",
   "pro_gate.generic.title": "Limit erreicht",
@@ -133,5 +140,9 @@
   "feedback.contact_placeholder": "du@beispiel.com",
   "feedback.submit": "Senden",
   "feedback.submit_success": "Danke — dein Feedback ist unterwegs!",
-  "feedback.submit_failed": "Feedback konnte nicht gesendet werden. Bitte erneut versuchen."
+  "feedback.submit_failed": "Feedback konnte nicht gesendet werden. Bitte erneut versuchen.",
+  "key_restored_repair_required": "Geraeteschluessel wiederhergestellt. Kopple dieses Geraet erneut oder genehmige es auf jedem Host, bevor du dich verbindest.",
+  "key_restored_sync_failed": "Geraeteschluessel lokal wiederhergestellt, aber der Host-Zugriff konnte nicht wiederhergestellt werden. Kopple das Geraet erneut oder genehmige es vor dem Verbinden.",
+  "pro_gate.project_spaces.title": "Mehr Projektbereiche",
+  "pro_gate.project_spaces.message": "Kostenlose Konten können bis zu {{count}} Projektbereiche speichern. Upgrade auf PocketShell Pro für unbegrenzte Projektbereiche."
 }

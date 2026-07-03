@@ -8,6 +8,13 @@
   "email_field": "メール",
   "version_field": "バージョン",
   "build_field": "ビルド",
+  "app_update.check_button": "アップデートを確認",
+  "app_update.checking": "確認中...",
+  "app_update.ready_title": "アップデートの準備完了",
+  "app_update.ready_body": "EAS から新しいアップデートをダウンロードしました。今すぐ再起動して適用します。",
+  "app_update.up_to_date": "PocketShell は最新です",
+  "app_update.unavailable": "このビルドではアップデートを利用できません",
+  "app_update.failed": "アップデートを確認できませんでした",
   "export_device_key": "デバイス鍵をエクスポート",
   "import_device_key": "デバイス鍵をインポート",
   "sign_out": "サインアウト",
@@ -112,7 +119,7 @@
   "pro_gate.alerts.title": "より多くのアラート",
   "pro_gate.alerts.message": "無料アカウントは最大{{count}}件のアクティブなアラートを持てます。無制限のアラートにはPocketShell Proにアップグレードしてください。",
   "pro_gate.chat_history.title": "完全なチャット履歴",
-  "pro_gate.chat_history.message": "無料アカウントでは過去{{days}}日間のチャットセッションにアクセスできます。すべての履歴を見るには PocketShell Pro にアップグレードしてください。",
+  "pro_gate.chat_history.message": "無料アカウントでは最新{{count}}件のチャットセッションにアクセスできます。すべての履歴を表示するには PocketShell Pro にアップグレードしてください。",
   "pro_gate.host_limit.title": "ホスト上限に達しました",
   "pro_gate.host_limit.message": "Proアカウントは最大{{proCount}}台のホストをペアリングできます。新しいホストをペアリングするには既存のホストを削除するか、それ以上必要な場合はサポートにお問い合わせください。",
   "pro_gate.generic.title": "上限に達しました",
@@ -133,5 +140,9 @@
   "feedback.contact_placeholder": "you@example.com",
   "feedback.submit": "送信",
   "feedback.submit_success": "ありがとうございます — フィードバックを送信しました！",
-  "feedback.submit_failed": "フィードバックを送信できませんでした。もう一度お試しください。"
+  "feedback.submit_failed": "フィードバックを送信できませんでした。もう一度お試しください。",
+  "key_restored_repair_required": "デバイスキーを復元しました。接続する前に、各ホストでこのデバイスを再ペアリングするか承認してください。",
+  "key_restored_sync_failed": "デバイスキーはローカルで復元されましたが、ホストアクセスを復元できませんでした。接続する前に、このデバイスを再ペアリングするか承認してください。",
+  "pro_gate.project_spaces.title": "プロジェクトスペースを追加",
+  "pro_gate.project_spaces.message": "無料アカウントでは最大{{count}}件のプロジェクトスペースを保存できます。無制限のプロジェクトスペースを利用するには PocketShell Pro にアップグレードしてください。"
 }
