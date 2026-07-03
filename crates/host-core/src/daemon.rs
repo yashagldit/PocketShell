@@ -450,6 +450,7 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
 
     info!("daemon starting for host_id={}", host_id);
     let _ = write_audit_event_with_store(AuditEvent::new("daemon_started"), &store);
+    let daemon_start_id = uuid::Uuid::new_v4().to_string();
 
     let mut backoff_secs = 1_u64;
 
@@ -517,6 +518,25 @@ pub async fn run_foreground(config: AppConfig) -> Result<()> {
                 continue;
             }
         };
+
+        let daemon_started_msg = SignalEnvelope {
+            message_type: "daemon_started".to_string(),
+            session_id: None,
+            payload: Some(serde_json::json!({
+                "daemon_start_id": daemon_start_id,
+                "app_version": config.app_version.clone(),
+            })),
+            state: None,
+            accepted: None,
+            reason: None,
+            extra: std::collections::HashMap::new(),
+        };
+        if let Err(err) = send_signal(&mut ws, &daemon_started_msg).await {
+            warn!("daemon_started send failed: {}", err);
+            sleep(jittered(Duration::from_secs(backoff_secs))).await;
+            backoff_secs = (backoff_secs * 2).min(30);
+            continue;
+        }
 
         let mut heartbeat_tick = interval(Duration::from_secs(config.heartbeat_interval_secs));
         let mut ws_ping_tick = interval(Duration::from_secs(30));
