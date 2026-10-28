@@ -1,22 +1,36 @@
 name: Release host agent
 
-# Builds the `pocketshell` binary for macOS (Apple Silicon + Intel) and Linux
-# x86_64, attaches them to a GitHub Release.
+# The host agent's release, second half. The build happens in the private
+# source repository (yashagldit/PocketShellApp, release-build.yml), which
+# publishes it there as an unsigned release, commits this file, the npm
+# wrappers and the README here, and pushes the version tag. This workflow then:
 #
-# Trigger: push of a tag matching v* (e.g. `v0.1.0`).
-#   git tag v0.1.0 && git push origin v0.1.0
+#   1. downloads that build and checks every file against its .sha256,
+#   2. signs every file with cosign (keyless) and publishes the release here,
+#   3. publishes the same files, bundles included, in yashagldit/Thumbdesk,
+#   4. points the Homebrew cask at the new disk image (not for a prerelease),
+#   5. publishes the npm packages (not for a prerelease).
 #
-# Required repository secrets (Settings → Secrets and variables → Actions):
-#   POCKETSHELL_DEFAULT_BACKEND_URL  e.g. https://api.pocketshell.app
-#   POCKETSHELL_DEFAULT_WS_URL       e.g. wss://api.pocketshell.app/ws/host
-# These are baked into the binary at compile time via option_env! in
-# crates/host-core/src/config.rs. Without them the binary will start with
-# empty defaults and refuse to connect.
+# It signs here because every released agent checks a release's cosign
+# certificate against this file in this repository
+# (`^https://github.com/yashagldit/PocketShell/.github/workflows/release-host-agent.yml@refs/tags/v…`).
+# Keep its path and name. Agents from 1.4.0 also accept the same file in
+# yashagldit/Thumbdesk, should signing move there one day.
 #
-# The Apple Team ID is pinned in crates/host-core/src/update.rs (it's not
-# secret — it's visible via `codesign -dv` on any shipped binary), and the
-# in-binary `pocketshell update` rejects a downloaded macOS binary that
-# doesn't match Apple anchor + Developer ID Application leaf + that Team ID.
+# The source of this file lives in the private repository, under
+# release-public/; an edit made here is overwritten by the next release.
+#
+# Assets keep their `pocketshell-<tag>-<triple>` names: agents from before the
+# rename update themselves by them.
+#
+# Required repository secrets:
+#   PRIVATE_RELEASE_TOKEN  fine-grained token, Contents read-only on
+#                          yashagldit/PocketShellApp: downloads the build.
+#   THUMBDESK_REPO_TOKEN   fine-grained token, Contents read and write on
+#                          yashagldit/Thumbdesk: publishes the copy there.
+#   TAP_DEPLOY_KEY         private half of a write deploy key on
+#                          yashagldit/homebrew-thumbdesk: commits the cask.
+# npm publishes with Trusted Publishing (OIDC), no token: see publish-npm.yml.
 
 on:
   push:
@@ -24,13 +38,13 @@ on:
       - 'v*'
   # Manual re-run path for the npm publish step alone, in case it failed
   # on the original tag push (npm registry outage, trusted-publisher
-  # misconfig, etc.). When triggered this way, the build + release jobs
-  # short-circuit (release already exists) and only publish-npm runs
-  # meaningfully against the existing GitHub Release artifacts.
+  # misconfig, etc.). When triggered this way, the sign-and-publish and
+  # mirror jobs are skipped and only publish-npm runs, against the existing
+  # GitHub Release.
   workflow_dispatch:
     inputs:
       tag:
-        description: Tag to (re)publish to npm (e.g. v0.1.0). Must already be a published GitHub Release.
+        description: Tag to (re)publish to npm (e.g. v1.4.0). Must already be a published GitHub Release.
         required: true
         type: string
 
@@ -43,298 +57,235 @@ permissions:
   contents: read
   # Required for cosign keyless signing — exchanges the workflow's OIDC token
   # for an ephemeral Fulcio cert tied to this repo + workflow identity. The
-  # in-binary updater in crates/host-core/src/update.rs pins that identity at
-  # verify time, so a compromise of the GitHub Releases publishing flow alone
-  # is not sufficient to push a malicious binary; an attacker would also need
-  # an OIDC token from this specific workflow path.
+  # in-binary updater pins that identity at verify time, so a compromise of
+  # the GitHub Releases publishing flow alone is not sufficient to push a
+  # malicious binary; an attacker would also need an OIDC token from this
+  # specific workflow path.
   id-token: write
 
+env:
+  TAG: ${{ github.ref_name }}
+  PRIVATE_REPO: yashagldit/PocketShellApp
+  MIRROR_REPO: yashagldit/Thumbdesk
+
 jobs:
-  build:
-    # Skip the heavy build matrix on workflow_dispatch — that path exists
-    # solely to re-run the npm publish step against an existing release.
+  sign-and-publish:
+    name: Sign and publish
     if: github.event_name == 'push'
-    name: build / ${{ matrix.target }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: aarch64-apple-darwin
-            os: macos-26
-            strip: strip
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-            strip: strip
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-24.04-arm
-            strip: strip
-          - target: x86_64-unknown-linux-musl
-            os: ubuntu-latest
-            strip: strip
-            cross_apt: musl-tools
-          # Windows x86_64 (MSVC). No strip (MSVC keeps debug info in a
-          # separate .pdb, which we don't ship — nothing to strip from the
-          # .exe) and no codesign (shipped unsigned for v1; self-update
-          # authenticity is still enforced via cosign + SHA-256). Distributed
-          # via npm only (@pocketshell/win32-x64-msvc); the GitHub Release
-          # tarball exists so publish-npm.yml can repackage it.
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            strip: ''
-    runs-on: ${{ matrix.os }}
-    env:
-      # Production backend URLs are injected at compile time via option_env!
-      # in crates/host-core/src/config.rs. Empty values would produce a
-      # broken binary, so we fail loudly if the secrets aren't set.
-      POCKETSHELL_DEFAULT_BACKEND_URL: ${{ secrets.POCKETSHELL_DEFAULT_BACKEND_URL }}
-      POCKETSHELL_DEFAULT_WS_URL: ${{ secrets.POCKETSHELL_DEFAULT_WS_URL }}
-      CARGO_TARGET_DIR: target
-      # Re-bind matrix values into env so shell scripts never interpolate
-      # workflow expressions directly (defense-in-depth against actions
-      # injection, even though these values are workflow-controlled).
-      TARGET: ${{ matrix.target }}
-      STRIP_BIN: ${{ matrix.strip }}
-      CROSS_APT: ${{ matrix.cross_apt }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Verify backend URL secrets are set
-        shell: bash
-        run: |
-          if [ -z "$POCKETSHELL_DEFAULT_BACKEND_URL" ] || [ -z "$POCKETSHELL_DEFAULT_WS_URL" ]; then
-            echo "::error::POCKETSHELL_DEFAULT_BACKEND_URL and POCKETSHELL_DEFAULT_WS_URL must be set as repository secrets."
-            exit 1
-          fi
-
-      - name: Set workspace version from tag
-        shell: bash
+      - name: Download the build from the private repository
         env:
-          REF_NAME: ${{ github.ref_name }}
+          GH_TOKEN: ${{ secrets.PRIVATE_RELEASE_TOKEN }}
         run: |
-          # Strip leading "v" (workspace.package.version is bare semver).
-          VERSION="${REF_NAME#v}"
-          # Defensive: reject anything that isn't pure semver-ish to keep the
-          # value safe to interpolate into sed.
-          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$'; then
-            echo "::error::tag $REF_NAME does not look like a version (got '$VERSION')"
-            exit 1
-          fi
-          # Portable sed -i (works on GNU + BSD). Cargo.toml has exactly one
-          # ^version = "..." line under [workspace.package]; dependency lines
-          # are `name = { version = "..." }` and not matched by the ^ anchor.
-          sed -i.bak -E "s/^version = \"[^\"]+\"/version = \"${VERSION}\"/" Cargo.toml
-          rm -f Cargo.toml.bak
-          echo "--- bumped workspace version ---"
-          grep -nE '^version = ' Cargo.toml
+          set -euo pipefail
+          mkdir dist
+          gh release download "$TAG" --repo "$PRIVATE_REPO" --dir dist
+          ls -la dist
 
-      - name: Install cross-compile toolchain
-        if: matrix.cross_apt != ''
-        shell: bash
+      # The checksums came with the build; this proves the download is the
+      # build, before anything is signed.
+      - name: Check every file against its checksum
         run: |
-          sudo apt-get update
-          sudo apt-get install -y $CROSS_APT
+          set -euo pipefail
+          cd dist
+          count=0
+          for f in *; do
+            case "$f" in
+              *.sha256) continue ;;
+            esac
+            [ -f "$f.sha256" ] || { echo "::error::$f has no $f.sha256"; exit 1; }
+            shasum -a 256 -c "$f.sha256"
+            count=$((count + 1))
+          done
+          [ "$count" -gt 0 ] || { echo "::error::the private release has no files"; exit 1; }
+          echo "$count file(s) checked"
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: release-${{ matrix.target }}
-
-      - name: Build release binary
-        shell: bash
-        run: cargo build --release --target "$TARGET" -p host-agent
-
-      - name: Strip binary
-        if: matrix.strip != ''
-        shell: bash
-        run: $STRIP_BIN "target/$TARGET/release/pocketshell"
-
-      # Sign the macOS binary with a Developer ID Application cert so the
-      # keychain ACL (host agent stores ED25519 priv key + refresh token via
-      # the `keyring` crate) remains stable across versions — without a stable
-      # signing identity, every new build's hash invalidates the ACL and the
-      # user gets "pocketshell wants to access your keychain" on every update.
-      - name: Import code signing certificate (macOS only)
-        if: runner.os == 'macOS'
-        uses: Apple-Actions/import-codesign-certs@v3
-        with:
-          p12-file-base64: ${{ secrets.APPLE_DEVELOPER_ID_CERT_P12 }}
-          p12-password: ${{ secrets.APPLE_DEVELOPER_ID_CERT_PASSWORD }}
-
-      - name: Codesign binary (macOS only)
-        if: runner.os == 'macOS'
-        env:
-          IDENTITY: ${{ secrets.APPLE_DEVELOPER_ID_NAME }}
-        run: |
-          bin="target/$TARGET/release/pocketshell"
-          codesign --force --timestamp --options runtime \
-            --sign "$IDENTITY" "$bin"
-          codesign --verify --strict --verbose=2 "$bin"
-
-      - name: Verify --version matches tag
-        shell: bash
-        env:
-          REF_NAME: ${{ github.ref_name }}
-        run: |
-          # Every runner is native-arch for its target (macos-26 arm64,
-          # ubuntu-latest x64, ubuntu-24.04-arm arm64, musl runs on glibc),
-          # so the produced binary is executable here.
-          bin="target/$TARGET/release/pocketshell"
-          [ "$RUNNER_OS" = "Windows" ] && bin="$bin.exe"
-          EXPECTED="pocketshell ${REF_NAME#v}"
-          ACTUAL="$("$bin" --version)"
-          echo "expected: $EXPECTED"
-          echo "actual:   $ACTUAL"
-          if [ "$ACTUAL" != "$EXPECTED" ]; then
-            echo "::error::binary --version output ($ACTUAL) doesn't match tag ($EXPECTED). The 'Set workspace version from tag' step failed or didn't propagate to the build."
-            exit 1
-          fi
-
-      - name: Verify backend URL was baked in
-        shell: bash
-        run: |
-          bin="target/$TARGET/release/pocketshell"
-          [ "$RUNNER_OS" = "Windows" ] && bin="$bin.exe"
-          echo "looking for: $POCKETSHELL_DEFAULT_BACKEND_URL"
-          echo "binary size: $(wc -c < "$bin") bytes"
-          if LC_ALL=C grep -aoF "$POCKETSHELL_DEFAULT_BACKEND_URL" "$bin" | head -1; then
-            echo "✓ backend URL baked into $bin"
-          else
-            echo "::error::Backend URL not found in compiled binary. option_env! injection failed."
-            echo "--- first 5 http/wss strings in binary (for debug) ---"
-            LC_ALL=C grep -aoE '(https?|wss?)://[A-Za-z0-9._/:-]+' "$bin" | sort -u | head -5 || true
-            exit 1
-          fi
-
-      - name: Package
-        shell: bash
-        run: |
-          cd "target/$TARGET/release"
-          binname=pocketshell
-          [ "$RUNNER_OS" = "Windows" ] && binname=pocketshell.exe
-          archive="pocketshell-${GITHUB_REF_NAME}-${TARGET}.tar.gz"
-          tar -czf "$archive" "$binname"
-          # Git-bash on Windows runners ships `sha256sum` (coreutils) but not the
-          # Perl `shasum` that macOS/Linux runners have. Both emit the same
-          # "<hex>  <file>" format that update.rs / install.sh / publish-npm verify.
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            sha256sum "$archive" > "$archive.sha256"
-          else
-            shasum -a 256 "$archive" > "$archive.sha256"
-          fi
-          ls -la "$archive" "$archive.sha256"
-
-      # Sigstore cosign keyless signing. Pinned to v2.6.3 (latest v2.x stable
-      # as of April 2026). cosign v3.x dropped the legacy detached `.sig` files
-      # in favor of self-signed bundles, but cosign-installer v3.8.1 hasn't
-      # caught up to that format change yet — so install fails on v3.x with a
-      # 404 on the missing .sig URL. v2.6.3 supports --new-bundle-format
-      # (added in v2.5) so we still get the modern protobuf bundle format.
-      # Re-evaluate the v3 pin once a newer cosign-installer ships that
-      # handles v3 signature verification.
-      #
-      # The installer action is itself pinned to a commit SHA so a compromise
-      # of the action's release tags can't silently swap in a malicious cosign.
+      # Pinned to v2.6.3: cosign-installer v3.8.1 cannot install cosign v3.x
+      # (it looks for the detached .sig v3 dropped). v2.6.3 has
+      # --new-bundle-format. The installer is pinned to a commit SHA so a
+      # compromised release tag of the action can't swap in another cosign.
       - name: Install cosign
         uses: sigstore/cosign-installer@d7d6bc7722e3daa8354c50bcb52f4837da5e9b6a # v3.8.1
         with:
           cosign-release: 'v2.6.3'
 
-      # `cosign sign-blob --new-bundle-format` produces a single self-contained
-      # bundle (signature + ephemeral Fulcio cert + Rekor SET) that the
-      # in-binary updater verifies entirely offline. The bundle format is
-      # required by cosign v3 anyway; flagging it explicitly keeps us
-      # forward-compatible if defaults shift again.
-      - name: Sign release artifact with cosign
-        shell: bash
+      # One self-contained bundle (signature + ephemeral Fulcio cert + Rekor
+      # SET) per file, which the updater and install.sh verify offline. Each
+      # is verified against the identity they pin before anything is
+      # published, which catches a renamed or moved workflow first.
+      - name: Sign every file with cosign
         env:
-          # cosign-installer exports COSIGN_YES=true by default; making it
-          # explicit here surfaces intent. The keyless flow uses the workflow's
-          # OIDC token to mint a 10-minute Fulcio cert — see the id-token
-          # permission at the top of this workflow.
           COSIGN_YES: "true"
         run: |
-          cd "target/$TARGET/release"
-          archive="pocketshell-${GITHUB_REF_NAME}-${TARGET}.tar.gz"
-          cosign sign-blob \
-            --yes \
-            --new-bundle-format \
-            --bundle "${archive}.cosign-bundle.json" \
-            "$archive"
-          # Sanity-check the bundle is well-formed against the same pinned
-          # identity the in-binary updater will require. Catches workflow
-          # path drift (e.g. renaming this file) before users do.
-          cosign verify-blob \
-            --new-bundle-format \
-            --bundle "${archive}.cosign-bundle.json" \
-            --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release-host-agent.yml@${GITHUB_REF}" \
-            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-            "$archive"
-          ls -la "$archive" "${archive}.sha256" "${archive}.cosign-bundle.json"
+          set -euo pipefail
+          cd dist
+          for f in *; do
+            case "$f" in
+              *.sha256) continue ;;
+            esac
+            cosign sign-blob --yes --new-bundle-format --bundle "$f.cosign-bundle.json" "$f"
+            cosign verify-blob --new-bundle-format \
+              --bundle "$f.cosign-bundle.json" \
+              --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release-host-agent.yml@${GITHUB_REF}" \
+              --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+              "$f"
+          done
+          ls -la
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: pocketshell-${{ matrix.target }}
-          path: |
-            target/${{ matrix.target }}/release/pocketshell-*.tar.gz
-            target/${{ matrix.target }}/release/pocketshell-*.tar.gz.sha256
-            target/${{ matrix.target }}/release/pocketshell-*.tar.gz.cosign-bundle.json
-          if-no-files-found: error
-
-  release:
-    name: Publish GitHub Release
-    needs: build
-    # Same reason as `build` — only the npm publish job runs on dispatch.
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: true
-
-      - name: Show artifacts
-        shell: bash
-        run: ls -la dist/
-
-      - name: Create release
+      # A tag with a "-" (v1.4.0-rc1) is a prerelease: /releases/latest, which
+      # agents update from, never returns one.
+      - name: Publish the release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          generate_release_notes: true
+          tag_name: ${{ env.TAG }}
+          name: ${{ env.TAG }}
+          body: Thumbdesk host agent ${{ env.TAG }}. Every file has a SHA-256 checksum and a Sigstore (cosign) bundle signed by this repository's release workflow.
+          prerelease: ${{ contains(env.TAG, '-') }}
           fail_on_unmatched_files: true
-          files: |
-            dist/pocketshell-*.tar.gz
-            dist/pocketshell-*.tar.gz.sha256
-            dist/pocketshell-*.tar.gz.cosign-bundle.json
+          files: dist/*
 
-  # Publish to npm as a secondary distribution channel. Split into its own
-  # workflow so a registry outage / trusted-publisher misconfiguration
-  # cannot fail the (~10 min) main release build above — the GitHub
-  # Release is the source of truth, and `curl | bash` keeps working
-  # regardless. Re-run via the `workflow_dispatch` entry on THIS workflow
-  # (Republish to npm) with the desired tag.
+      - name: Keep the signed files for the mirror
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-release
+          path: dist/*
+          if-no-files-found: error
+
+  # The same release in yashagldit/Thumbdesk: the files and their bundles as
+  # they are, which still verify against this repository's workflow.
+  mirror-thumbdesk:
+    name: Publish the copy in yashagldit/Thumbdesk
+    needs: sign-and-publish
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.THUMBDESK_REPO_TOKEN }}
+    steps:
+      - name: Download the signed files
+        uses: actions/download-artifact@v4
+        with:
+          name: signed-release
+          path: dist
+
+      # A release needs a commit to tag; a new, empty repository has none.
+      - name: Give an empty repository its first commit
+        run: |
+          set -euo pipefail
+          if gh api "repos/$MIRROR_REPO/commits?per_page=1" >/dev/null 2>&1; then
+            exit 0
+          fi
+          cat > README.md <<'EOF'
+          # Thumbdesk host agent
+
+          Releases of the Thumbdesk host agent: signed binaries for macOS, Linux
+          and Windows, with SHA-256 checksums and Sigstore (cosign) bundles.
+
+          Install: https://thumbdesk.com
+          EOF
+          gh api -X PUT "repos/$MIRROR_REPO/contents/README.md" \
+            -f message="Thumbdesk host agent releases" \
+            -f content="$(base64 -w0 README.md)" >/dev/null
+          echo "created the first commit in $MIRROR_REPO"
+
+      - name: Publish the release
+        run: |
+          set -euo pipefail
+          prerelease=()
+          case "$TAG" in
+            *-*) prerelease=(--prerelease) ;;
+          esac
+          if gh release view "$TAG" --repo "$MIRROR_REPO" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --repo "$MIRROR_REPO" --clobber
+          else
+            gh release create "$TAG" dist/* --repo "$MIRROR_REPO" \
+              --title "$TAG" "${prerelease[@]}" \
+              --notes "Thumbdesk host agent $TAG. Every file has a SHA-256 checksum and a Sigstore (cosign) bundle, signed by yashagldit/PocketShell's release workflow."
+          fi
+
+  # `brew install --cask yashagldit/thumbdesk/thumbdesk`: the cask in the tap,
+  # from homebrew/thumbdesk.rb with this release's version and disk image
+  # checksum. A release without the disk image (built without the notary
+  # credentials) leaves the cask on the last one that had it.
+  homebrew:
+    name: Update the Homebrew cask
+    needs: sign-and-publish
+    if: ${{ !contains(github.ref_name, '-') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download the signed files
+        uses: actions/download-artifact@v4
+        with:
+          name: signed-release
+          path: dist
+
+      - name: Find the disk image
+        id: dmg
+        run: |
+          set -euo pipefail
+          sha="dist/Thumbdesk-${TAG}-aarch64-apple-darwin.dmg.sha256"
+          if [ ! -f "$sha" ]; then
+            echo "::notice::$TAG has no macOS disk image; the cask stays on the last release that had one."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "found=true" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(cut -d' ' -f1 "$sha")" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the tap
+        if: steps.dmg.outputs.found == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: yashagldit/homebrew-thumbdesk
+          ref: main
+          path: tap
+          ssh-key: ${{ secrets.TAP_DEPLOY_KEY }}
+
+      - name: Commit the cask
+        if: steps.dmg.outputs.found == 'true'
+        env:
+          SHA256: ${{ steps.dmg.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          mkdir -p tap/Casks
+          sed -e "s/REPLACE_WITH_RELEASE_VERSION/${version}/" \
+              -e "s/REPLACE_WITH_DMG_SHA256/${SHA256}/" \
+              homebrew/thumbdesk.rb > tap/Casks/thumbdesk.rb
+          if grep -q REPLACE_WITH tap/Casks/thumbdesk.rb; then
+            echo "::error::the cask template still has a placeholder"
+            exit 1
+          fi
+          cd tap
+          git add Casks/thumbdesk.rb
+          if git diff --cached --quiet; then
+            echo "the cask is already on $version"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "thumbdesk $version"
+          git push origin HEAD:main
+
+  # Publish to npm as a secondary distribution channel, in its own workflow
+  # so a registry outage or trusted-publisher misconfiguration cannot fail the
+  # release above. Re-run via this workflow's workflow_dispatch entry. npm pins
+  # the trusted publisher to this entry workflow's filename.
   #
-  # No NPM_TOKEN: auth is npm Trusted Publishing (OIDC). See the long
-  # header in publish-npm.yml for the one-time npmjs.com configuration.
-  # npm pins the trusted publisher to this entry workflow filename
-  # (release-host-agent.yml), so workflow_dispatch for re-runs lives here.
+  # Not for a prerelease: npm would make it the `latest` everyone installs.
   publish-npm:
     name: Publish to npm
-    needs: release
-    # On push: runs after `release` succeeds.
-    # On workflow_dispatch: `release` is skipped, so we explicitly allow
-    # the skipped state through with `always() && ...`.
-    if: always() && (needs.release.result == 'success' || needs.release.result == 'skipped')
+    needs: sign-and-publish
+    if: >-
+      always() && (
+        (github.event_name == 'push' && needs.sign-and-publish.result == 'success' && !contains(github.ref_name, '-')) ||
+        github.event_name == 'workflow_dispatch'
+      )
     uses: ./.github/workflows/publish-npm.yml
     with:
       # `inputs.tag` is set only on workflow_dispatch; `github.ref_name`

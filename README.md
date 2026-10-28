@@ -1,22 +1,23 @@
-# PocketShell
+# Thumbdesk
+> A real terminal in your pocket, with authenticated WebRTC.
 
-> A real terminal in your pocket. End-to-end encrypted. WebRTC peer-to-peer.
+Thumbdesk turns your phone into a real PTY for the machines you care about — your dev box, a homelab Pi, a fleet of edge servers. On the preferred direct or TURN-relayed WebRTC path, traffic is protected by DTLS end to end. While WebRTC is unavailable, terminal and coding-agent traffic can use a server-readable WSS/TLS fallback; file signaling has a separate key-exchange fallback documented in the [security architecture](https://thumbdesk.com/security/).
 
-PocketShell turns your phone into a real PTY for the machines you care about — your dev box, a homelab Pi, a fleet of edge servers. Type into your phone, the bytes flow over an encrypted WebRTC data channel directly to your machine. The cloud signals; it does not see your shell.
+**Get Thumbdesk:** [App Store](https://apps.apple.com/us/app/pocketshell/id6764135099) · [Google Play](https://play.google.com/store/apps/details?id=app.pocketshell.mobile) · [Website](https://thumbdesk.com/)
 
-This repository is the **open-source host agent** that runs on the machine you want to reach. The mobile apps (iOS / Android) and the backend control plane that brokers pairing and signaling are closed-source.
+This repository is the **public releases channel** for the Thumbdesk host agent, the program that runs on the machine you want to reach: signed release binaries, install packaging, and the npm wrapper. The host agent's source is not published going forward. The mobile apps (iOS / Android) and the backend control plane that brokers pairing and signaling are closed-source too.
 
 ```
 ┌──────────┐                         ┌──────────────┐                          ┌──────────┐
 │  mobile  │ ──── auth · signal ──── │   backend    │ ──── auth · signal ──── │   host   │
-│ (closed) │                         │   (closed)   │                          │ (this 👋)│
+│ (closed) │                         │   (closed)   │                          │  (agent) │
 └────┬─────┘                         └──────────────┘                          └────┬─────┘
      │                                                                              │
      └──── WebRTC datachannel (DTLS) · ED25519-pinned SDP transcript ──── PTY ───┘
-                       (your terminal traffic; never touches our servers)
+                       (preferred terminal path; fallback documented separately)
 ```
 
-The control plane refuses, throttles, or routes connections. Once a mobile↔host session is up, the backend cannot read or forge the terminal/files/agent bytes — they travel over a WebRTC data channel protected by DTLS (the WebRTC stack's standard transport encryption), and the DTLS peer-cert fingerprint is bound into a signed SDP transcript verified against the device's long-term ED25519 pairing key, so a backend that swaps SDPs to MitM is detected before any byte traverses the channel. A second E2E layer (ChaCha20-Poly1305 with X25519-derived session keys) wraps sensitive *signaling* messages that pass through the backend WS. Compromise of our backend does not compromise your shell.
+On authenticated WebRTC sessions, the backend cannot substitute a peer: the DTLS certificate fingerprint is bound into a signed SDP transcript verified against the device's long-term ED25519 pairing key. Direct and TURN-relayed WebRTC payloads are end-to-end encrypted. The backend also handles presence, alerts, lightweight metric history, and WSS/TLS fallbacks. Terminal and agent fallback frames are server-readable while relayed. Signaling-based file operations normally add ChaCha20-Poly1305 with X25519/HKDF-derived keys, but the current client can fall back to WSS/TLS if file key exchange fails. See the [security architecture](https://thumbdesk.com/security/) for exact data paths and limitations.
 
 > Host↔host direct file transfer (a Pro feature) is anchored to the mobile device as introducer: the phone signs an attestation binding both hosts' long-term public keys to the transfer, and each host verifies it against the mobile pubkey pinned at pairing — so the backend can relay SDP but cannot substitute a peer's identity. See [Security model](#security-model).
 
@@ -25,20 +26,16 @@ The control plane refuses, throttles, or routes connections. Once a mobile↔hos
 ## What's in this repo
 
 ```
-crates/
-  host-core/      # library: api client, websocket, pty, crypto, stats, audit, files
-  host-agent/     # the `pocketshell` CLI — login, pair, daemon, devices, stats
 packaging/
-  debian/         # debian package + systemd --user unit
-  homebrew/       # homebrew formula
+  debian/         # debian package + systemd unit
   macos/          # launchd plist
-mobile/src/locales/   # 12-language UI translation files (community-maintained)
-mobile/src/i18n/      # i18n loader
-LICENSE           # Apache-2.0
-NOTICE            # required attribution per Apache-2.0 §4(d)
+homebrew/         # the Homebrew cask, published to yashagldit/homebrew-thumbdesk
+npm/              # the `thumbdesk` and `pocketshell` npm wrapper packages
+LICENSE           # Apache-2.0 (covers the code published here)
+NOTICE            # attribution per Apache-2.0 §4(d)
 ```
 
-The `mobile/src/locales/` tree is here because translations benefit from being public — the rest of the mobile app source isn't in this repo.
+Releases, with their SHA-256 checksums and Sigstore signatures, are on the [Releases page](https://github.com/yashagldit/PocketShell/releases). This repository keeps its original name (`PocketShell`) because agents already installed update from it.
 
 ---
 
@@ -46,15 +43,18 @@ The `mobile/src/locales/` tree is here because translations benefit from being p
 
 ### Pre-built binaries
 
-Pick either:
+Pick one (the older `pocketshell` command keeps working as an alias):
 
 ```bash
+# Homebrew — macOS (Apple Silicon, macOS 13+): the Thumbdesk app + the command
+brew install --cask yashagldit/thumbdesk/thumbdesk
+
 # install script — macOS & Linux
 brew install cosign  # one-time, for Sigstore signature verification
-curl -fsSL https://pocketshell.app/install.sh | bash
+curl -fsSL https://thumbdesk.com/install.sh | bash
 
 # npm — macOS, Linux & Windows
-npm i -g pocketshell
+npm i -g thumbdesk
 ```
 
 **Install script** (macOS / Linux) detects your OS and arch, fetches the
@@ -62,13 +62,13 @@ matching tarball from the latest [GitHub
 Release](https://github.com/yashagldit/PocketShell/releases), verifies
 its SHA-256 checksum **and the Sigstore cosign keyless signature**
 (pinned to this repo's release workflow identity), then installs to
-`~/.local/bin/pocketshell` (or `/usr/local/bin/pocketshell` if run as
+`~/.local/bin/thumbdesk` (or `/usr/local/bin/thumbdesk` if run as
 root). Without cosign installed the script refuses to proceed — the
 SHA-256 alone is same-origin integrity, not authenticity, so a
 compromised release publisher could serve a matching checksum for a
-malicious binary. Set `POCKETSHELL_SKIP_COSIGN=1` only if you've
+malicious binary. Set `THUMBDESK_SKIP_COSIGN=1` only if you've
 verified the artifact out of band. It's a POSIX shell script — on
-**Windows** use npm (below) or [build from source](#build-from-source).
+**Windows** use npm (below).
 
 Read the script first if you'd rather not pipe to bash blindly — it's
 served from the static site and intentionally short.
@@ -84,118 +84,68 @@ long-lived tokens), with build provenance attached automatically.
 Verify either install:
 
 ```bash
-pocketshell --version
+thumbdesk --version
 ```
 
-### Build from source
+### Building from source
 
-Prefer to compile the agent yourself rather than trust a pre-built
-binary? The source carries **no backend URL** — you supply PocketShell's
-endpoints either at build time (baked into the binary) or at runtime
-(per invocation).
-
-**Prerequisites**
-
-- Rust 1.78+ — install via [rustup](https://rustup.rs).
-- A C linker/toolchain: `build-essential` (Debian/Ubuntu) or the
-  equivalent `gcc`/`clang` package on Linux · Xcode Command Line Tools
-  (`xcode-select --install`) on macOS · [Visual Studio C++ Build
-  Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) on
-  Windows.
-- Nothing else — the keychain (native OS keyring on macOS / Linux /
-  Windows) and the WebRTC stack are pure-Rust, so there's no OpenSSL,
-  dbus, or pkg-config to install.
-
-**Clone, then build with the backend URL baked in** (recommended) —
-macOS / Linux:
-
-```bash
-git clone https://github.com/yashagldit/PocketShell.git
-cd PocketShell
-POCKETSHELL_DEFAULT_BACKEND_URL=https://api.pocketshell.app \
-POCKETSHELL_DEFAULT_WS_URL=wss://api.pocketshell.app/ws/host \
-  cargo install --path crates/host-agent --root ~/.local
-export PATH="$HOME/.local/bin:$PATH"
-```
-
-Windows (PowerShell):
-
-```powershell
-git clone https://github.com/yashagldit/PocketShell.git
-cd PocketShell
-$env:POCKETSHELL_DEFAULT_BACKEND_URL = "https://api.pocketshell.app"
-$env:POCKETSHELL_DEFAULT_WS_URL      = "wss://api.pocketshell.app/ws/host"
-cargo install --path crates/host-agent --root "$env:USERPROFILE\.local"
-# then add %USERPROFILE%\.local\bin to your PATH
-```
-
-> **Why the env vars matter.** `crates/host-core/src/config.rs` reads
-> them at compile time via `option_env!`. Build *without* them and the
-> binary ships with empty URLs and fails its first connection with a
-> misleading `invalid ws request` error. Cargo also **doesn't treat an
-> env-var change as a reason to rebuild** — if you already built once
-> without them set, force a clean recompile first:
-> `cargo clean -p host-core -p host-agent`.
-
-Alternatively, build with no URL baked in and supply it at runtime:
-
-```bash
-POCKETSHELL_BACKEND_URL=https://api.pocketshell.app \
-POCKETSHELL_WS_URL=wss://api.pocketshell.app/ws/host \
-  pocketshell daemon run
-```
-
-**Verify the URL is baked in** before relying on the binary:
-
-```bash
-# macOS / Linux
-strings ~/.local/bin/pocketshell \
-  | grep -oE '(wss|https)://[a-z.]+\.pocketshell\.app[a-z/]*' | sort -u
-```
-
-```powershell
-# Windows (PowerShell)
-Select-String -Path "$env:USERPROFILE\.local\bin\pocketshell.exe" `
-  -Pattern 'wss?://[a-z.]+\.pocketshell\.app' |
-  ForEach-Object { $_.Matches.Value } | Sort-Object -Unique
-```
-
-Both the `https://` and `wss://` URLs should print. If nothing does, the
-binary won't connect — rebuild after `cargo clean` (see the note above).
-
-> PocketShell's backend is **not self-hostable** — a from-source build
-> still talks to the hosted control plane at `api.pocketshell.app`. The
-> `POCKETSHELL_*` overrides exist for our own dev/test, not for pointing
-> the agent at a server you run.
+Not supported: the host agent is closed source going forward, and
+Thumbdesk's backend is not self-hostable. Use the signed pre-built
+binaries above.
 
 ## Pair and run
 
-Pairing is QR-based — run `pocketshell pair` on the host, scan the QR from the mobile app.
+Pairing is QR-based — run `thumbdesk pair` on the host, scan the QR from the mobile app.
 
 ```bash
 # 1. on the host, generate a pairing QR (prints to the terminal)
-pocketshell pair
+thumbdesk pair
 
-# 2. in the PocketShell app: Hosts → Add host → "Scan Host QR"
+# 2. in the Thumbdesk app: Hosts → Add host → "Scan Host QR"
 #    point the camera at the QR shown in step 1
 
 # 3. start the daemon (runs as your user, not root)
-pocketshell daemon start                           # linux / macOS — installs a user service
+thumbdesk daemon start                           # linux / macOS — installs a user service
 
 #    windows: the background service isn't wired up yet, so run it in the
 #    foreground in a terminal you keep open instead of `daemon start`:
-pocketshell daemon run                             # windows
+thumbdesk daemon run                             # windows
 
 # 4. status & logs
-pocketshell daemon status
-journalctl --user -fu pocketshell-host-agent      # linux
-log stream --predicate 'process == "pocketshell"' # macOS
+thumbdesk daemon status
+journalctl --user -fu thumbdesk-host-agent      # linux
+log stream --predicate 'process == "thumbdesk"' # macOS
 #    windows: logs stream to the console running `daemon run`
 ```
 
-The QR carries a short-lived claim plus the host's public key, so the mobile app pins the host identity at pair time rather than trusting a backend-relayed field. To re-pair an existing host onto a different account, run `pocketshell pair --reset` — this wipes the local identity before generating a fresh QR.
+The QR carries a short-lived claim plus the host's public key, so the mobile app pins the host identity at pair time rather than trusting a backend-relayed field. To re-pair an existing host onto a different account, run `thumbdesk pair --reset` — this wipes the local identity before generating a fresh QR.
 
 The daemon connects out to the signaling backend over WSS and waits for a peer offer. When your phone wants a session, the backend signals; the data channel is end-to-end encrypted between phone and host.
+
+---
+
+## Project workspace, Git, and dev servers
+
+Thumbdesk's host agent now supports the mobile project workspace in addition to raw terminal access:
+
+- **Projects.** The agent discovers recent Claude Code and Codex project directories from local session metadata, returns a capped project tree for the mobile sidebar, and supports filename/content search while skipping heavy directories such as `.git` and `node_modules`.
+- **Git.** The mobile app can inspect repository status, view diffs and commit history, stage/unstage/discard files, commit, pull, push, list branches, and switch or create branches. Mutating actions are audited locally on the host.
+- **Local dev-server preview.** The mobile app can render a local web app running on the host, such as Vite, Next.js, webpack-dev-server, Rails, Django, or Flask. HTTP, Server-Sent Events, and WebSocket traffic tunnel over the encrypted WebRTC data channel, so HMR and framework error overlays work in the in-app preview.
+
+Dev-server access is deny-by-default. A port must be exposed before the mobile app can forward requests to `localhost:<port>`:
+
+```bash
+# persistent until removed
+thumbdesk expose 5173
+
+# temporary; automatically purged on daemon restart
+thumbdesk expose 5173 --ephemeral
+
+thumbdesk exposed
+thumbdesk unexpose 5173
+```
+
+The app can also discover locally listening HTTP servers and request an ephemeral expose in-app. The daemon re-checks permissions for each expose/unexpose request and records audit events for expose, unexpose, and forwarded HTTP/WebSocket attempts.
 
 ---
 
@@ -209,7 +159,7 @@ flowchart TB
         direction TB
         M_auth["Email OTP → JWT<br/>(15 min access · 30 day refresh)"]
         M_key["ED25519 device key<br/>Expo SecureStore"]
-        M_ui["Terminal · Files · Stats<br/>Agent chat · Alerts · Workspaces"]
+        M_ui["Terminal · Files · Stats<br/>Projects · Git · Dev server preview<br/>Agent chat · Alerts · Workspaces"]
         M_ws["Signaling WS client<br/>/ws/mobile"]
         M_rtc["WebRTC peer<br/>(react-native-webrtc)"]
     end
@@ -225,12 +175,12 @@ flowchart TB
 
     subgraph Host["🖥️  Host agent  (this repo)"]
         direction TB
-        H_cli["pocketshell CLI<br/>pair · daemon · devices · stats"]
+        H_cli["thumbdesk CLI<br/>pair · daemon · devices · stats · expose"]
         H_key["ED25519 host key<br/>OS keychain"]
         H_ws["transport.rs<br/>WS client → /ws/host"]
         H_rtc["webrtc_manager.rs<br/>peer-per-mobile-device"]
         H_pty["pty.rs · discovery.rs<br/>tmux / screen / shell"]
-        H_stats["stats.rs · files.rs<br/>agent_session.rs · alerts.rs"]
+        H_stats["stats.rs · files.rs · git.rs<br/>http_forward.rs · ws_forward.rs<br/>agent_session.rs · alerts.rs"]
     end
 
     M_auth -. "HTTPS · JWT" .-> B_api
@@ -242,7 +192,7 @@ flowchart TB
     B_ws  --- B_redis
     B_api --- B_turn
 
-    M_rtc <==>|"WebRTC data channels — E2E encrypted, never touches backend<br/><br/><b>terminal</b> (PTY bytes) · <b>stats</b> (JSON ~1 Hz)<br/><b>files</b> (framed JSON + chunks) · <b>agent-{id}</b> (Claude / Codex stdio)<br/><br/>P2P direct  ·  TURN relay only when NAT blocks P2P"| H_rtc
+    M_rtc <==>|"WebRTC data channels — E2E encrypted, never touches backend<br/><br/><b>terminal</b> (PTY bytes) · <b>stats</b> (JSON ~1 Hz)<br/><b>files</b> (framed JSON + chunks) · <b>http-{hostId}</b> (dev-server preview)<br/><b>agent-{id}</b> (Claude / Codex stdio)<br/><br/>P2P direct  ·  TURN relay only when NAT blocks P2P"| H_rtc
 
     B_turn -. "TURN relay path<br/>(opaque to backend)" .-> M_rtc
     B_turn -. "TURN relay path" .-> H_rtc
@@ -298,12 +248,15 @@ sequenceDiagram
 | Signaling | WSS `/ws/mobile`, `/ws/host` | `session_offer` · `session_answer` · `ice_candidate` · `session_event` · `stats_offer` · `files_offer` · `agent_offer` · `alert` · `host_summary` · `available_sessions` |
 | Presence + lightweight metrics | WSS `/ws/host` | `heartbeat` (host_id, active_sessions, app_version) · `host_summary` (cpu%, ram%) · `stats_snapshot` and `stats_minute_batch` (cpu/mem/disk/load/battery/net IO/temps — **no processes, no command lines, no logged-in users**) |
 | Metrics history (Pro) | HTTPS `/api/v1/presence/hosts/{id}/stats/history*` | minute / 30-min / hourly / daily aggregates served from PostgreSQL — used by the history charts even when no live session is active |
-| **Terminal I/O** | **WebRTC `terminal` channel** | **PTY bytes — never touches backend** |
+| **Terminal I/O (preferred)** | **WebRTC `terminal` channel** | **PTY bytes protected by DTLS; the backend is not in this channel** |
 | **Live stats (rich)** | **WebRTC `stats` channel** | **Top-50 processes · per-core CPU · logged-in users · network connections · OS info · hostname — never touches backend** |
-| **File ops** | **WebRTC `files` channel** | **Framed JSON + base64 chunks (sentinel `\x00PSFC`)** |
+| **File, project, and Git ops** | **WebRTC `files` channel** | **Framed JSON + base64 chunks (sentinel `\x00PSFC`) · project discovery/tree/search · git status/diff/log/stage/commit/pull/push/branch** |
+| **Dev-server preview** | **WebRTC `http-{hostId}` channel** | **HTTP requests, response streams, SSE, and WebSocket/HMR frames forwarded to exposed `localhost:<port>` only** |
 | **Agent chat** | **WebRTC `agent-{id}` channel** | **Claude / Codex stdio, JSON framed** |
+| Terminal + agent fallback | WSS signaling | Server-readable TLS-protected frames while WebRTC is starting or unavailable; mobile-to-host frames are signed and replay-checked |
+| File signaling fallback | WSS signaling | Normally X25519/HKDF/ChaCha20-Poly1305 encrypted; the current client can fail over to server-readable TLS if key exchange fails. Large streams require WebRTC |
 
-The backend is a switchboard — it can refuse a connection, throttle it, or route it through TURN, but once the data channel is up it sees ciphertext at best and nothing at all on direct P2P.
+On the authenticated WebRTC channels, the backend sees ciphertext at most through TURN and nothing on direct P2P. The WSS fallbacks above have different visibility and are not end-to-end encrypted.
 
 **What the backend persists.** To deliver the Pro history-chart feature, the backend stores minute-bucket aggregates of numerical metrics (cpu/mem/disk/uptime/load/battery/net IO/disk IO/max temp + collected-at) per host, rolled up into 30-min/hourly/daily over time. It does **not** persist processes, command lines, hostnames, logged-in users, or network connection lists — those flow only over WebRTC and are dropped from Redis after ~35 minutes. Account deletion removes all of the above; see `app/services/account_deletion_service.py`.
 
@@ -331,46 +284,13 @@ The destination host verifies the source's SDP signature against a public key ca
 
 - **No per-session approval prompt (by design)** — once a mobile device is trusted, every session offer is accepted immediately. The stolen-and-unlocked-phone case is handled by layered controls instead: app open is gated by device biometric, every paired device shows up in the in-app device list and can be revoked remotely from any other paired device, and sensitive ops are written to the local audit log on the host. Adding a per-session prompt would train users to tap "approve" reflexively and degrade the UX for the common case, so it isn't on the roadmap.
 
-Found something? Email `support@pocketshell.app`. Public issues are fine for non-sensitive bugs.
+Found something? Email `support@thumbdesk.com`. Public issues are fine for non-sensitive bugs.
 
 ---
 
-## Building & testing
+## Feedback
 
-```bash
-cargo build -p host-agent                # debug build
-cargo build -p host-agent --release      # release
-cargo test  -p host-core                 # core library tests
-cargo test  -p host-agent                # CLI tests
-RUST_LOG=debug cargo run -p host-agent -- daemon run    # run with verbose logs
-```
-
-Running an actual daemon from a dev build needs the backend URLs too —
-bake them in or set `POCKETSHELL_BACKEND_URL` / `POCKETSHELL_WS_URL` at
-runtime (see [Build from source](#build-from-source)).
-
-Targets supported today: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-pc-windows-msvc`. Windows x64 is distributed via npm (`npm i -g pocketshell`); some host features (service install, local-attach, PTY relay) are still stubbed on Windows.
-
----
-
-## Translations
-
-The mobile app currently ships in **12 languages**: English, German, Spanish, French, Hindi, Italian, Japanese, Korean, Portuguese (BR), Russian, Simplified Chinese, Traditional Chinese.
-
-Files live under `mobile/src/locales/<lang>/*.json`. To add or improve a language, edit the JSON files and open a PR — no app build required. The strings are loaded by `mobile/src/i18n/index.ts`.
-
-If you want a new language added, open an issue and we'll seed the directory.
-
----
-
-## Contributing
-
-PRs are welcome. A few notes:
-
-- **Source of truth.** This repo is mirrored from a private monorepo. We accept patches here and apply them upstream. Force-pushes happen on every release — keep your fork rebased rather than merged.
-- **Scope.** Issues for the mobile app or the backend get redirected; this repo is the host agent and the locales.
-- **Style.** Match the surrounding code. `cargo fmt` and `cargo clippy --all-targets -- -D warnings` should pass.
-- **Commits.** Conventional commits preferred (`feat:`, `fix:`, `refactor:`).
+Issues for the host agent are welcome on this repository; we can't take code contributions here since the source is not published. Issues for the mobile app or the backend are redirected to support@thumbdesk.com.
 
 ---
 
@@ -378,11 +298,8 @@ PRs are welcome. A few notes:
 
 Licensed under the [Apache License, Version 2.0](./LICENSE).
 
-Unless you explicitly state otherwise, any contribution intentionally
-submitted for inclusion in this project shall be licensed as Apache-2.0,
-without any additional terms or conditions, per §5 of the License. See
-also [NOTICE](./NOTICE).
+See also [NOTICE](./NOTICE).
 
 ---
 
-**Links** · [pocketshell.app](https://pocketshell.app) · [Privacy](https://pocketshell.app/privacy) · [Terms](https://pocketshell.app/terms) · [Support](https://pocketshell.app/support)
+**Links** · [thumbdesk.com](https://thumbdesk.com/) · [App Store](https://apps.apple.com/us/app/pocketshell/id6764135099) · [Google Play](https://play.google.com/store/apps/details?id=app.pocketshell.mobile) · [Security](https://thumbdesk.com/security/) · [Privacy](https://thumbdesk.com/privacy/) · [Terms](https://thumbdesk.com/terms/) · [Support](https://thumbdesk.com/support/)

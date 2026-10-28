@@ -1,8 +1,15 @@
 name: Publish to npm
 
-# Publishes the `pocketshell` wrapper + four platform-specific binary
-# packages (@pocketshell/<triple>) to the npm registry, sourcing the
-# binaries from a GitHub Release produced by release-host-agent.yml.
+# Publishes the five platform-specific binary packages (@pocketshell/<triple>)
+# and two wrappers over them to the npm registry, sourcing the binaries from a
+# GitHub Release produced by release-host-agent.yml:
+#
+#   thumbdesk    the CLI's name now; installs `thumbdesk` and `pocketshell`
+#   pocketshell  the old package, kept so existing `npm i -g pocketshell`
+#                installs keep updating; installs the same two commands
+#
+# The platform packages keep their @pocketshell names: both wrappers depend
+# on them, and a new scope would mean a new npm org for nothing a user sees.
 #
 # Deliberately split out of release-host-agent.yml so that an npm
 # registry outage or trusted-publisher misconfiguration cannot fail
@@ -19,6 +26,7 @@ name: Publish to npm
 # npmjs.com per package:
 #
 #   Package settings → Publishing access → Trusted publishers → Add
+#   (for `thumbdesk`, `pocketshell`, and each @pocketshell/<triple>)
 #     Publisher:        GitHub Actions
 #     Organization:     yashagldit
 #     Repository:       PocketShell
@@ -139,6 +147,26 @@ jobs:
         run: |
           archive="pocketshell-${TAG}-${TARGET}.tar.gz"
           mkdir -p stage
+          # macOS ships the app when the release has it (it is skipped when
+          # the notary credentials were missing); the app then replaces the
+          # plain binary in the package, so there is one copy, not two. From
+          # 1.4.0 it is Thumbdesk.app/Contents/MacOS/thumbdesk; earlier app
+          # archives held PocketShell.app/Contents/MacOS/pocketshell.
+          app_archive="pocketshell-${TAG}-${TARGET}.app.tar.gz"
+          if [ "$PKG_OS" = "darwin" ] && gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --json assets --jq '.assets[].name' | grep -qx "$app_archive"; then
+            gh release download "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --pattern "$app_archive" \
+              --pattern "${app_archive}.sha256" \
+              --dir stage
+            ( cd stage && shasum -a 256 -c "${app_archive}.sha256" )
+            tar -xzf "stage/$app_archive" -C stage
+            test -x stage/Thumbdesk.app/Contents/MacOS/thumbdesk \
+              || test -x stage/PocketShell.app/Contents/MacOS/pocketshell \
+              || { echo "::error::no app bundle in $app_archive"; exit 1; }
+            exit 0
+          fi
           gh release download "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --pattern "$archive" \
@@ -154,33 +182,48 @@ jobs:
         shell: bash
         run: |
           out="npm-pkg"
-          mkdir -p "$out/bin"
-          binname=pocketshell
-          [ "$PKG_OS" = "win32" ] && binname=pocketshell.exe
-          mv "stage/$binname" "$out/bin/$binname"
-          chmod +x "$out/bin/$binname"
+          mkdir -p "$out"
+          app=
+          for cand in Thumbdesk.app PocketShell.app; do
+            [ -d "stage/$cand" ] && { app="$cand"; break; }
+          done
+          if [ -n "$app" ]; then
+            # Moved whole: the bundle's signature covers every file in it.
+            mv "stage/$app" "$out/$app"
+            payload="$app/"
+          else
+            mkdir -p "$out/bin"
+            binname=pocketshell
+            [ "$PKG_OS" = "win32" ] && binname=pocketshell.exe
+            mv "stage/$binname" "$out/bin/$binname"
+            chmod +x "$out/bin/$binname"
+            payload="bin/"
+          fi
 
           # Build the package.json with jq so escaping stays correct even
           # if any matrix value ever grows special characters. Platform
           # packages deliberately do NOT declare a `bin` entry — the
-          # `pocketshell` shim is owned by the wrapper package, and a bin
-          # collision would break `npm i -g`.
+          # `thumbdesk` and `pocketshell` shims are owned by the wrapper
+          # packages, and a bin collision would break `npm i -g`. The binary
+          # keeps the name the release archive gives it (`pocketshell`); the
+          # wrappers' shims look for either name.
           jq -n \
             --arg name    "$NPM_NAME" \
             --arg version "$VERSION" \
             --arg os      "$PKG_OS" \
             --arg cpu     "$PKG_CPU" \
             --arg libc    "$PKG_LIBC" \
+            --arg payload "$payload" \
             '{
               name: $name,
               version: $version,
-              description: "Prebuilt pocketshell host-agent binary. Installed automatically as an optional dependency of the `pocketshell` package.",
-              homepage: "https://pocketshell.app",
+              description: "Prebuilt Thumbdesk host-agent binary. Installed automatically as an optional dependency of the `thumbdesk` and `pocketshell` packages.",
+              homepage: "https://thumbdesk.com",
               repository: { type: "git", url: "https://github.com/yashagldit/PocketShell" },
               license: "Apache-2.0",
               os: [$os],
               cpu: [$cpu],
-              files: ["bin/"]
+              files: [$payload]
             }
             + (if $libc == "" then {} else { libc: [$libc] } end)
             ' > "$out/package.json"
@@ -214,11 +257,18 @@ jobs:
           exit 1
 
   publish-wrapper:
-    name: publish / pocketshell (wrapper)
+    name: publish / ${{ matrix.package }} (wrapper)
     needs: publish-platform
+    strategy:
+      # Independent publishes, as above: a `thumbdesk` package whose trusted
+      # publisher is not set up yet must not hold back `pocketshell`.
+      fail-fast: false
+      matrix:
+        package: [thumbdesk, pocketshell]
     runs-on: ubuntu-latest
     env:
       TAG: ${{ inputs.tag }}
+      PACKAGE: ${{ matrix.package }}
     steps:
       - uses: actions/checkout@v4
 
@@ -251,23 +301,23 @@ jobs:
         shell: bash
         run: |
           # The wrapper's npm page should show the project README, not a
-          # one-screen placeholder. The checked-in npm/pocketshell/README.md
+          # one-screen placeholder. The checked-in npm/<package>/README.md
           # exists only so the package layout is valid when iterating
           # locally — CI always overwrites it with the repo root README so
           # the npm page stays in sync with GitHub.
-          cp README.md npm/pocketshell/README.md
+          cp README.md "npm/$PACKAGE/README.md"
           echo "--- wrapper README first 5 lines ---"
-          head -5 npm/pocketshell/README.md
+          head -5 "npm/$PACKAGE/README.md"
 
       - name: Stamp release version into wrapper package.json
         shell: bash
         run: |
-          cd npm/pocketshell
+          cd "npm/$PACKAGE"
           # Rewrite both the package's own version and every
           # optionalDependency version (all stored as the placeholder
           # "0.0.0-placeholder" in the checked-in file). Pinning the
           # platform-package versions to the wrapper's exact version
-          # means `npm i pocketshell@1.2.3` deterministically pulls
+          # means `npm i thumbdesk@1.2.3` deterministically pulls
           # @pocketshell/<triple>@1.2.3 and nothing else.
           jq --arg v "$VERSION" '
             .version = $v
@@ -280,13 +330,13 @@ jobs:
       - name: Publish wrapper to npm (OIDC trusted publishing)
         shell: bash
         run: |
-          cd npm/pocketshell
+          cd "npm/$PACKAGE"
           # See publish-platform for OIDC / provenance notes — same flow.
           if npm publish --access public 2>&1 | tee publish.log; then
             exit 0
           fi
           if grep -qE 'E409|cannot publish over the previously published versions' publish.log; then
-            echo "::notice::pocketshell@${VERSION} already published — treating as success"
+            echo "::notice::${PACKAGE}@${VERSION} already published — treating as success"
             exit 0
           fi
           exit 1

@@ -1,15 +1,28 @@
 {
   "name": "pocketshell",
   "version": "0.0.0-placeholder",
-  "description": "Secure mobile-to-host terminal access — installs the pocketshell host-agent CLI.",
-  "homepage": "https://pocketshell.app",
+  "description": "Thumbdesk host agent (formerly PocketShell): terminal, files and screen access to this machine from the Thumbdesk mobile app. Installs the `thumbdesk` CLI, also available as `pocketshell`.",
+  "homepage": "https://thumbdesk.com",
   "repository": {
     "type": "git",
-    "url": "https://github.com/yashagldit/PocketShell"
+    "url": "git+https://github.com/yashagldit/PocketShell.git"
   },
+  "bugs": {
+    "url": "https://github.com/yashagldit/PocketShell/issues"
+  },
+  "keywords": [
+    "mobile-terminal",
+    "remote-access",
+    "webrtc",
+    "claude-code",
+    "codex",
+    "homelab",
+    "server-monitoring"
+  ],
   "license": "Apache-2.0",
   "bin": {
-    "pocketshell": "bin/pocketshell.js"
+    "pocketshell": "bin/pocketshell.js",
+    "thumbdesk": "bin/pocketshell.js"
   },
   "files": [
     "bin/"

@@ -1,0 +1,40 @@
+{
+  "name": "thumbdesk",
+  "version": "0.0.0-placeholder",
+  "description": "Thumbdesk host agent: terminal, files and screen access to this machine from the Thumbdesk mobile app. Installs the `thumbdesk` CLI, also available under its old name `pocketshell`.",
+  "homepage": "https://thumbdesk.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yashagldit/PocketShell.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yashagldit/PocketShell/issues"
+  },
+  "keywords": [
+    "mobile-terminal",
+    "remote-access",
+    "webrtc",
+    "claude-code",
+    "codex",
+    "homelab",
+    "server-monitoring"
+  ],
+  "license": "Apache-2.0",
+  "bin": {
+    "thumbdesk": "bin/thumbdesk.js",
+    "pocketshell": "bin/thumbdesk.js"
+  },
+  "files": [
+    "bin/"
+  ],
+  "engines": {
+    "node": ">=14"
+  },
+  "optionalDependencies": {
+    "@pocketshell/darwin-arm64": "0.0.0-placeholder",
+    "@pocketshell/linux-x64-gnu": "0.0.0-placeholder",
+    "@pocketshell/linux-arm64-gnu": "0.0.0-placeholder",
+    "@pocketshell/linux-x64-musl": "0.0.0-placeholder",
+    "@pocketshell/win32-x64-msvc": "0.0.0-placeholder"
+  }
+}
